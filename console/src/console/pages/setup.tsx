@@ -189,7 +189,7 @@ function TotpStep({ totp, email, onDone }: { totp: SetupResponse; email: string;
       footnote={<>Signed in as {email} once confirmed. The secret is never shown again.</>}
     >
       <div className="flex flex-col items-center gap-5 rounded-xl border border-border/60 bg-card/40 p-6">
-        <div className="rounded-lg border border-border/60 bg-[#fdfbf8] p-2">
+        <div className="rounded-lg border border-border/60 bg-[#faf7f2] p-2">
           <QrCode value={totp.otpauthUrl} label={`QR code for two-step sign-in as ${email}`} />
         </div>
         <div className="w-full">

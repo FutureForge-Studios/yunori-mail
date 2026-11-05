@@ -16,11 +16,14 @@
     "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "design:sync": "node scripts/sync-design.mjs",
     "design:check": "node scripts/sync-design.mjs --check",
-    "size": "node scripts/bundle-size.mjs"
+    "size": "node scripts/bundle-size.mjs",
+    "design:yunori": "node scripts/sync-yunori-design.mjs",
+    "design:yunori:check": "node scripts/sync-yunori-design.mjs --check"
   },
   "dependencies": {
-    "@fontsource/instrument-serif": "5.3.0",
-    "@fontsource/inter": "5.3.0",
+    "@fontsource-variable/fraunces": "^5.3.0",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
     "@radix-ui/react-dialog": "^1.1.15",
     "@radix-ui/react-dropdown-menu": "^2.1.16",
     "@radix-ui/react-label": "^2.1.8",

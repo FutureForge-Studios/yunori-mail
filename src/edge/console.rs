@@ -10,7 +10,7 @@ use axum::http::{Response, StatusCode, header};
 struct Assets;
 
 const MISSING: &str = r#"<!doctype html><html lang="en"><meta charset="utf-8"><title>Yunori Mail</title>
-<body style="font-family:system-ui;max-width:36rem;margin:4rem auto;padding:0 1rem;color:#221d1a;background:#faf7f2">
+<body style="font-family:system-ui,sans-serif;max-width:36rem;margin:4rem auto;padding:0 1rem;color:#121621;background:#faf7f2">
 <h1 style="font-weight:400">Yunori Mail</h1><p>The console was not built into this binary.
 Build it with <code>npm --prefix console run build</code> and rebuild <code>yunori-mail</code>.</p></body></html>"#;
 

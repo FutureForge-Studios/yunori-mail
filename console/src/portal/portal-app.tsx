@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
 import { ExternalLink, LogOut, Plus, Trash2 } from "lucide-react";
-import { ToriLogo } from "@/design/vendor/logo";
+import { YunoriMark } from "@/components/yunori-logo";
 import { Button } from "@/design/vendor/ui/button";
 import { Input } from "@/design/vendor/ui/input";
 import { Label } from "@/design/vendor/ui/label";
@@ -134,7 +134,7 @@ function PortalHome() {
     <div className="min-h-dvh bg-background">
       <header className="border-b border-border/60">
         <div className="mx-auto flex h-14 max-w-3xl items-center gap-2.5 px-5">
-          <ToriLogo className="h-5 w-5" />
+          <YunoriMark className="h-5 w-5" />
           <span className="text-sm font-medium tracking-tight">Yunori Mail</span>
           <div className="ml-auto flex items-center gap-1">
             <ThemeToggle />

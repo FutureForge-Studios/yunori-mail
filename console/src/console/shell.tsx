@@ -2,7 +2,7 @@ import { Suspense, createContext, useCallback, useContext, useEffect, useState }
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { ChevronRight, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Search, UserRound } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { ToriLogo } from "@/design/vendor/logo";
+import { YunoriMark } from "@/components/yunori-logo";
 import { Dialog, DialogContent, DialogTitle } from "@/design/vendor/ui/dialog";
 import {
   DropdownMenu,
@@ -138,7 +138,7 @@ export function ConsoleShell() {
         >
           <div className={cn("flex items-center gap-2.5 pb-4 pt-5", collapsed ? "justify-center px-2" : "px-5")}>
             <Link to="/console" aria-label="Overview" className="shrink-0 rounded-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
-              <ToriLogo className="h-5 w-5" />
+              <YunoriMark className="h-5 w-5" />
             </Link>
             {!collapsed && (
               <div className="min-w-0 leading-tight">
@@ -205,7 +205,7 @@ export function ConsoleShell() {
               <Menu className="h-4 w-4" />
             </button>
             <Link to="/console" aria-label="Overview" className="lg:hidden">
-              <ToriLogo className="h-5 w-5" />
+              <YunoriMark className="h-5 w-5" />
             </Link>
 
             <nav aria-label="Breadcrumb" className="hidden min-w-0 items-center gap-1 text-xs sm:flex">
@@ -259,7 +259,7 @@ export function ConsoleShell() {
           <DialogContent className="left-0 top-0 flex h-dvh max-w-[17rem] translate-x-0 translate-y-0 flex-col gap-0 rounded-none border-y-0 border-l-0 p-0 data-[state=closed]:zoom-out-100 data-[state=open]:zoom-in-100 sm:rounded-none">
             <DialogTitle className="sr-only">Console navigation</DialogTitle>
             <div className="flex items-center gap-2.5 px-5 pb-4 pt-5">
-              <ToriLogo className="h-5 w-5" />
+              <YunoriMark className="h-5 w-5" />
               <div className="min-w-0 leading-tight">
                 <p className="text-sm font-medium tracking-tight">Yunori Mail</p>
                 <p className="truncate font-mono text-[10px] text-muted-foreground">{session.server.hostname}</p>

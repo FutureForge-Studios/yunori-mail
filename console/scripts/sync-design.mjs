@@ -27,6 +27,11 @@ const VENDOR_DIR = path.join(CONSOLE_DIR, "src/design/vendor");
 
 /**
  * source (relative to the client repo root) → target (relative to console/).
+ * The LOOK (colours, fonts, radii, shadows, motion) and the brand mark come
+ * from the live product instead — see scripts/sync-yunori-design.mjs, which
+ * writes src/design/yunori/tokens.css; public/favicon.svg is yunori.email's.
+ * This script vendors only the structural primitives and the base stylesheet.
+ *
  * Primitives NOT vendored on purpose: ui/scroll-area, ui/separator, ui/tooltip
  * (unused here — the console scrolls natively and uses `title` hints), and the
  * admin confirm-dialog (the console needs inline error display on 409s, so it
@@ -36,7 +41,6 @@ const FILES = [
   ["src/globals.css", "src/design/vendor/globals.css"],
   ["tailwind.config.ts", "src/design/vendor/tailwind.config.ts"],
   ["src/lib/utils.ts", "src/design/vendor/lib/utils.ts"],
-  ["src/components/logo.tsx", "src/design/vendor/logo.tsx"],
   ["src/components/ui/button.tsx", "src/design/vendor/ui/button.tsx"],
   ["src/components/ui/dialog.tsx", "src/design/vendor/ui/dialog.tsx"],
   ["src/components/ui/dropdown-menu.tsx", "src/design/vendor/ui/dropdown-menu.tsx"],
@@ -46,7 +50,6 @@ const FILES = [
   ["src/components/ui/textarea.tsx", "src/design/vendor/ui/textarea.tsx"],
   ["src/features/admin/components/ui.tsx", "src/design/vendor/admin/ui.tsx"],
   ["src/features/admin/components/data-table.tsx", "src/design/vendor/admin/data-table.tsx"],
-  ["public/favicon.svg", "public/favicon.svg"],
 ];
 
 // ── args ─────────────────────────────────────────────────────────────────────

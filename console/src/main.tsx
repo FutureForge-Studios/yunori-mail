@@ -2,6 +2,8 @@ import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { RouterProvider } from "react-router-dom";
 import "./design/vendor/globals.css";
+// yunori.email tokens override the vendored client tokens (see scripts/sync-yunori-design.mjs).
+import "./design/yunori/tokens.css";
 import "./styles/fonts.css";
 import { router } from "./router";
 import { Toaster } from "./lib/toast";

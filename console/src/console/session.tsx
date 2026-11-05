@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { RotateCw } from "lucide-react";
-import { ToriLogo } from "@/design/vendor/logo";
+import { YunoriMark } from "@/components/yunori-logo";
 import { Button } from "@/design/vendor/ui/button";
 import { api, errorMessage } from "@/api/client";
 import type { SessionResponse } from "@/api/types";
@@ -25,7 +25,7 @@ export function Splash({ label = "Console" }: { label?: string }) {
   return (
     <div className="grid h-dvh place-items-center bg-background" aria-busy="true" aria-live="polite">
       <div className="flex flex-col items-center gap-3">
-        <ToriLogo className="h-7 w-7 animate-pulse opacity-70 motion-reduce:animate-none" />
+        <YunoriMark className="h-7 w-7 animate-pulse opacity-70 motion-reduce:animate-none" />
         <span className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{label}</span>
       </div>
     </div>
@@ -52,7 +52,7 @@ export function ConsoleRoot() {
     return (
       <div className="grid h-dvh place-items-center bg-background px-6">
         <div className="max-w-sm text-center">
-          <ToriLogo className="mx-auto h-8 w-8 opacity-70" />
+          <YunoriMark className="mx-auto h-8 w-8 opacity-70" />
           <h1 className="mt-5 font-serif text-xl tracking-tight">The console can't reach the server</h1>
           <p className="mt-2 text-sm text-muted-foreground">
             {errorMessage(error, "yunori-mail didn't answer.")} If you just restarted it, give it a few seconds.

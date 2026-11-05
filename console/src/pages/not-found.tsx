@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { ToriLogo } from "@/design/vendor/logo";
+import { YunoriMark } from "@/components/yunori-logo";
 import { usePageTitle } from "@/components/kit";
 
 /** Honest 404 — inside the console shell, or standalone. */
@@ -7,7 +7,7 @@ export function NotFound({ inShell }: { inShell?: boolean }) {
   usePageTitle("Not found");
   const body = (
     <div className="max-w-sm text-center">
-      {!inShell && <ToriLogo className="mx-auto h-8 w-8 opacity-70" />}
+      {!inShell && <YunoriMark className="mx-auto h-8 w-8 opacity-70" />}
       <p className="mt-5 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">404</p>
       <h1 className="mt-2 font-serif text-3xl tracking-tight">Nothing lives here</h1>
       <p className="mt-2 text-sm text-muted-foreground">The address may be mistyped, or the page has moved.</p>

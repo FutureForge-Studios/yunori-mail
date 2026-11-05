@@ -131,7 +131,7 @@ Source layout:
 | `src/edge/` | TLS, ACME, proxy, autoconfig, embedded console |
 | `src/api/` | Console + portal REST API |
 | `src/store/` | SQLite, vault, audit |
-| `console/` | React SPA built from the Yunori client's design tokens and primitives (`scripts/sync-design.mjs`) |
+| `console/` | React SPA in the yunori.email design: tokens synced from the live site (`scripts/sync-yunori-design.mjs`), self-hosted Geist/Fraunces, primitives vendored from the Yunori client (`scripts/sync-design.mjs`) |
 
 ## License
 

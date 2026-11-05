@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { ToriLogo } from "@/design/vendor/logo";
+import { YunoriMark } from "@/components/yunori-logo";
 import { ThemeToggle } from "./theme-toggle";
 
 /**
@@ -28,7 +28,7 @@ export function AuthFrame({
       </div>
       <main className={`w-full ${width} animate-fade-in motion-reduce:animate-none`}>
         <div className="mb-10 flex flex-col items-center gap-3">
-          <ToriLogo className="h-9 w-9" />
+          <YunoriMark className="h-9 w-9" />
           <div className="text-center">
             {eyebrow && <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{eyebrow}</p>}
             <h1 className="font-serif text-3xl tracking-tight">{title}</h1>

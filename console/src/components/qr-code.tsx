@@ -29,8 +29,8 @@ export function QrCode({ value, label, size = 184 }: { value: string; label: str
       shapeRendering="crispEdges"
       className="rounded-md"
     >
-      <rect width={n} height={n} fill="#fdfbf8" />
-      <path d={path} fill="#221d1a" />
+      <rect width={n} height={n} fill="#faf7f2" />
+      <path d={path} fill="#121621" />
     </svg>
   );
 }
