@@ -4,6 +4,8 @@
 //! could slot in here without touching the API or installer layers.
 
 pub mod jmap;
+#[cfg(test)]
+mod live_tests;
 pub mod mock;
 pub mod stalwart;
 

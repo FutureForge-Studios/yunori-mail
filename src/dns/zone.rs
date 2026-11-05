@@ -68,11 +68,66 @@ fn qualify(name: &str, origin: &str) -> String {
     }
 }
 
+/// Join physical lines into logical records: a `(` … `)` group (outside
+/// quotes) may span lines — Stalwart writes long RSA DKIM keys that way.
+/// Comments (`;` outside quotes) are dropped.
+fn logical_lines(zone: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut acc = String::new();
+    let mut depth: i32 = 0;
+    for line in zone.lines() {
+        let mut in_q = false;
+        let mut escaped = false;
+        let mut kept = String::new();
+        for c in line.chars() {
+            if escaped {
+                escaped = false;
+                kept.push(c);
+                continue;
+            }
+            match c {
+                '\\' if in_q => {
+                    escaped = true;
+                    kept.push(c);
+                }
+                '"' => {
+                    in_q = !in_q;
+                    kept.push(c);
+                }
+                ';' if !in_q => break,
+                '(' if !in_q => {
+                    depth += 1;
+                    kept.push(' ');
+                }
+                ')' if !in_q => {
+                    depth = (depth - 1).max(0);
+                    kept.push(' ');
+                }
+                c => kept.push(c),
+            }
+        }
+        if !acc.is_empty() {
+            acc.push(' ');
+        }
+        acc.push_str(&kept);
+        if depth == 0 {
+            if !acc.trim().is_empty() {
+                out.push(std::mem::take(&mut acc));
+            }
+            acc.clear();
+        }
+    }
+    if !acc.trim().is_empty() {
+        out.push(acc);
+    }
+    out
+}
+
 pub fn parse(zone: &str, origin: &str) -> Vec<ZoneRecord> {
     let origin = origin.trim_end_matches('.').to_ascii_lowercase();
     let mut out = Vec::new();
-    for line in zone.lines() {
-        let tokens = tokenize(line);
+    for line in logical_lines(zone) {
+        let tokens = tokenize(&line);
         if tokens.is_empty() || tokens[0].0.starts_with('$') {
             continue;
         }
@@ -164,6 +219,50 @@ autoconfig.example.com. IN CNAME mail.example.com.
             find("CNAME", "autoconfig.example.com").unwrap().value,
             "mail.example.com"
         );
+    }
+
+    /// Verbatim shape of a zone produced by a live Stalwart 1.0.3 engine
+    /// (keys shortened). The RSA key spans lines inside parentheses.
+    const LIVE_ZONE: &str = r#"v1-ed25519-20261105._domainkey.live.test. IN TXT "v=DKIM1; k=ed25519; h=sha256; p=af28rRLiBXlY="
+v1-rsa-20261105._domainkey.live.test. IN TXT (
+    "v=DKIM1; k=rsa; h=sha256; p=MIIBIjANBgkqhkiG9w0BAQEFAAOC"
+    "ZFe5i8kcmds/Cv8h9q216wSJvXEk1vAs9Q"
+)
+mail.live.test. IN TXT "v=spf1 a -all"
+live.test. IN TXT "v=spf1 mx -all"
+live.test. IN MX 10 mail.live.test.
+_dmarc.live.test. IN TXT "v=DMARC1; p=reject; rua=mailto:postmaster@live.test"
+_imaps._tcp.live.test. IN SRV 0 1 993 mail.live.test.
+_pop3s._tcp.live.test. IN SRV 0 1 995 mail.live.test.
+mta-sts.live.test. IN CNAME mail.live.test.
+_mta-sts.live.test. IN TXT "v=STSv1; id=2881120960881205280"
+ua-auto-config.live.test. IN CNAME mail.live.test.
+_ua-auto-config.live.test. IN TXT "v=UAAC1; a=sha256; d=Hs1uEHsEA6g4gnK45LQqYB5rwQNQtrGfU3EH97i9M1Q="
+autoconfig.live.test. IN CNAME mail.live.test.
+"#;
+
+    #[test]
+    fn parses_live_stalwart_zone_with_multiline_dkim() {
+        let recs = parse(LIVE_ZONE, "live.test");
+        let rsa = recs
+            .iter()
+            .find(|r| r.name == "v1-rsa-20261105._domainkey.live.test")
+            .expect("multi-line RSA DKIM parsed");
+        assert_eq!(
+            rsa.value,
+            "v=DKIM1; k=rsa; h=sha256; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCZFe5i8kcmds/Cv8h9q216wSJvXEk1vAs9Q"
+        );
+        assert!(
+            recs.iter()
+                .any(|r| r.name == "mail.live.test" && r.value == "v=spf1 a -all")
+        );
+        assert_eq!(
+            recs.iter()
+                .filter(|r| r.name.contains("_domainkey"))
+                .count(),
+            2
+        );
+        assert_eq!(recs.len(), 13);
     }
 
     #[test]

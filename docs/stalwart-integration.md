@@ -1,9 +1,25 @@
 # Stalwart 1.0.x integration notes (P0 spike)
 
 Findings from reading the Stalwart **v1.0.3** source (`stalwartlabs/stalwart@v1.0.3`, AGPL-3.0) and its
-published schema (`resources/schema/schema_oss.json.gz`). Running the binary inside the build sandbox was
-not permitted, so these are source-verified, not yet live-verified — the `e2e/` suite is where they get
-exercised against a real server.
+published schema (`resources/schema/schema_oss.json.gz`), then **verified against the real v1.0.3 binary**
+(2026-11-05). The live test is `src/engine/live_tests.rs`:
+
+```sh
+YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_engine -- --ignored --nocapture --test-threads=1
+```
+
+## Verified on a live engine (and fixed in the adapter)
+
+| Finding | Consequence for Yunori |
+|---|---|
+| Singletons (`x:SystemSettings`, `x:Http`, `x:MtaOutboundStrategy`, `x:AccountPassword`) answer only to `ids: ["singleton"]`. `ids: null` returns an empty list (only `x:Bootstrap` is special). | Address singletons by the constant id `singleton`. |
+| `SystemSettings.proxyTrustedNetworks` means **PROXY-protocol** trust. If it includes loopback, every local connection must send a PROXY header (`network.proxy-error`). | Never set it. The edge's client IP travels via `x:Http.clientIpSource = xForwardedFor`. |
+| An `X-Forwarded-For` that claims a loopback address is rejected with HTTP 400 (`http.x-forwarded-invalid`, a deliberate check). | The edge forwards only real client IPs, and omits the header otherwise. |
+| The zone file writes the RSA DKIM key as a multi-line `( "…" "…" )` TXT record. It also publishes host SPF (`mail.<d> TXT v=spf1 a -all`), `_pop3s` SRV, `ua-auto-config` CNAME + `_ua-auto-config` TXT, and, after a certificate exists, TLSA for 25/443/465/993/995. | The parser joins parenthesised records. Host SPF is an optional row. POP3 SRV is dropped (Yunori opens no POP3). TLSA is hidden until ACME key reuse exists. |
+| Auto-generated `x:DkimSignature` objects link to their domain, so destroying the domain fails with `objectIsLinked`. | `delete_domain` destroys the domain's DKIM signatures first (`filter: {domainId}`). |
+| TLS certificates are chosen by SNI among **all** stored certificates. If a replaced certificate is still present at reload, it can keep being served. | Destroy the old certificate first, then `ReloadTlsCertificates`. 993/465/587 (STARTTLS) were verified to serve the pushed certificate. |
+| Bootstrap's tracer defaults to `/var/log/stalwart/`. On hosts without IPv6, `[::]` listeners fall back to `0.0.0.0` (a warning only). | Bootstrap sets the tracer path explicitly. |
+| JSON-pointer patches (`aliases/<k>`, `credentials/<k>/secret`) work. Plaintext secrets are hashed server-side, and password strength is enforced. App-password create returns `{id, secret}`, and app passwords authenticate JMAP Basic auth. | As designed. |
 
 ## Process & files
 

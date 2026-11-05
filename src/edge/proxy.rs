@@ -80,12 +80,16 @@ pub async fn forward(
         .unwrap_or(reqwest::Method::GET);
     let mut headers = HeaderMap::new();
     copy_headers(req.headers(), &mut headers);
-    headers.insert(
-        HeaderName::from_static("x-forwarded-for"),
-        client_ip
-            .parse()
-            .unwrap_or_else(|_| "0.0.0.0".parse().unwrap()),
-    );
+    // Only forward a real client address: Stalwart rejects (HTTP 400) an
+    // X-Forwarded-For that claims loopback, and an unknown address is better
+    // omitted (it then uses the loopback peer). Verified on a live 1.0.3 engine.
+    if let Ok(ip) = client_ip.parse::<std::net::IpAddr>()
+        && !ip.is_loopback()
+        && !ip.is_unspecified()
+        && let Ok(v) = ip.to_string().parse()
+    {
+        headers.insert(HeaderName::from_static("x-forwarded-for"), v);
+    }
     headers.insert(
         HeaderName::from_static("x-forwarded-proto"),
         "https".parse().unwrap(),

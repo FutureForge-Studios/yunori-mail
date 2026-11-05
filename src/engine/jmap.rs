@@ -212,6 +212,21 @@ fn set_error(err: &Value) -> EngineError {
     match kind {
         "notFound" => EngineError::NotFound,
         "forbidden" => EngineError::Unauthorized,
+        "objectIsLinked" => {
+            // `linkedObjects` lists what still references the object.
+            let linked = err
+                .get("linkedObjects")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            EngineError::Rejected(format!(
+                "This is still in use by other objects{}.",
+                if linked.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({linked})")
+                }
+            ))
+        }
         _ => {
             let mut msg = if desc.is_empty() {
                 kind.to_string()

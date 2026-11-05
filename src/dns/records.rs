@@ -115,6 +115,13 @@ pub fn expected_records(domain: &str, zone_file: &str, ctx: &RecordContext) -> V
             "TXT" if name == domain && r.value.to_ascii_lowercase().starts_with("v=spf1") => out.push(exp(
                 "spf", "TXT", name, adjust_spf(&r.value, ctx.relay_spf_include.as_deref()), true,
                 "SPF: lists which servers may send mail as this domain.")),
+            "TXT" if name == norm_host(&ctx.hostname) && r.value.to_ascii_lowercase().starts_with("v=spf1") => {
+                // SPF for the HELO name (checked on bounces). One row, on the primary domain.
+                if ctx.is_primary {
+                    out.push(exp("spf-host", "TXT", name, r.value.clone(), false,
+                        "SPF for the mail server's own name, used when receivers check the HELO greeting and bounces."));
+                }
+            }
             "TXT" if name.contains("._domainkey.") => {
                 saw_dkim = true;
                 let selector = name.split("._domainkey.").next().unwrap_or("dkim");
@@ -128,6 +135,8 @@ pub fn expected_records(domain: &str, zone_file: &str, ctx: &RecordContext) -> V
                 "MTA-STS: asks senders to always use TLS when delivering to you.")),
             "TXT" if name == format!("_smtp._tls.{domain}") => out.push(exp("tls-rpt", "TXT", name, r.value.clone(), false,
                 "TLS-RPT: where senders report TLS problems reaching your server.")),
+            // Yunori does not open POP3, so never advertise it.
+            "SRV" if name.starts_with("_pop3") => {}
             "SRV" => {
                 let svc = name.strip_suffix(&format!(".{domain}")).unwrap_or(name);
                 out.push(exp(&format!("srv:{svc}"), "SRV", name, r.value.clone(), false,
@@ -141,12 +150,22 @@ pub fn expected_records(domain: &str, zone_file: &str, ctx: &RecordContext) -> V
                     "mta-sts" => "Hosts the MTA-STS policy file.",
                     _ => "Helper name for mail clients.",
                 };
-                out.push(exp(label, "CNAME", name, r.value.clone(), false, purpose));
+                // The CNAME `mta-sts.<d>` and the TXT `_mta-sts.<d>` need distinct ids.
+                let id = if label == "mta-sts" { "mta-sts-host" } else { label };
+                out.push(exp(id, "CNAME", name, r.value.clone(), false, purpose));
             }
             "CAA" => out.push(exp("caa", "CAA", name, r.value.clone(), false,
                 "Restricts which certificate authorities may issue certificates for this domain.")),
-            "TLSA" => out.push(exp(&format!("tlsa:{name}"), "TLSA", name, r.value.clone(), false,
-                "DANE: pins your TLS key for senders that validate DNSSEC.")),
+            // DANE/TLSA is deliberately NOT offered yet: Yunori's ACME renewals
+            // rotate the key, so a published TLSA (under DNSSEC) would break
+            // inbound mail at the next renewal. Re-enable with key reuse (plan P3).
+            "TLSA" => {}
+            // Any other record the engine publishes (e.g. `_ua-auto-config`): optional.
+            "TXT" => {
+                let label = name.strip_suffix(&format!(".{domain}")).unwrap_or(name);
+                out.push(exp(&format!("txt:{label}"), "TXT", name, r.value.clone(), false,
+                    "Published by the mail engine to help mail apps verify their automatic setup."));
+            }
             _ => {}
         }
     }
@@ -676,6 +695,35 @@ mod tests {
             r.status,
             Status::Warn,
             "missing PTR only warns when sending is relayed"
+        );
+    }
+
+    #[test]
+    fn live_zone_maps_to_unique_ids_without_pop3() {
+        let zone = "v1-rsa-1._domainkey.live.test. IN TXT (\n \"v=DKIM1; k=rsa; p=AB\"\n \"CD\"\n)\n\
+            mail.live.test. IN TXT \"v=spf1 a -all\"\n\
+            live.test. IN TXT \"v=spf1 mx -all\"\n\
+            _pop3s._tcp.live.test. IN SRV 0 1 995 mail.live.test.\n\
+            _imaps._tcp.live.test. IN SRV 0 1 993 mail.live.test.\n\
+            mta-sts.live.test. IN CNAME mail.live.test.\n\
+            _mta-sts.live.test. IN TXT \"v=STSv1; id=1\"\n\
+            _ua-auto-config.live.test. IN TXT \"v=UAAC1; a=sha256; d=x\"\n";
+        let mut c = ctx();
+        c.hostname = "mail.live.test".into();
+        let recs = expected_records("live.test", zone, &c);
+        let ids: Vec<&str> = recs.iter().map(|r| r.id.as_str()).collect();
+        let mut dedup = ids.clone();
+        dedup.sort();
+        dedup.dedup();
+        assert_eq!(dedup.len(), ids.len(), "ids must be unique: {ids:?}");
+        assert!(ids.contains(&"dkim:v1-rsa-1"));
+        assert!(ids.contains(&"spf-host") && ids.contains(&"spf"));
+        assert!(ids.contains(&"mta-sts") && ids.contains(&"mta-sts-host"));
+        assert!(ids.contains(&"txt:_ua-auto-config"));
+        assert!(!ids.iter().any(|i| i.contains("pop3")));
+        assert_eq!(
+            recs.iter().find(|r| r.id == "dkim:v1-rsa-1").unwrap().value,
+            "v=DKIM1; k=rsa; p=ABCD"
         );
     }
 

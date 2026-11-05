@@ -111,6 +111,9 @@ npm --prefix console install && npm --prefix console run build   # the SPA gets 
 cargo run -- serve --dev --mock-engine                           # http://127.0.0.1:8787/console (prints a setup token)
 cargo test                                                       # unit + API integration tests (mock engine)
 cargo test -- --ignored                                          # live DNS tests (needs real outbound DNS)
+YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_engine -- --ignored --nocapture --test-threads=1
+                                                                 # end-to-end against a REAL Stalwart (binds :25/465/587/993/4190)
+YUNORI_ENGINE_ADMIN=user:pass cargo run -- serve --dev --engine-url http://127.0.0.1:18180   # console against a local Stalwart
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
 

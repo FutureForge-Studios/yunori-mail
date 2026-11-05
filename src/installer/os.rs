@@ -354,7 +354,9 @@ impl EngineChild {
             cmd.env("STALWART_RECOVERY_MODE", "1");
         }
         // Run as the stalwart user so created files have the right owner.
-        if is_root() {
+        // Drop to the `stalwart` user when it exists (always, after the installer's
+        // install_engine step); dev/test runs without that user keep the caller's uid.
+        if is_root() && run("id", &["-u", "stalwart"]).is_ok() {
             use std::os::unix::process::CommandExt;
             let uid: u32 = run("id", &["-u", "stalwart"])?.trim().parse()?;
             let gid: u32 = run("id", &["-g", "stalwart"])?.trim().parse()?;

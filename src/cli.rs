@@ -135,6 +135,10 @@ pub struct ServeArgs {
     pub mock_engine: bool,
     #[arg(long, default_value = "127.0.0.1:8787")]
     pub listen: std::net::SocketAddr,
+    /// Development only: use a locally running Stalwart at this URL (its admin
+    /// credentials come from the YUNORI_ENGINE_ADMIN env var, `user:password`).
+    #[arg(long, requires = "dev", conflicts_with = "mock_engine")]
+    pub engine_url: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -449,6 +453,27 @@ async fn install(args: InstallArgs) -> Result<()> {
 
 pub async fn serve(args: ServeArgs) -> Result<()> {
     let app = open_app(args.dev, args.mock_engine)?;
+    if let Some(url) = &args.engine_url {
+        let admin = std::env::var("YUNORI_ENGINE_ADMIN")
+            .context("set YUNORI_ENGINE_ADMIN=user:password for --engine-url")?;
+        let mut cfg = app.config().unwrap_or(crate::model::ServerConfig {
+            hostname: "mail.live.test".into(),
+            primary_domain: "live.test".into(),
+            admin_email: "owner@elsewhere.example".into(),
+            client_origin: crate::app::DEFAULT_CLIENT_ORIGIN.into(),
+            engine_url: url.clone(),
+            sending_mode: crate::model::SendingMode::Direct,
+            public_ipv4: Some("203.0.113.10".into()),
+            public_ipv6: None,
+            stalwart_version: Some(os::ENGINE.version.into()),
+            install_complete: true,
+        });
+        cfg.engine_url = url.clone();
+        app.save_config(&cfg)?;
+        app.db.put_secret("engine.admin", &admin)?;
+        app.reload_engine()?;
+        println!("Development: using the engine at {url}");
+    }
     if args.dev && app.db.admin_count_active()? == 0 {
         let token = app.db.issue_setup_token()?;
         println!(

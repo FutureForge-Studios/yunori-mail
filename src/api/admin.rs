@@ -961,7 +961,10 @@ pub async fn system(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<Jso
         .map(|s| service_status(s, app.dev))
         .collect();
     Ok(Json(json!({
-        "versions": { "yunori": crate::app::VERSION, "engine": info.version },
+        "versions": {
+            "yunori": crate::app::VERSION,
+            "engine": info.version.or_else(|| app.config().and_then(|c| c.stalwart_version)),
+        },
         "services": services,
         "resources": {
             "memTotalBytes": total,

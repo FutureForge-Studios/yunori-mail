@@ -24,6 +24,11 @@ const ACCOUNT_PROPS: &[&str] = &[
     "createdAt",
 ];
 
+/// Id of every singleton object (`x:SystemSettings`, `x:Http`, …). Verified
+/// against a live 1.0.3 engine: singletons answer only to `ids: ["singleton"]`;
+/// `ids: null` returns an empty list.
+pub const SINGLETON: &str = "singleton";
+
 /// The Yunori relay route name inside Stalwart's `MtaRoute` objects.
 pub const RELAY_ROUTE: &str = "yunori-relay";
 
@@ -57,23 +62,8 @@ impl StalwartEngine {
             .ok_or(EngineError::NotFound)
     }
 
-    async fn singleton_id(&self, auth: &Auth, object: &str) -> EngineResult<String> {
-        let r = self
-            .client
-            .call(
-                auth,
-                vec![Call::new(format!("{object}/get"), json!({ "ids": null }))],
-            )
-            .await?;
-        get_list(&r[0])
-            .into_iter()
-            .next()
-            .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-            .ok_or_else(|| EngineError::Protocol(format!("{object} singleton not found")))
-    }
-
     async fn update_singleton(&self, object: &str, patch: Value) -> EngineResult<()> {
-        let id = self.singleton_id(&self.admin, object).await?;
+        let id = SINGLETON.to_string();
         let r = self
             .admin_call(vec![Call::new(
                 format!("{object}/set"),
@@ -329,6 +319,26 @@ impl Engine for StalwartEngine {
     }
 
     async fn delete_domain(&self, id: &str) -> EngineResult<()> {
+        // DKIM keys the engine generated for the domain link to it; retire them first
+        // (otherwise the destroy fails with objectIsLinked — seen on a live engine).
+        let r = self
+            .admin_call(vec![Call::new(
+                "x:DkimSignature/query",
+                json!({ "filter": { "domainId": id } }),
+            )])
+            .await?;
+        let keys: Vec<Value> = r[0]
+            .get("ids")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        if !keys.is_empty() {
+            self.admin_call(vec![Call::new(
+                "x:DkimSignature/set",
+                json!({ "destroy": keys }),
+            )])
+            .await?;
+        }
         let r = self
             .admin_call(vec![Call::new("x:Domain/set", json!({ "destroy": [id] }))])
             .await?;
@@ -543,7 +553,7 @@ impl Engine for StalwartEngine {
             let r = self
                 .admin_call(vec![Call::new(
                     "x:SystemSettings/get",
-                    json!({ "ids": null, "properties": ["defaultCertificateId"] }),
+                    json!({ "ids": [SINGLETON], "properties": ["defaultCertificateId"] }),
                 )])
                 .await?;
             get_list(&r[0]).into_iter().next().and_then(|v| {
@@ -554,8 +564,9 @@ impl Engine for StalwartEngine {
         };
         self.update_singleton("x:SystemSettings", json!({ "defaultCertificateId": id }))
             .await?;
-        self.create_action(json!({ "@type": "ReloadTlsCertificates" }))
-            .await?;
+        // Retire the old certificate BEFORE reloading: Stalwart picks certificates
+        // by SNI from every stored certificate, so a lingering one with the same
+        // hostname can keep being served (observed on a live 1.0.3 engine).
         if let Some(prev) = previous.filter(|p| p != id) {
             let _ = self
                 .admin_call(vec![Call::new(
@@ -564,6 +575,8 @@ impl Engine for StalwartEngine {
                 )])
                 .await;
         }
+        self.create_action(json!({ "@type": "ReloadTlsCertificates" }))
+            .await?;
         Ok(())
     }
 
@@ -652,7 +665,7 @@ impl Engine for StalwartEngine {
 
     async fn user_change_password(&self, creds: &UserCreds, next: &str) -> EngineResult<()> {
         let auth = Auth::basic(&creds.email, &creds.password);
-        let id = self.singleton_id(&auth, "x:AccountPassword").await?;
+        let id = SINGLETON.to_string();
         let r = self
             .client
             .call(
@@ -845,6 +858,7 @@ impl StalwartProvisioner {
         hostname: &str,
         domain: &str,
         data_path: &str,
+        log_path: &str,
     ) -> EngineResult<BootstrapResult> {
         let r = self
             .client
@@ -874,7 +888,8 @@ impl StalwartProvisioner {
                         "dataStore": { "@type": "RocksDb", "path": data_path },
                         "generateDkimKeys": true,
                         "requestTlsCertificate": false,
-                        "dnsServer": { "@type": "Manual" }
+                        "dnsServer": { "@type": "Manual" },
+                        "tracer": { "@type": "Log", "path": log_path, "prefix": "stalwart.log", "rotate": "daily", "ansi": false }
                     }}}),
                 )],
             )
@@ -945,24 +960,14 @@ impl StalwartProvisioner {
             ),
             (
                 "x:SystemSettings",
-                json!({
-                    "defaultHostname": hostname,
-                    "proxyTrustedNetworks": set_of(["127.0.0.1/32", "::1/128"])
-                }),
+                // NB: do NOT set `proxyTrustedNetworks` — in Stalwart that means
+                // PROXY-protocol trust, and loopback clients would then be required
+                // to send a PROXY header (verified against a live 1.0.3 engine).
+                // Client IPs from the edge come via `x:Http.clientIpSource` above.
+                json!({ "defaultHostname": hostname }),
             ),
         ] {
-            let r = self
-                .client
-                .call(
-                    &self.auth,
-                    vec![Call::new(format!("{object}/get"), json!({ "ids": null }))],
-                )
-                .await?;
-            let id = get_list(&r[0])
-                .into_iter()
-                .next()
-                .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
-                .ok_or_else(|| EngineError::Protocol(format!("{object} not found")))?;
+            let id = SINGLETON.to_string();
             let r = self
                 .client
                 .call(

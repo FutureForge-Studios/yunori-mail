@@ -371,6 +371,7 @@ impl Installer {
                     &cfg.hostname,
                     &cfg.primary_domain,
                     &format!("{}/", p.stalwart_data().display()),
+                    &format!("{}/", p.stalwart_logs().display()),
                 )
                 .await
                 .context("first-run provisioning failed")?;
