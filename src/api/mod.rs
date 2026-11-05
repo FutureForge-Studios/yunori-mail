@@ -213,7 +213,9 @@ pub fn router(app: AppState) -> Router {
         )
         .route(
             "/domains/{id}",
-            patch(admin::update_domain).delete(admin::delete_domain),
+            get(admin::get_domain)
+                .patch(admin::update_domain)
+                .delete(admin::delete_domain),
         )
         .route("/domains/{id}/dns", get(admin::domain_dns))
         .route("/domains/{id}/dns/check", post(admin::domain_dns_check))

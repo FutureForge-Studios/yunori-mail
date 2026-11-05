@@ -1,0 +1,216 @@
+import type {
+  AdminUser,
+  Alias,
+  ApiError,
+  AuditResponse,
+  CreateAliasRequest,
+  CreateAppPasswordResponse,
+  CreateDomainRequest,
+  CreateMailboxRequest,
+  CreateMailboxResponse,
+  DeliverabilityResponse,
+  Domain,
+  DomainDnsResponse,
+  InstallState,
+  LoginRequest,
+  Mailbox,
+  OverviewResponse,
+  PortalLoginRequest,
+  PortalMe,
+  PortalPasswordRequest,
+  PreflightResponse,
+  ResetPasswordResponse,
+  SendingResponse,
+  SessionResponse,
+  SetupRequest,
+  SetupResponse,
+  SetupTotpRequest,
+  SystemResponse,
+  UpdateDomainRequest,
+  UpdateMailboxRequest,
+  UpdateSendingRequest,
+} from "./types";
+
+/**
+ * The one HTTP client for /api/yunori. Same posture as the Yunori client's
+ * `src/lib/api.ts`: same-origin credentials, JSON in/out, a CSRF header on
+ * every non-GET, and a hard redirect to the right sign-in page on 401.
+ *
+ * Mock mode (`npm run dev:mock`, VITE_MOCK=1) swaps `fetch` for the in-memory
+ * mock in ./mock.ts. `__YUNORI_MOCK__` is a build-time literal, so the
+ * production bundle contains neither the mock nor the dynamic import.
+ */
+
+export const API_BASE = "/api/yunori";
+
+const MOCK = __YUNORI_MOCK__ && import.meta.env.VITE_MOCK === "1";
+
+export class ApiRequestError extends Error {
+  readonly status: number;
+  readonly code: string;
+  readonly field?: string;
+  constructor(status: number, error: ApiError) {
+    super(error.message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    this.code = error.code;
+    this.field = error.field;
+  }
+}
+
+/** A message that's always safe to show, whatever was thrown. */
+export function errorMessage(err: unknown, fallback = "Something went wrong. Try again."): string {
+  if (err instanceof ApiRequestError) return err.message;
+  return fallback;
+}
+
+type Method = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+interface RequestOptions {
+  /** Don't redirect on 401 — the caller handles it (sign-in forms, session probes). */
+  allow401?: boolean;
+  signal?: AbortSignal;
+}
+
+let mockFetch: typeof fetch | null = null;
+async function transport(input: string, init: RequestInit): Promise<Response> {
+  if (MOCK) {
+    if (!mockFetch) mockFetch = (await import("./mock")).mockFetch;
+    return mockFetch(input, init);
+  }
+  return fetch(input, init);
+}
+
+function redirectToSignIn(path: string) {
+  const portal = path.startsWith("/portal/");
+  const target = portal ? "/account/login" : "/console/login";
+  const here = window.location.pathname;
+  if (here === target || here === "/console/setup") return;
+  const next = `${here}${window.location.search}`;
+  window.location.assign(`${target}?next=${encodeURIComponent(next)}`);
+}
+
+export async function request<T>(
+  method: Method,
+  path: string,
+  body?: unknown,
+  opts: RequestOptions = {},
+): Promise<T> {
+  const headers: Record<string, string> = { Accept: "application/json" };
+  if (method !== "GET") headers["X-Yunori-Request"] = "1";
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+
+  let res: Response;
+  try {
+    res = await transport(`${API_BASE}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "same-origin",
+      signal: opts.signal,
+    });
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "AbortError") throw err;
+    throw new ApiRequestError(0, {
+      code: "network",
+      message: "Couldn't reach the server. Check your connection and try again.",
+    });
+  }
+
+  if (res.status === 204) return undefined as T;
+
+  const text = await res.text();
+  let json: unknown = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+  }
+
+  if (!res.ok) {
+    const apiError =
+      json && typeof json === "object" && "error" in json && isApiError((json as { error: unknown }).error)
+        ? (json as { error: ApiError }).error
+        : {
+            code: res.status === 401 ? "unauthenticated" : "http_error",
+            message:
+              res.status >= 500
+                ? "The server ran into a problem. Try again in a moment."
+                : `The request failed (${res.status}).`,
+          };
+    if (res.status === 401 && !opts.allow401) redirectToSignIn(path);
+    throw new ApiRequestError(res.status, apiError);
+  }
+  return json as T;
+}
+
+function isApiError(v: unknown): v is ApiError {
+  return !!v && typeof v === "object" && typeof (v as ApiError).code === "string" && typeof (v as ApiError).message === "string";
+}
+
+const q = (params: Record<string, string | undefined>) => {
+  const s = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v) s.set(k, v);
+  const str = s.toString();
+  return str ? `?${str}` : "";
+};
+const id = (v: string) => encodeURIComponent(v);
+
+// ── Console (admin) ─────────────────────────────────────────────────────────
+
+export const api = {
+  session: () => request<SessionResponse>("GET", "/session", undefined, { allow401: true }),
+  setup: (body: SetupRequest) => request<SetupResponse>("POST", "/setup", body, { allow401: true }),
+  setupTotp: (body: SetupTotpRequest) => request<unknown>("POST", "/setup/totp", body, { allow401: true }),
+  login: (body: LoginRequest) => request<SessionResponse>("POST", "/login", body, { allow401: true }),
+  logout: () => request<void>("POST", "/logout", undefined, { allow401: true }),
+
+  overview: () => request<OverviewResponse>("GET", "/overview"),
+  install: () => request<InstallState>("GET", "/install"),
+
+  domains: () => request<Domain[]>("GET", "/domains"),
+  createDomain: (body: CreateDomainRequest) => request<Domain>("POST", "/domains", body),
+  updateDomain: (domainId: string, body: UpdateDomainRequest) =>
+    request<Domain>("PATCH", `/domains/${id(domainId)}`, body),
+  deleteDomain: (domainId: string) => request<void>("DELETE", `/domains/${id(domainId)}`),
+  dns: (domainId: string) => request<DomainDnsResponse>("GET", `/domains/${id(domainId)}/dns`),
+  checkDns: (domainId: string) => request<DomainDnsResponse>("POST", `/domains/${id(domainId)}/dns/check`),
+
+  mailboxes: (domainId?: string) => request<Mailbox[]>("GET", `/mailboxes${q({ domainId })}`),
+  createMailbox: (body: CreateMailboxRequest) => request<CreateMailboxResponse>("POST", "/mailboxes", body),
+  updateMailbox: (mailboxId: string, body: UpdateMailboxRequest) =>
+    request<Mailbox>("PATCH", `/mailboxes/${id(mailboxId)}`, body),
+  resetMailboxPassword: (mailboxId: string, password?: string) =>
+    request<ResetPasswordResponse>("POST", `/mailboxes/${id(mailboxId)}/password`, password ? { password } : {}),
+  deleteMailbox: (mailboxId: string) => request<void>("DELETE", `/mailboxes/${id(mailboxId)}`),
+
+  aliases: () => request<Alias[]>("GET", "/aliases"),
+  createAlias: (body: CreateAliasRequest) => request<Alias>("POST", "/aliases", body),
+  deleteAlias: (address: string) => request<void>("DELETE", `/aliases${q({ address })}`),
+
+  sending: () => request<SendingResponse>("GET", "/sending"),
+  updateSending: (body: UpdateSendingRequest) => request<unknown>("PUT", "/sending", body),
+
+  deliverability: () => request<DeliverabilityResponse>("GET", "/deliverability"),
+  system: () => request<SystemResponse>("GET", "/system"),
+  preflight: () => request<PreflightResponse>("GET", "/preflight"),
+  audit: () => request<AuditResponse>("GET", "/audit"),
+  admins: () => request<AdminUser[]>("GET", "/admins"),
+};
+
+// ── Self-service portal ─────────────────────────────────────────────────────
+
+export const portalApi = {
+  login: (body: PortalLoginRequest) => request<PortalMe>("POST", "/portal/login", body, { allow401: true }),
+  me: () => request<PortalMe>("GET", "/portal/me"),
+  /** Session probe for the sign-in page: 401 means "not signed in", not an error. */
+  probe: () => request<PortalMe>("GET", "/portal/me", undefined, { allow401: true }),
+  changePassword: (body: PortalPasswordRequest) => request<void>("POST", "/portal/password", body),
+  createAppPassword: (description: string) =>
+    request<CreateAppPasswordResponse>("POST", "/portal/app-passwords", { description }),
+  revokeAppPassword: (appPasswordId: string) =>
+    request<void>("DELETE", `/portal/app-passwords/${id(appPasswordId)}`),
+  logout: () => request<void>("POST", "/portal/logout", undefined, { allow401: true }),
+};

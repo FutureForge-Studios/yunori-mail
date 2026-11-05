@@ -23,6 +23,7 @@ pub struct DomainOut {
     is_primary: bool,
     catch_all: Option<String>,
     mailbox_count: usize,
+    alias_count: usize,
     dns_status: Status,
     dns_checked_at: Option<String>,
     created_at: Option<String>,
@@ -52,6 +53,11 @@ fn domain_out(app: &AppState, d: &EDomain, accounts: &[EAccount], primary: &str)
         is_primary: d.name == primary,
         catch_all: d.catch_all.clone(),
         mailbox_count: accounts.iter().filter(|a| a.domain_id == d.id).count(),
+        alias_count: accounts
+            .iter()
+            .flat_map(|a| a.aliases.iter())
+            .filter(|al| al.domain_id == d.id)
+            .count(),
         dns_status,
         dns_checked_at,
         created_at: d.created_at.clone(),
@@ -284,6 +290,20 @@ pub async fn list_domains(
     ))
 }
 
+pub async fn get_domain(
+    State(app): State<AppState>,
+    _a: AdminAuth,
+    Path(id): Path<String>,
+) -> ApiResult<Json<DomainOut>> {
+    let e = app.engine()?;
+    let (domains, accounts) = (e.list_domains().await?, e.list_accounts().await?);
+    let d = domains
+        .iter()
+        .find(|d| d.id == id)
+        .ok_or_else(|| ApiError::not_found("That domain"))?;
+    Ok(Json(domain_out(&app, d, &accounts, &primary(&app))))
+}
+
 #[derive(Deserialize)]
 pub struct CreateDomain {
     name: String,
@@ -438,7 +458,7 @@ pub async fn domain_dns_check(
     ) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "throttled",
+            "rate_limited",
             "Checked very recently — wait a moment.",
         ));
     }

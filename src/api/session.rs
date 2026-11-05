@@ -97,7 +97,7 @@ pub async fn setup(
     ) {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "throttled",
+            "rate_limited",
             "Too many attempts. Wait a few minutes.",
         ));
     }
@@ -195,7 +195,7 @@ pub async fn login(
     {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
-            "throttled",
+            "rate_limited",
             "Too many attempts. Wait 15 minutes.",
         ));
     }

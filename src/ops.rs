@@ -314,6 +314,12 @@ pub fn verdict(v: &VerdictInputs) -> Verdict {
     if v.listed {
         return mk("degraded", "This server's IP is on a blocklist, so some recipients will refuse its mail. Relay sending until it clears.".into());
     }
+    if v.primary_dns == Status::Unknown {
+        return mk(
+            "attention",
+            "DNS has not been verified yet, so Yunori cannot confirm mail can reach this server. Open Domains and press Check now.".into(),
+        );
+    }
     match v.mode {
         SendingMode::Relay => mk("ok", format!(
             "Mail is flowing: receiving directly, sending through {}.",
@@ -466,6 +472,11 @@ mod tests {
             relay_label: None,
         };
         assert_eq!(verdict(&base).level, "ok");
+        let unverified = VerdictInputs {
+            primary_dns: Status::Unknown,
+            ..base
+        };
+        assert_eq!(verdict(&unverified).level, "attention");
         let blocked = VerdictInputs {
             port25: Status::Warn,
             ..base
