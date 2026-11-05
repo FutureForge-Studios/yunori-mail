@@ -305,6 +305,13 @@ fn open_app(dev: bool, mock: bool) -> Result<Arc<App>> {
 // ── commands ─────────────────────────────────────────────────────────────
 
 pub async fn run(cli: Cli) -> Result<()> {
+    // As root on a real install, keep new files (SQLite WAL/SHM, certs)
+    // group-accessible to the unprivileged `yunori` service.
+    if Paths::from_env().is_production() && os::is_root() {
+        unsafe {
+            libc::umask(0o007);
+        }
+    }
     match cli.command {
         Command::Install(args) => install(args).await,
         Command::Serve(args) => serve(args).await,
@@ -325,12 +332,6 @@ async fn install(args: InstallArgs) -> Result<()> {
     let paths = Paths::from_env();
     if paths.is_production() && !os::is_root() {
         bail!("run the installer as root: sudo yunori-mail install");
-    }
-    if paths.is_production() {
-        // New files must stay group-accessible to the unprivileged service.
-        unsafe {
-            libc::umask(0o007);
-        }
     }
     let app = App::open(paths, false, false)?;
     let mut term = Term::new();

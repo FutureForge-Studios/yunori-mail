@@ -695,6 +695,16 @@ pub fn fix_permissions(paths: &crate::paths::Paths) {
         let _ = os::run("chmod", &["-R", "g+rwX,o-rwx", &d]);
         let _ = os::run("chmod", &["g+s", &d]);
     }
+    // The service only needs to READ the master key and certificates.
+    for f in [
+        paths.master_key(),
+        crate::edge::tls::key_path(paths),
+        crate::edge::tls::cert_path(paths),
+    ] {
+        if f.exists() {
+            let _ = os::run("chmod", &["0640", &f.to_string_lossy()]);
+        }
+    }
 }
 
 /// Called periodically by `serve`: advance verified gates without root.

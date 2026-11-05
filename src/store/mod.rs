@@ -82,12 +82,20 @@ pub struct Db {
 
 impl Db {
     pub fn open(path: &Path, vault: Vault) -> Result<Self> {
-        if let Some(dir) = path.parent() {
+        // Only tighten modes on files we create: the root CLI and the
+        // unprivileged service share this database through group `yunori`
+        // (see installer::fix_permissions), so existing modes are left alone.
+        if let Some(dir) = path.parent()
+            && !dir.exists()
+        {
             std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-            vault::set_mode(dir, 0o700);
+            vault::set_mode(dir, 0o770);
         }
+        let created = !path.exists();
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
-        vault::set_mode(path, 0o600);
+        if created {
+            vault::set_mode(path, 0o660);
+        }
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
