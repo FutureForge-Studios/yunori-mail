@@ -328,7 +328,12 @@ pub fn verdict(v: &VerdictInputs) -> Verdict {
 }
 
 /// Engine reachability as a Check.
-pub async fn engine_check(engine: Option<Arc<dyn Engine>>) -> (bool, Check) {
+/// `known_version` is the pinned engine version from config (Stalwart's
+/// session resource does not report its real version).
+pub async fn engine_check(
+    engine: Option<Arc<dyn Engine>>,
+    known_version: Option<String>,
+) -> (bool, Check) {
     match engine {
         None => (
             false,
@@ -348,7 +353,10 @@ pub async fn engine_check(engine: Option<Arc<dyn Engine>>) -> (bool, Check) {
                         "engine",
                         "Mail engine",
                         Status::Pass,
-                        format!("Stalwart {} is running.", info.version.unwrap_or_default()),
+                        match info.version.or(known_version) {
+                            Some(v) => format!("Stalwart {v} is running."),
+                            None => "Stalwart is running.".to_string(),
+                        },
                     ),
                 )
             } else {

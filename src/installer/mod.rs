@@ -472,7 +472,7 @@ impl Installer {
         )?;
         Ok(Outcome::Done(format!(
             "Stalwart {} is running.",
-            info.version.unwrap_or_default()
+            os::ENGINE.version
         )))
     }
 

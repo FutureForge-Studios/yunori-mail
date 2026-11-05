@@ -103,7 +103,11 @@ fn ensure_host_checks(app: &AppState) -> Option<ops::HostChecks> {
 pub async fn overview(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<Json<Value>> {
     let cfg = app.config();
     let engine = app.engine().ok();
-    let (engine_ok, engine_check) = ops::engine_check(engine.clone()).await;
+    let (engine_ok, engine_check) = ops::engine_check(
+        engine.clone(),
+        cfg.as_ref().and_then(|c| c.stalwart_version.clone()),
+    )
+    .await;
     let mut stats = json!({ "domains": 0, "mailboxes": 0, "aliases": 0, "queued": 0 });
     let mut primary_dns = Status::Unknown;
     let mut dns_signal = unknown("dns", "DNS records");

@@ -518,7 +518,11 @@ async fn doctor(json: bool) -> Result<()> {
             "No recovery admin is left configured.",
         )
     });
-    let (_, engine) = ops::engine_check(app.engine().ok()).await;
+    let (_, engine) = ops::engine_check(
+        app.engine().ok(),
+        cfg.as_ref().and_then(|c| c.stalwart_version.clone()),
+    )
+    .await;
     checks.push(engine);
     if let Some(cfg) = &cfg {
         if let Ok(e) = app.engine()

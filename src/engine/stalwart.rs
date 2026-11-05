@@ -246,18 +246,11 @@ fn parse_queued(v: &Value) -> Option<EQueued> {
 #[async_trait]
 impl Engine for StalwartEngine {
     async fn info(&self) -> EngineInfo {
-        match self.client.session(&self.admin).await {
-            Ok(session) => EngineInfo {
-                reachable: true,
-                version: session
-                    .pointer("/capabilities/urn:stalwart:jmap/version")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            },
-            Err(_) => EngineInfo {
-                reachable: false,
-                version: None,
-            },
+        // Stalwart's session resource does not expose its real version; the
+        // pinned version lives in the Yunori config instead.
+        EngineInfo {
+            reachable: self.client.session(&self.admin).await.is_ok(),
+            version: None,
         }
     }
 
