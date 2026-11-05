@@ -299,6 +299,133 @@ async fn overview_and_sending_relay() {
 }
 
 #[tokio::test]
+async fn sending_through_amazon_ses_and_resend() {
+    let (mut c, app) = Client::new();
+    c.sign_in(&app).await;
+    let (s, b) = c.get("/sending").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let keys: Vec<&str> = b["providers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["key"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        &keys[..2],
+        ["ses", "resend"],
+        "SES and Resend lead the picker"
+    );
+    assert!(
+        b["domains"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["name"] == "example.test")
+    );
+
+    // Amazon SES: region → host; pasted Easy DKIM rows → three CNAMEs + MAIL FROM.
+    let t = [
+        "abcdefghijklmnopqrstuvwxyz012345",
+        "bcdefghijklmnopqrstuvwxyz0123456",
+        "cdefghijklmnopqrstuvwxyz01234567",
+    ];
+    let pasted = t
+        .iter()
+        .map(|t| format!("{t}._domainkey.example.test CNAME {t}.dkim.amazonses.com"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (s, b) = c
+        .send(
+            "PUT",
+            "/sending",
+            Some(json!({"mode": "relay", "relay": {
+                "provider": "ses", "region": "eu-west-1", "port": 587,
+                "username": "AKIAEXAMPLESMTP", "password": "ses-smtp-secret",
+                "identities": {"example.test": {"dkim": pasted, "mailFrom": "bounce"}}
+            }})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["relay"]["host"], "email-smtp.eu-west-1.amazonaws.com");
+    assert_eq!(
+        app.mock().unwrap().relay().unwrap().host,
+        "email-smtp.eu-west-1.amazonaws.com"
+    );
+    assert!(!b.to_string().contains("ses-smtp-secret"));
+    let dom = b["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "example.test")
+        .unwrap()
+        .clone();
+    assert_eq!(dom["needsVerification"], false);
+    let recs = dom["records"].as_array().unwrap();
+    assert_eq!(recs.iter().filter(|r| r["type"] == "CNAME").count(), 3);
+    assert!(recs.iter().any(|r| r["type"] == "MX"
+        && r["name"] == "bounce.example.test"
+        && r["value"] == "10 feedback-smtp.eu-west-1.amazonses.com"));
+    assert!(
+        b["relay"]["domainsUrl"]
+            .as_str()
+            .unwrap()
+            .contains("region=eu-west-1")
+    );
+
+    // A bad paste is reported on that domain's field; nothing is saved.
+    let (s, b) = c
+        .send("PUT", "/sending", Some(json!({"mode": "relay", "relay": {
+            "provider": "ses", "region": "eu-west-1", "port": 587, "username": "AKIAEXAMPLESMTP",
+            "identities": {"example.test": {"dkim": t[0]}}
+        }})), true)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    assert_eq!(b["error"]["field"], "identities.example.test.dkim");
+
+    // Resend: fixed host and username, the API key as the password, send.<domain> records.
+    let (s, b) = c
+        .send("PUT", "/sending", Some(json!({"mode": "relay", "relay": {
+            "provider": "resend", "region": "eu-west-1", "port": 587, "password": "re_live_key",
+            "identities": {"example.test": {"dkim": "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC7xYwHmS4fXh5qk9Jh2bU0Lw8mN3pQ1rT6vY"}}
+        }})), true)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["relay"]["host"], "smtp.resend.com");
+    assert_eq!(b["relay"]["username"], "resend");
+    let relay = app.mock().unwrap().relay().unwrap();
+    assert_eq!(
+        (relay.host.as_str(), relay.username.as_str()),
+        ("smtp.resend.com", "resend")
+    );
+    let dom = b["domains"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|d| d["name"] == "example.test")
+        .unwrap()
+        .clone();
+    let recs = dom["records"].as_array().unwrap();
+    assert!(
+        recs.iter()
+            .any(|r| r["name"] == "resend._domainkey.example.test" && r["type"] == "TXT")
+    );
+    assert!(recs.iter().any(|r| r["name"] == "send.example.test"
+        && r["type"] == "MX"
+        && r["value"] == "10 feedback-smtp.eu-west-1.amazonses.com"));
+    assert!(
+        recs.iter().all(|r| r["type"] != "CNAME"),
+        "SES rows do not leak into Resend"
+    );
+
+    let (_, b) = c.get("/audit").await;
+    assert!(
+        b.to_string().contains("provider records for example.test"),
+        "{b}"
+    );
+}
+
+#[tokio::test]
 async fn portal_acts_as_the_user() {
     let (mut c, _) = Client::new();
     let (s, _) = c

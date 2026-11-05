@@ -18,6 +18,7 @@ mod jobs;
 mod model;
 mod ops;
 mod paths;
+mod relay;
 mod store;
 mod util;
 

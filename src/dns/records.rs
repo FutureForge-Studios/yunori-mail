@@ -28,6 +28,8 @@ pub struct RecordContext {
     pub ipv6: Option<String>,
     pub is_primary: bool,
     pub relay_spf_include: Option<String>,
+    /// The relay provider's own records for this domain (`relay::domain_records`).
+    pub relay_records: Vec<Expected>,
     pub dmarc_policy: DmarcPolicy,
 }
 
@@ -180,6 +182,7 @@ pub fn expected_records(domain: &str, zone_file: &str, ctx: &RecordContext) -> V
             "DKIM: the public key receivers use to check your server's signature.",
         ));
     }
+    out.extend(ctx.relay_records.iter().cloned());
     out
 }
 
@@ -386,7 +389,7 @@ async fn evaluate_one(e: &Expected, dns: &dyn DnsLookup, ctx: &RecordContext) ->
                 ),
             }
         }
-        "TXT" if e.id.starts_with("dkim") => {
+        "TXT" if e.id.starts_with("dkim") || e.id == "relay:dkim" => {
             if e.value.is_empty() {
                 return record(
                     e,
@@ -431,6 +434,20 @@ async fn evaluate_one(e: &Expected, dns: &dyn DnsLookup, ctx: &RecordContext) ->
             let want = norm_host(&e.value);
             if actual.contains(&want) {
                 return record(e, actual, Status::Pass, None);
+            }
+            // A provider's CNAME must be exactly that CNAME.
+            if e.id.starts_with("relay:") {
+                return if actual.is_empty() {
+                    let (s, r) = missing(e);
+                    record(e, actual, s, r)
+                } else {
+                    record(
+                        e,
+                        actual,
+                        Status::Fail,
+                        Some(format!("Point this name at {want}.")),
+                    )
+                };
             }
             // An A record pointing at this server is just as good.
             let a = dns.a(&e.name).await.unwrap_or_default();
@@ -593,6 +610,7 @@ mod tests {
             ipv6: None,
             is_primary: true,
             relay_spf_include: None,
+            relay_records: vec![],
             dmarc_policy: DmarcPolicy::None,
         }
     }
@@ -676,6 +694,81 @@ mod tests {
         assert_eq!(
             out.iter().find(|r| r.id == "spf").unwrap().status,
             Status::Fail
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_provider_rows_are_checked_strictly() {
+        let t = "abcdefghijklmnopqrstuvwxyz012345";
+        let key = "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC7xYwHmS4fXh5qk9Jh2bU0Lw8mN3pQ1rT6vY";
+        let mut c = ctx();
+        c.relay_records = vec![
+            Expected {
+                id: "relay:dkim:1".into(),
+                rtype: "CNAME".into(),
+                name: format!("{t}._domainkey.example.com"),
+                value: format!("{t}.dkim.amazonses.com"),
+                required: true,
+                purpose: String::new(),
+            },
+            Expected {
+                id: "relay:dkim".into(),
+                rtype: "TXT".into(),
+                name: "resend._domainkey.example.com".into(),
+                value: format!("p={key}"),
+                required: true,
+                purpose: String::new(),
+            },
+            Expected {
+                id: "relay:mail-from-mx".into(),
+                rtype: "MX".into(),
+                name: "send.example.com".into(),
+                value: "10 feedback-smtp.us-east-1.amazonses.com".into(),
+                required: true,
+                purpose: String::new(),
+            },
+        ];
+        let recs = expected_records("example.com", ZONE, &c);
+        assert!(
+            recs.iter().any(|r| r.id == "relay:dkim:1"),
+            "relay rows join the checklist"
+        );
+        assert!(render_zone(&recs).contains(
+            "send.example.com.\t3600\tIN\tMX\t10 feedback-smtp.us-east-1.amazonses.com."
+        ));
+
+        let mut dns = FakeDns::default();
+        // An A record at this server is NOT a substitute for a provider's CNAME.
+        dns.a.insert(
+            format!("{t}._domainkey.example.com"),
+            vec!["203.0.113.10".into()],
+        );
+        dns.txt.insert(
+            "resend._domainkey.example.com".into(),
+            vec![format!("p={} {}", &key[..20], &key[20..])],
+        );
+        dns.mx.insert(
+            "send.example.com".into(),
+            vec![(10, "feedback-smtp.us-east-1.amazonses.com".into())],
+        );
+        let out = evaluate(&recs, &dns, &c).await;
+        let st = |id: &str| out.iter().find(|r| r.id == id).unwrap().status;
+        assert_eq!(st("relay:dkim:1"), Status::Fail);
+        assert_eq!(
+            st("relay:dkim"),
+            Status::Pass,
+            "provider DKIM compares keys, not text"
+        );
+        assert_eq!(st("relay:mail-from-mx"), Status::Pass);
+
+        dns.cname.insert(
+            format!("{t}._domainkey.example.com"),
+            vec![format!("{t}.dkim.amazonses.com")],
+        );
+        let out = evaluate(&recs, &dns, &c).await;
+        assert_eq!(
+            out.iter().find(|r| r.id == "relay:dkim:1").unwrap().status,
+            Status::Pass
         );
     }
 

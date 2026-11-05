@@ -23,8 +23,12 @@ curl -fsSL https://get.yunori.email/mail | sudo sh
   - Preflight measures outbound port 25, reverse DNS, blocklists and your hosting provider *before* installing
     anything.
   - The DNS and reverse-DNS steps are **verified against public resolvers**, never "I've done it" buttons.
-- **Relay mode** for providers that block port 25 (SES, Postmark, Mailgun, SMTP2GO, Brevo, Resend or any SMTP
-  relay). DKIM is still signed locally.
+- **Relay mode** for providers that block port 25: Amazon SES, Resend, Postmark, Mailgun, SMTP2GO, Brevo or any
+  SMTP relay. DKIM is still signed locally.
+  - **Amazon SES:** pick the region and the SMTP host follows. Paste the three Easy DKIM records from SES, and
+    optionally set a custom MAIL FROM domain.
+  - **Resend:** paste the DKIM value; the `send.` bounce records are filled in for your region.
+  - The provider's records join each domain's DNS checklist and are checked like every other record.
 - **A self-service portal** at `/account` for every mailbox: change password, app passwords, mail-app settings,
   and "Open in Yunori".
 - **Works with the Yunori client out of the box.**
@@ -55,7 +59,17 @@ sudo yunori-mail install --domain example.com --admin-email you@gmail.com --firs
 # Relay mode (the password is read from an environment variable, never from argv)
 POSTMARK_TOKEN=… sudo -E yunori-mail install --domain example.com --admin-email you@gmail.com \
   --sending relay --relay-provider postmark --relay-user "$POSTMARK_TOKEN" --relay-password-env POSTMARK_TOKEN
+
+# Amazon SES: the SMTP host comes from the region (SMTP credentials, not AWS access keys)
+SES_SMTP_PASSWORD=… sudo -E yunori-mail install --domain example.com --admin-email you@gmail.com \
+  --sending relay --relay-provider ses --relay-region eu-west-1 --relay-user AKIA… --relay-password-env SES_SMTP_PASSWORD
+
+# Resend: host and username are fixed; the password is an API key
+RESEND_API_KEY=re_… sudo -E yunori-mail install --domain example.com --admin-email you@gmail.com \
+  --sending relay --relay-provider resend --relay-password-env RESEND_API_KEY
 ```
+
+After the install, add each domain's SES or Resend records under **Sending** in the console.
 
 The installer has 11 resumable steps:
 1. preflight

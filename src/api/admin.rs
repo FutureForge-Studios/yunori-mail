@@ -2,7 +2,7 @@
 
 use super::{AdminAuth, ApiError, ApiResult, AppState};
 use crate::engine::{EAccount, EDomain, RelayConfig, alias_addresses};
-use crate::model::{Check, RELAY_PROVIDERS, RelaySettings, SendingMode, Status, relay_provider};
+use crate::model::{Check, RELAY_PROVIDERS, SendingMode, Status, relay_provider};
 use crate::ops;
 use crate::util::{generate_password, normalize_domain, valid_email, valid_local_part};
 use axum::Json;
@@ -763,28 +763,78 @@ pub async fn delete_alias(
 pub async fn get_sending(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<Json<Value>> {
     let cfg = app.config();
     let host = ensure_host_checks(&app);
-    let relay = ops::relay_settings(&app).map(|r| {
+    let settings = ops::relay_settings(&app);
+    let relay = settings.as_ref().map(|r| {
         json!({
             "provider": r.provider, "host": r.host, "port": r.port, "username": r.username,
+            "region": r.region, "spfInclude": r.spf_include, "identities": r.identities,
             "hasPassword": app.db.has_secret("relay.password").unwrap_or(false),
+            "domainsUrl": crate::relay::domains_url(r),
         })
     });
+    // Each hosted domain with the records its relay provider asks for.
+    let domains = match app.engine() {
+        Ok(e) => e.list_domains().await.unwrap_or_default(),
+        Err(_) => vec![],
+    };
+    let domains: Vec<Value> = domains
+        .iter()
+        .map(|d| {
+            let records: Vec<Value> = settings
+                .as_ref()
+                .map(|r| crate::relay::domain_records(r, &d.name))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|e| {
+                    json!({
+                        "id": e.id, "type": e.rtype, "name": e.name, "value": e.value,
+                        "required": e.required, "purpose": e.purpose,
+                    })
+                })
+                .collect();
+            json!({
+                "id": d.id,
+                "name": d.name,
+                "records": records,
+                "needsVerification": settings
+                    .as_ref()
+                    .is_some_and(|r| crate::relay::needs_verification(r, &d.name)),
+            })
+        })
+        .collect();
     Ok(Json(json!({
         "mode": cfg.map(|c| c.sending_mode).unwrap_or(SendingMode::Direct),
         "relay": relay,
         "providers": RELAY_PROVIDERS,
+        "domains": domains,
         "port25": host.as_ref().map(|h| h.port25.clone()).unwrap_or_else(|| unknown("port25", "Outbound port 25")),
         "ptr": host.as_ref().map(|h| h.ptr.clone()).unwrap_or_else(|| unknown("ptr", "Reverse DNS (PTR)")),
     })))
 }
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct IdentityIn {
+    #[serde(default)]
+    dkim: String,
+    #[serde(default)]
+    mail_from: String,
+}
+
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RelayIn {
     provider: String,
+    #[serde(default)]
     host: String,
     port: u16,
+    #[serde(default)]
     username: String,
     password: Option<String>,
+    region: Option<String>,
+    spf_include: Option<String>,
+    /// Omitted = keep the saved per-domain records.
+    identities: Option<std::collections::BTreeMap<String, IdentityIn>>,
 }
 
 #[derive(Deserialize)]
@@ -812,18 +862,36 @@ pub async fn put_sending(
             let r = req
                 .relay
                 .ok_or_else(|| ApiError::bad_request("Relay settings are required."))?;
-            let provider = relay_provider(&r.provider).ok_or_else(|| {
-                ApiError::bad_request("Unknown relay provider.").field("provider")
-            })?;
-            let host = normalize_domain(&r.host).ok_or_else(|| {
-                ApiError::bad_request("Enter the relay's host name.").field("host")
-            })?;
-            if r.port == 0 {
-                return Err(ApiError::bad_request("Enter a port.").field("port"));
-            }
-            if r.username.trim().is_empty() {
-                return Err(ApiError::bad_request("Enter the relay username.").field("username"));
-            }
+            let domains: Vec<String> = e
+                .list_domains()
+                .await?
+                .into_iter()
+                .map(|d| d.name)
+                .collect();
+            let draft = crate::relay::RelayDraft {
+                provider: r.provider,
+                host: r.host,
+                port: r.port,
+                username: r.username,
+                region: r.region,
+                spf_include: r.spf_include,
+                identities: r.identities.map(|m| {
+                    m.into_iter()
+                        .map(|(k, v)| {
+                            (
+                                k,
+                                crate::relay::IdentityInput {
+                                    dkim: v.dkim,
+                                    mail_from: v.mail_from,
+                                },
+                            )
+                        })
+                        .collect()
+                }),
+            };
+            let previous = ops::relay_settings(&app);
+            let settings = crate::relay::build_settings(&draft, previous.as_ref(), &domains)
+                .map_err(|f| ApiError::bad_request(f.message).field(f.field))?;
             let password = match r.password.filter(|p| !p.is_empty()) {
                 Some(p) => p,
                 None => app
@@ -835,34 +903,35 @@ pub async fn put_sending(
                     })?,
             };
             e.set_relay(Some(&RelayConfig {
-                host: host.clone(),
-                port: r.port,
-                implicit_tls: r.port == 465,
-                username: r.username.trim().to_string(),
+                host: settings.host.clone(),
+                port: settings.port,
+                implicit_tls: settings.port == 465,
+                username: settings.username.clone(),
                 password: password.clone(),
             }))
             .await?;
             app.db.put_secret("relay.password", &password)?;
-            app.db.set_json(
-                "relay",
-                &RelaySettings {
-                    provider: provider.key.to_string(),
-                    host: host.clone(),
-                    port: r.port,
-                    username: r.username.trim().to_string(),
-                },
-            )?;
+            app.db.set_json("relay", &settings)?;
             cfg.sending_mode = SendingMode::Relay;
+            let verified: Vec<&str> = settings.identities.keys().map(String::as_str).collect();
             app.db.audit(
                 &a.admin.email,
                 "sending.relay",
-                Some(&host),
-                Some(&format!("provider {}", provider.key)),
+                Some(&settings.host),
+                Some(&format!(
+                    "provider {}{}",
+                    settings.provider,
+                    if verified.is_empty() {
+                        String::new()
+                    } else {
+                        format!("; provider records for {}", verified.join(", "))
+                    }
+                )),
             )?;
         }
     }
     app.save_config(&cfg)?;
-    // SPF include / PTR requirement changed — refresh DNS + host checks in the background.
+    // SPF include, provider records and the PTR requirement changed — refresh in the background.
     let bg = app.clone();
     tokio::spawn(async move {
         crate::jobs::refresh_all_dns(&bg).await;

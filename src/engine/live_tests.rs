@@ -176,6 +176,7 @@ async fn live_engine_end_to_end() {
         ipv6: None,
         is_primary: true,
         relay_spf_include: None,
+        relay_records: vec![],
         dmarc_policy: crate::model::DmarcPolicy::None,
     };
     let expected = crate::dns::records::expected_records(DOMAIN, &zone, &ctx);

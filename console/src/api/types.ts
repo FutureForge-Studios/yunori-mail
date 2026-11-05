@@ -252,13 +252,64 @@ export interface CreateAliasRequest {
 
 // ── Sending (GET /sending, PUT /sending) ─────────────────────────────────
 
+export type RelayVerify = "none" | "sesDkim" | "dkimTxt";
+
+/** Bounce (MAIL FROM) domain records a provider asks for. */
+export interface MailFromSpec {
+  /** Fixed label under the domain (Resend: "send"); null = operator's choice (SES). */
+  label: string | null;
+  /** MX target; `{region}` is substituted. */
+  mxTemplate: string;
+  spf: string;
+  required: boolean;
+}
+
 export interface RelayProvider {
-  key: string; // "ses" | "postmark" | "mailgun" | "smtp2go" | "brevo" | "resend" | "custom"
+  key: string; // "ses" | "resend" | "postmark" | "mailgun" | "smtp2go" | "brevo" | "custom"
   label: string;
-  host: string | null; // null = user supplies (custom / regional)
+  /** Fixed SMTP host (pre-filled, editable); null = see hostTemplate, or user supplies (custom). */
+  host: string | null;
+  /** Host derived from the region (`{region}`); the host is then not editable. */
+  hostTemplate: string | null;
   port: number;
+  regions: string[];
+  defaultRegion: string | null;
+  /** SMTP username the provider mandates (pre-filled). */
+  username: string | null;
+  /** What the provider calls the SMTP password ("API key", "SMTP password"…). */
+  secretLabel: string;
   spfInclude: string | null;
+  verify: RelayVerify;
+  dkimSelector: string | null;
+  mailFrom: MailFromSpec | null;
   docsUrl: string | null;
+  /** Where to add a domain at the provider (`{region}` substituted). */
+  domainsUrl: string | null;
+}
+
+/** What a provider issued for one domain (public DNS values). */
+export interface RelayIdentity {
+  dkimTokens?: string[];
+  dkimValue?: string;
+  mailFrom?: string;
+}
+
+export interface RelayRecord {
+  id: string;
+  type: string;
+  name: string;
+  value: string;
+  required: boolean;
+  purpose: string;
+}
+
+export interface SendingDomain {
+  id: string;
+  name: string;
+  /** The saved relay provider's records for this domain (checked on the domain's DNS page). */
+  records: RelayRecord[];
+  /** The provider needs records for this domain that haven't been pasted yet. */
+  needsVerification: boolean;
 }
 
 export interface SendingResponse {
@@ -268,9 +319,14 @@ export interface SendingResponse {
     host: string;
     port: number;
     username: string;
+    region: string | null;
+    spfInclude: string | null;
+    identities: Record<string, RelayIdentity>;
     hasPassword: boolean;
+    domainsUrl: string | null;
   } | null;
   providers: RelayProvider[];
+  domains: SendingDomain[];
   /** Outbound port-25 reachability result from the last check. */
   port25: Check;
   ptr: Check;
@@ -280,11 +336,17 @@ export interface UpdateSendingRequest {
   mode: "direct" | "relay";
   relay?: {
     provider: string;
+    /** Ignored for providers with a hostTemplate (derived from the region). */
     host: string;
     port: number;
+    /** Empty = the provider's fixed username. */
     username: string;
     /** Omit / empty to keep the stored password. */
     password?: string;
+    region?: string;
+    spfInclude?: string;
+    /** Per-domain provider records as pasted; omit to keep the saved ones. */
+    identities?: Record<string, { dkim?: string; mailFrom?: string }>;
   };
 }
 

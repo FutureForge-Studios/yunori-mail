@@ -5,7 +5,7 @@ use crate::dns::records::{self, RecordContext};
 use crate::dns::{self, DnsLookup, Resolver};
 use crate::engine::{EDomain, EQueued, Engine, RcptState};
 use crate::model::{
-    Check, DmarcPolicy, DnsRecord, RelaySettings, SendingMode, ServerConfig, Status, relay_provider,
+    Check, DmarcPolicy, DnsRecord, RelaySettings, SendingMode, ServerConfig, Status,
 };
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -39,20 +39,19 @@ pub fn relay_settings(app: &App) -> Option<RelaySettings> {
 }
 
 pub fn record_context(app: &App, cfg: &ServerConfig, domain: &str) -> RecordContext {
-    let relay_include = (cfg.sending_mode == SendingMode::Relay)
+    let relay = (cfg.sending_mode == SendingMode::Relay)
         .then(|| relay_settings(app))
-        .flatten()
-        .and_then(|r| {
-            relay_provider(&r.provider)
-                .and_then(|p| p.spf_include)
-                .map(str::to_string)
-        });
+        .flatten();
     RecordContext {
         hostname: cfg.hostname.clone(),
         ipv4: cfg.public_ipv4.clone(),
         ipv6: cfg.public_ipv6.clone(),
         is_primary: domain == cfg.primary_domain,
-        relay_spf_include: relay_include,
+        relay_spf_include: relay.as_ref().and_then(crate::relay::spf_include),
+        relay_records: relay
+            .as_ref()
+            .map(|r| crate::relay::domain_records(r, domain))
+            .unwrap_or_default(),
         dmarc_policy: dmarc_policy(app, domain),
     }
 }

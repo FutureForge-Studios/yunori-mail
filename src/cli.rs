@@ -93,8 +93,12 @@ pub struct InstallArgs {
     sending: SendingArg,
     #[arg(long)]
     relay_provider: Option<String>,
+    /// SMTP host; derived from --relay-region for Amazon SES.
     #[arg(long)]
     relay_host: Option<String>,
+    /// Provider region (Amazon SES: picks the SMTP endpoint; Resend: the bounce MX).
+    #[arg(long)]
+    relay_region: Option<String>,
     #[arg(long, default_value_t = 587)]
     relay_port: u16,
     #[arg(long)]
@@ -387,14 +391,16 @@ async fn install(args: InstallArgs) -> Result<()> {
                 .clone()
                 .unwrap_or_else(|| "custom".into());
             let preset = crate::model::relay_provider(&provider);
-            let host = args
-                .relay_host
-                .clone()
-                .or_else(|| preset.and_then(|p| p.host).map(str::to_string))
-                .ok_or_else(|| anyhow!("--relay-host is required for this provider"))?;
+            let host = args.relay_host.clone().unwrap_or_default();
+            if host.is_empty()
+                && preset.is_none_or(|p| p.host.is_none() && p.host_template.is_none())
+            {
+                bail!("--relay-host is required for this provider");
+            }
             let username = args
                 .relay_user
                 .clone()
+                .or_else(|| preset.and_then(|p| p.username).map(str::to_string))
                 .ok_or_else(|| anyhow!("--relay-user is required"))?;
             let password = match &args.relay_password_env {
                 Some(var) => std::env::var(var)
@@ -406,6 +412,7 @@ async fn install(args: InstallArgs) -> Result<()> {
                 host,
                 port: args.relay_port,
                 username,
+                region: args.relay_region.clone(),
                 password,
             })
         } else {

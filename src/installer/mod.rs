@@ -30,6 +30,9 @@ pub struct RelayInput {
     pub host: String,
     pub port: u16,
     pub username: String,
+    /// Provider region (Amazon SES derives its SMTP host from it).
+    #[serde(default)]
+    pub region: Option<String>,
     #[serde(skip)]
     pub password: String,
 }
@@ -44,6 +47,26 @@ pub struct InstallInputs {
     pub sending: SendingMode,
     pub relay: Option<RelayInput>,
     pub client_origin: String,
+}
+
+impl RelayInput {
+    /// Validated relay settings (host derived from the region where the provider has one).
+    /// Per-domain provider records are added later in the console.
+    pub fn settings(&self) -> std::result::Result<RelaySettings, crate::relay::FieldError> {
+        crate::relay::build_settings(
+            &crate::relay::RelayDraft {
+                provider: self.provider.clone(),
+                host: self.host.clone(),
+                port: self.port,
+                username: self.username.clone(),
+                region: self.region.clone(),
+                spf_include: None,
+                identities: None,
+            },
+            None,
+            &[],
+        )
+    }
 }
 
 impl InstallInputs {
@@ -71,6 +94,7 @@ impl InstallInputs {
             })?;
             relay_provider(&r.provider)
                 .ok_or_else(|| anyhow!("unknown relay provider '{}'", r.provider))?;
+            r.settings().map_err(|e| anyhow!("{}", e.message))?;
             if r.password.is_empty() {
                 bail!("relay password is required");
             }
@@ -447,24 +471,17 @@ impl Installer {
                 .get_secret("relay.password")?
                 .map(|s| s.to_string())
                 .unwrap_or_default();
+            let settings = r.settings().map_err(|e| anyhow!("{}", e.message))?;
             engine
                 .set_relay(Some(&RelayConfig {
-                    host: r.host.clone(),
-                    port: r.port,
-                    implicit_tls: r.port == 465,
-                    username: r.username.clone(),
+                    host: settings.host.clone(),
+                    port: settings.port,
+                    implicit_tls: settings.port == 465,
+                    username: settings.username.clone(),
                     password,
                 }))
                 .await?;
-            self.app.db.set_json(
-                "relay",
-                &RelaySettings {
-                    provider: r.provider.clone(),
-                    host: r.host.clone(),
-                    port: r.port,
-                    username: r.username.clone(),
-                },
-            )?;
+            self.app.db.set_json("relay", &settings)?;
         }
         self.app.db.audit(
             "installer",
@@ -760,9 +777,26 @@ mod tests {
             host: "smtp.postmarkapp.com".into(),
             port: 587,
             username: "u".into(),
+            region: None,
             password: "p".into(),
         });
         assert!(i.validate().is_ok());
+        // Amazon SES: the host comes from the region, never typed.
+        i.relay = Some(RelayInput {
+            provider: "ses".into(),
+            host: String::new(),
+            port: 587,
+            username: "AKIAEXAMPLE".into(),
+            region: Some("eu-west-1".into()),
+            password: "p".into(),
+        });
+        assert!(i.validate().is_ok());
+        assert_eq!(
+            i.relay.as_ref().unwrap().settings().unwrap().host,
+            "email-smtp.eu-west-1.amazonaws.com"
+        );
+        i.relay.as_mut().unwrap().region = Some("nowhere".into());
+        assert!(i.validate().is_err());
     }
 
     #[tokio::test]

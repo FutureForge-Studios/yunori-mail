@@ -26,7 +26,7 @@ pub struct ApiError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
-    pub field: Option<&'static str>,
+    pub field: Option<std::borrow::Cow<'static, str>>,
 }
 
 impl ApiError {
@@ -41,8 +41,8 @@ impl ApiError {
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, "invalid_request", message)
     }
-    pub fn field(mut self, f: &'static str) -> Self {
-        self.field = Some(f);
+    pub fn field(mut self, f: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        self.field = Some(f.into());
         self
     }
     pub fn unauthorized() -> Self {

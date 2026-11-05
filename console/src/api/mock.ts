@@ -29,6 +29,8 @@ import type {
   QueueSummary,
   RelayProvider,
   SendingResponse,
+  RelayIdentity,
+  RelayRecord,
   SessionResponse,
   SystemResponse,
   VerdictLevel,
@@ -54,14 +56,29 @@ const VERSION = "0.1.0";
 const ENGINE = "1.0.3";
 const SETUP_DAY = "20261021";
 
+const SES_REGIONS = ["us-east-1", "us-east-2", "us-west-2", "ca-central-1", "eu-west-1", "eu-west-2", "eu-central-1", "eu-north-1", "ap-south-1", "ap-southeast-1", "ap-southeast-2", "ap-northeast-1", "sa-east-1"];
+const AMAZON_MAIL_FROM = { mxTemplate: "feedback-smtp.{region}.amazonses.com", spf: "v=spf1 include:amazonses.com ~all" };
+const plain = { hostTemplate: null, regions: [], defaultRegion: null, username: null, verify: "none" as const, dkimSelector: null, mailFrom: null, domainsUrl: null };
+
+// Mirrors `RELAY_PROVIDERS` in src/model.rs.
 const PROVIDERS: RelayProvider[] = [
-  { key: "ses", label: "Amazon SES", host: null, port: 587, spfInclude: "amazonses.com", docsUrl: "https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html" },
-  { key: "postmark", label: "Postmark", host: "smtp.postmarkapp.com", port: 587, spfInclude: "spf.mtasv.net", docsUrl: "https://postmarkapp.com/developer/user-guide/send-email-with-smtp" },
-  { key: "mailgun", label: "Mailgun", host: "smtp.mailgun.org", port: 587, spfInclude: "mailgun.org", docsUrl: "https://documentation.mailgun.com/docs/mailgun/user-manual/sending-messages/" },
-  { key: "smtp2go", label: "SMTP2GO", host: "mail.smtp2go.com", port: 587, spfInclude: "spf.smtp2go.com", docsUrl: "https://support.smtp2go.com/" },
-  { key: "brevo", label: "Brevo", host: "smtp-relay.brevo.com", port: 587, spfInclude: "spf.brevo.com", docsUrl: "https://help.brevo.com/" },
-  { key: "resend", label: "Resend", host: "smtp.resend.com", port: 465, spfInclude: "amazonses.com", docsUrl: "https://resend.com/docs/send-with-smtp" },
-  { key: "custom", label: "Another SMTP relay", host: null, port: 587, spfInclude: null, docsUrl: null },
+  {
+    key: "ses", label: "Amazon SES", host: null, hostTemplate: "email-smtp.{region}.amazonaws.com", port: 587,
+    regions: SES_REGIONS, defaultRegion: "us-east-1", username: null, secretLabel: "SMTP password", spfInclude: "amazonses.com",
+    verify: "sesDkim", dkimSelector: null, mailFrom: { label: null, ...AMAZON_MAIL_FROM, required: false },
+    docsUrl: "https://docs.aws.amazon.com/ses/latest/dg/smtp-credentials.html", domainsUrl: "https://console.aws.amazon.com/ses/home?region={region}#/identities",
+  },
+  {
+    key: "resend", label: "Resend", host: "smtp.resend.com", hostTemplate: null, port: 587,
+    regions: ["us-east-1", "eu-west-1", "sa-east-1", "ap-northeast-1"], defaultRegion: "us-east-1", username: "resend", secretLabel: "API key", spfInclude: null,
+    verify: "dkimTxt", dkimSelector: "resend", mailFrom: { label: "send", ...AMAZON_MAIL_FROM, required: true },
+    docsUrl: "https://resend.com/docs/send-with-smtp", domainsUrl: "https://resend.com/domains",
+  },
+  { ...plain, key: "postmark", label: "Postmark", host: "smtp.postmarkapp.com", port: 587, secretLabel: "Server API token", spfInclude: null, docsUrl: "https://postmarkapp.com/developer/user-guide/send-email-with-smtp" },
+  { ...plain, key: "mailgun", label: "Mailgun", host: "smtp.mailgun.org", port: 587, secretLabel: "SMTP password", spfInclude: "mailgun.org", docsUrl: "https://documentation.mailgun.com/docs/mailgun/user-manual/sending-messages/send-smtp" },
+  { ...plain, key: "smtp2go", label: "SMTP2GO", host: "mail.smtp2go.com", port: 587, secretLabel: "SMTP password", spfInclude: "spf.smtp2go.com", docsUrl: "https://support.smtp2go.com/" },
+  { ...plain, key: "brevo", label: "Brevo", host: "smtp-relay.brevo.com", port: 587, secretLabel: "SMTP key", spfInclude: "spf.brevo.com", docsUrl: "https://help.brevo.com/" },
+  { ...plain, key: "custom", label: "Other SMTP relay", host: null, port: 587, secretLabel: "Password", spfInclude: null, docsUrl: null },
 ];
 
 // ── state ────────────────────────────────────────────────────────────────────
@@ -88,7 +105,10 @@ interface DB {
   domains: DomainRow[];
   mailboxes: MailboxRow[];
   aliases: Alias[];
-  sending: { mode: "direct" | "relay"; relay: { provider: string; host: string; port: number; username: string; password: string | null } | null };
+  sending: {
+    mode: "direct" | "relay";
+    relay: { provider: string; host: string; port: number; username: string; password: string | null; region: string | null; spfInclude: string | null; identities: Record<string, RelayIdentity> } | null;
+  };
   port25Open: boolean;
   queue: QueueSummary;
   install: InstallRow | null;
@@ -1062,19 +1082,43 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
       const r = (body.relay ?? {}) as Body;
       const provider = PROVIDERS.find((p) => p.key === r.provider);
       if (!provider) fail(400, "invalid", "Choose a relay provider.", "provider");
-      const host = str(r, "host").trim();
+      const p = provider!;
+      const region = p.regions.length ? (str(r, "region") || p.defaultRegion) : null;
+      if (p.regions.length && !/^[a-z]{2}(-[a-z]+)+-\d{1,2}$/.test(region ?? "")) fail(400, "invalid", "That isn't a region name, like us-east-1.", "region");
+      const host = p.hostTemplate && region ? p.hostTemplate.replace("{region}", region) : str(r, "host").trim() || p.host || "";
       const port = Number(r.port);
-      const username = str(r, "username").trim();
+      const username = str(r, "username").trim() || p.username || "";
       const password = str(r, "password");
-      if (!host || !/^[a-z0-9.-]+$/i.test(host)) fail(400, "invalid", "Enter the relay's SMTP host name.", "host");
-      if (!Number.isInteger(port) || port < 1 || port > 65535) fail(400, "invalid", "Port must be between 1 and 65535.", "port");
-      if (!username) fail(400, "invalid", "Enter the relay username (often an API key name).", "username");
+      if (!host || !/^[a-z0-9.-]+$/i.test(host)) fail(400, "invalid", "Enter the relay's host name.", "host");
+      if (!Number.isInteger(port) || port < 1 || port > 65535) fail(400, "invalid", "Enter a port.", "port");
+      if (!username) fail(400, "invalid", "Enter the relay username.", "username");
       const keep = db.sending.relay?.password ?? null;
       if (!password && !keep) fail(400, "invalid", "Enter the relay password.", "password");
-      db.sending = { mode, relay: { provider: provider!.key, host, port, username, password: password || keep } };
+      const inputs = r.identities as Record<string, { dkim?: string; mailFrom?: string }> | undefined;
+      const identities: Record<string, RelayIdentity> = inputs ? {} : (db.sending.relay?.identities ?? {});
+      for (const [domain, input] of Object.entries(inputs ?? {})) {
+        const dkim = (input.dkim ?? "").trim();
+        const id: RelayIdentity = {};
+        if (p.verify === "sesDkim") {
+          if (dkim) {
+            const tokens = [...new Set(dkim.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length === 32))];
+            if (tokens.length !== 3) fail(400, "invalid", tokens.length ? `Found ${tokens.length} DKIM token${tokens.length === 1 ? "" : "s"}; Amazon SES issues exactly three. Paste all three CNAME records.` : "Paste the three DKIM records Amazon SES shows for this domain.", `identities.${domain}.dkim`);
+            id.dkimTokens = tokens;
+          }
+          const mf = (input.mailFrom ?? "").trim().toLowerCase().replace(/\.$/, "");
+          if (mf) id.mailFrom = mf.endsWith(`.${domain}`) ? mf : `${mf}.${domain}`;
+        } else if (p.verify === "dkimTxt" && dkim) {
+          const v = dkim.replace(/["']/g, " ").replace(/\s+/g, " ").trim();
+          const key = /p=([A-Za-z0-9+/= ]+)/.exec(v)?.[1]?.replace(/\s/g, "") ?? (/^[A-Za-z0-9+/=]+$/.test(v) ? v : "");
+          if (key.length < 64) fail(400, "invalid", "That DKIM key looks incomplete. Copy the whole value from your provider.", `identities.${domain}.dkim`);
+          id.dkimValue = v.includes("p=") ? v.replace(/p=[A-Za-z0-9+/= ]+/, `p=${key}`) : `p=${key}`;
+        }
+        if (Object.keys(id).length) identities[domain] = id;
+      }
+      db.sending = { mode, relay: { provider: p.key, host, port, username, password: password || keep, region, spfInclude: str(r, "spfInclude").trim().replace(/^include:/, "") || null, identities } };
       // The relay accepted the deferred mail on retry.
       db.queue = { total: 0, deferred: 0, groups: [] };
-      audit(db, "sending.update", "relay", `${provider!.label} via ${host}:${port}`);
+      audit(db, "sending.update", "relay", `${p.label} via ${host}:${port}`);
     } else {
       db.sending = { ...db.sending, mode: "direct" };
       audit(db, "sending.update", "direct", null);
@@ -1118,12 +1162,46 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
   return [500];
 }
 
+/** Mirrors `relay::domain_records` in src/relay.rs. */
+function relayRecords(r: NonNullable<DB["sending"]["relay"]>, domain: string): RelayRecord[] {
+  const p = PROVIDERS.find((x) => x.key === r.provider);
+  if (!p) return [];
+  const id = r.identities[domain];
+  const out: RelayRecord[] = [];
+  if (p.verify === "sesDkim")
+    (id?.dkimTokens ?? []).forEach((t, i) =>
+      out.push({ id: `relay:dkim:${i + 1}`, type: "CNAME", name: `${t}._domainkey.${domain}`, value: `${t}.dkim.amazonses.com`, required: true, purpose: `${p.label}: verifies this domain so SES will send for it (Easy DKIM).` }),
+    );
+  if (p.verify === "dkimTxt" && id?.dkimValue && p.dkimSelector)
+    out.push({ id: "relay:dkim", type: "TXT", name: `${p.dkimSelector}._domainkey.${domain}`, value: id.dkimValue, required: true, purpose: `${p.label}: its DKIM key, which verifies this domain with ${p.label}.` });
+  const mfName = p.mailFrom ? (p.mailFrom.label ? `${p.mailFrom.label}.${domain}` : id?.mailFrom) : undefined;
+  const region = r.region ?? p.defaultRegion;
+  if (p.mailFrom && mfName && region) {
+    out.push({ id: "relay:mail-from-mx", type: "MX", name: mfName, value: `10 ${p.mailFrom.mxTemplate.replace("{region}", region)}`, required: p.mailFrom.required, purpose: `${p.label}: receives bounces for mail it sends as this domain.` });
+    out.push({ id: "relay:mail-from-spf", type: "TXT", name: mfName, value: p.mailFrom.spf, required: p.mailFrom.required, purpose: `${p.label}: SPF for the bounce domain, so SPF aligns with your domain too.` });
+  }
+  return out;
+}
+
 function sendingView(db: DB): SendingResponse {
   const r = db.sending.relay;
+  const p = r ? PROVIDERS.find((x) => x.key === r.provider) : undefined;
   return {
     mode: db.sending.mode,
-    relay: r ? { provider: r.provider, host: r.host, port: r.port, username: r.username, hasPassword: !!r.password } : null,
+    relay: r
+      ? {
+          provider: r.provider, host: r.host, port: r.port, username: r.username, region: r.region, spfInclude: r.spfInclude,
+          identities: r.identities, hasPassword: !!r.password,
+          domainsUrl: p?.domainsUrl ? p.domainsUrl.replace("{region}", r.region ?? p.defaultRegion ?? "us-east-1") : null,
+        }
+      : null,
     providers: PROVIDERS,
+    domains: db.domains.map((d) => ({
+      id: d.id,
+      name: d.name,
+      records: r ? relayRecords(r, d.name) : [],
+      needsVerification: !!p && p.verify !== "none" && !(p.verify === "sesDkim" ? r?.identities[d.name]?.dkimTokens?.length : r?.identities[d.name]?.dkimValue),
+    })),
     port25: port25Check(db),
     ptr: ptrCheck(db),
   };
