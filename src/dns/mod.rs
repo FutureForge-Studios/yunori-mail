@@ -228,3 +228,25 @@ pub mod fake {
         }
     }
 }
+
+#[cfg(test)]
+mod network_tests {
+    //! Real lookups against public resolvers. Run with `cargo test -- --ignored`.
+    use super::*;
+
+    #[tokio::test]
+    #[ignore]
+    async fn public_resolver_answers_real_queries() {
+        let r = Resolver::public();
+        let mx = r.mx("gmail.com").await.unwrap();
+        assert!(mx.iter().any(|(_, h)| h.ends_with("google.com")), "{mx:?}");
+        let txt = r.txt("gmail.com").await.unwrap();
+        assert!(txt.iter().any(|t| t.starts_with("v=spf1")), "{txt:?}");
+        let ptr = r.ptr("8.8.8.8".parse().unwrap()).await.unwrap();
+        assert!(ptr.contains(&"dns.google".to_string()), "{ptr:?}");
+        let srv = r.srv("_imaps._tcp.fastmail.com").await.unwrap();
+        assert!(srv.iter().any(|s| s.port == 993), "{srv:?}");
+        let none = r.a("does-not-exist.example.invalid").await.unwrap();
+        assert!(none.is_empty());
+    }
+}

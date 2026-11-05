@@ -202,21 +202,33 @@ fn record(e: &Expected, actual: Vec<String>, status: Status, remedy: Option<Stri
     }
 }
 
+fn article(rtype: &str) -> &'static str {
+    if matches!(rtype, "A" | "AAAA" | "MX" | "SRV") {
+        "an"
+    } else {
+        "a"
+    }
+}
+
 fn missing(e: &Expected) -> (Status, Option<String>) {
     if e.required {
         (
             Status::Fail,
             Some(format!(
-                "Add a {} record named {} with the value shown.",
-                e.rtype, e.name
+                "Add {} {} record named {} with the value shown.",
+                article(&e.rtype),
+                e.rtype,
+                e.name
             )),
         )
     } else {
         (
             Status::Warn,
             Some(format!(
-                "Optional — add a {} record named {} for the best experience.",
-                e.rtype, e.name
+                "Optional — add {} {} record named {} for the best experience.",
+                article(&e.rtype),
+                e.rtype,
+                e.name
             )),
         )
     }

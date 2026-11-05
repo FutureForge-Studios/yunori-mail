@@ -82,7 +82,7 @@ fn unknown(id: &str, label: &str) -> Check {
         id,
         label,
         Status::Unknown,
-        "Not checked yet — results appear within a minute.",
+        "Not checked yet — the server runs this check in the background.",
     )
 }
 
