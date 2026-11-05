@@ -1,0 +1,97 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  console:
+    name: Console (build + design drift)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: console
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: console/package-lock.json
+      - run: npm ci
+      # Both design sources live outside this repository, and the vendored
+      # copies are pinned snapshots refreshed on purpose, so drift is reported
+      # but does not block a build.
+      - name: Check out the Yunori client (primitives source)
+        id: client
+        uses: actions/checkout@v4
+        continue-on-error: true
+        with:
+          repository: aka-nahal/Tori
+          path: .yunori-client
+      - name: Client primitives drift (advisory)
+        if: steps.client.outcome == 'success'
+        run: node scripts/sync-design.mjs --check --from ../.yunori-client
+        continue-on-error: true
+      - name: yunori.email token drift (advisory)
+        run: node scripts/sync-yunori-design.mjs --check
+        continue-on-error: true
+      - run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+          retention-days: 7
+
+  rust:
+    name: Rust (fmt, clippy, tests, release build)
+    needs: console
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: console-dist
+          path: console/dist
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          rustup default stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Lint the one-line installer
+        run: shellcheck packaging/install.sh
+      - name: One-line installer against this build
+        run: |
+          v="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
+          mkdir -p "$RUNNER_TEMP/mirror"
+          tar -czf "$RUNNER_TEMP/mirror/yunori-mail-x86_64-linux.tar.gz" -C target/release yunori-mail
+          (cd "$RUNNER_TEMP/mirror" && sha256sum yunori-mail-x86_64-linux.tar.gz > yunori-mail-x86_64-linux.tar.gz.sha256)
+          YUNORI_SKIP_INSTALL=1 YUNORI_VERSION="$v" YUNORI_BASE_URL="file://$RUNNER_TEMP/mirror" \
+            YUNORI_PREFIX="$RUNNER_TEMP/prefix" sh packaging/install.sh
+          "$RUNNER_TEMP/prefix/bin/yunori-mail" --version
+      - name: Package
+        run: |
+          mkdir -p dist-yunori
+          tar -czf dist-yunori/yunori-mail-x86_64-linux.tar.gz -C target/release yunori-mail
+          (cd dist-yunori && sha256sum yunori-mail-x86_64-linux.tar.gz > yunori-mail-x86_64-linux.tar.gz.sha256)
+          ls -l dist-yunori
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yunori-mail-x86_64-linux
+          path: dist-yunori
+          retention-days: 14

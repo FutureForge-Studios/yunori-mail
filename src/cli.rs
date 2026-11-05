@@ -356,6 +356,15 @@ async fn install(args: InstallArgs) -> Result<()> {
         )
     );
 
+    // Re-running the one-line installer is always safe: a finished install is
+    // updated in place, a paused one picks up where it stopped.
+    if let Some(cfg) = app.config().filter(|c| c.install_complete) {
+        println!(
+            "Already installed on this machine ({}). Updating it instead.",
+            cfg.hostname
+        );
+        return update_in_place(&app).await;
+    }
     let inst = Installer {
         app: app.clone(),
         mode: Mode::Cli,
@@ -363,7 +372,11 @@ async fn install(args: InstallArgs) -> Result<()> {
         skip_ptr: args.skip_ptr,
     };
     let has_saved = app.db.get_kv("install.inputs")?.is_some();
-    if !(args.resume && has_saved) {
+    let resume = has_saved && (args.resume || args.domain.is_none());
+    if has_saved && !args.resume && args.domain.is_none() {
+        println!("Resuming the install that was started here before.");
+    }
+    if !resume {
         let domain = match args.domain {
             Some(d) => d,
             None => prompt("Mail domain (e.g. example.com)", None)?,
@@ -1072,8 +1085,38 @@ async fn upgrade() -> Result<()> {
         let _ = os::systemctl(&["restart", "yunori-mail"]);
     }
     println!("{}", crate::installer::upgrade::upgrade_engine(&app).await?);
+    println!("To update yunori-mail itself, run the one-line installer again.");
+    Ok(())
+}
+
+/// The one-line installer ran on a machine that is already set up: pick up a
+/// new yunori-mail binary (the bootstrap script sets `YUNORI_BINARY_REPLACED=1`
+/// when it swapped it), refresh the service units, then bring the engine to the
+/// version this build pins (snapshot, health gate, rollback).
+async fn update_in_place(app: &App) -> Result<()> {
+    if !os::is_root() {
+        bail!("run as root: sudo yunori-mail install");
+    }
+    let units_changed = crate::installer::upgrade::refresh_units(app)?;
+    let replaced = std::env::var("YUNORI_BINARY_REPLACED").is_ok_and(|v| v == "1");
+    if units_changed || replaced {
+        os::systemctl(&["restart", "yunori-mail"])?;
+        println!(
+            "Restarted yunori-mail {} (console and HTTPS edge).",
+            env!("CARGO_PKG_VERSION")
+        );
+    }
+    println!("{}", crate::installer::upgrade::upgrade_engine(app).await?);
+    app.db.audit(
+        "installer",
+        "update",
+        Some(env!("CARGO_PKG_VERSION")),
+        Some(&format!("engine {}", os::ENGINE.version)),
+    )?;
     println!(
-        "To upgrade yunori-mail itself, re-run the bootstrap script with YUNORI_VERSION set to the new release."
+        "Up to date: yunori-mail {} with Stalwart {}.",
+        env!("CARGO_PKG_VERSION"),
+        os::ENGINE.version
     );
     Ok(())
 }

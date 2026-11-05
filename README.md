@@ -4,8 +4,11 @@ Install a real, deliverable mail server on your own VPS in minutes, and run it f
 and feels like the [Yunori](https://yunori.email) client.
 
 ```bash
-curl -fsSL https://get.yunori.email/mail | sudo sh
+curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
 ```
+
+That one line downloads a single static binary for your CPU (x86-64 or ARM64), checks its SHA-256, and starts the
+guided installer. Run the same line again at any time: a paused install resumes, a finished one is updated in place.
 
 > **Status: pre-release.** This directory incubates the product inside the Yunori client repo until its own
 > repository (`FutureForge-Studios/yunori-mail`) exists. The plan, research and decisions are in
@@ -50,11 +53,20 @@ Idle footprint target: under 256 MB RAM for the whole box (Stalwart ~100 MB, `yu
 ## Install
 
 ```bash
-# Interactive
-sudo yunori-mail install
+# One line, interactive
+curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
 
-# Unattended
-sudo yunori-mail install --domain example.com --admin-email you@gmail.com --first-mailbox hello
+# One line, unattended: every answer as a flag after `-s --`
+curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh \
+  | sudo sh -s -- --domain example.com --admin-email you@gmail.com --first-mailbox hello
+
+# Read it first, or pin a version
+curl -fsSLO https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh
+less install.sh
+sudo YUNORI_VERSION=0.1.0 sh install.sh
+
+# The binary is already here: run the installer directly
+sudo yunori-mail install
 
 # Relay mode (the password is read from an environment variable, never from argv)
 POSTMARK_TOKEN=… sudo -E yunori-mail install --domain example.com --admin-email you@gmail.com \
@@ -70,6 +82,20 @@ RESEND_API_KEY=re_… sudo -E yunori-mail install --domain example.com --admin-e
 ```
 
 After the install, add each domain's SES or Resend records under **Sending** in the console.
+
+What the one-line script does, and nothing else (`packaging/install.sh`):
+1. It checks for 64-bit Linux with systemd, and that you are root.
+2. It downloads one release asset over HTTPS with curl or wget, then verifies its SHA-256 (and a minisign signature
+   once releases are signed).
+3. It swaps in `/usr/local/bin/yunori-mail` atomically and hands over to `yunori-mail install` on your terminal.
+
+Nothing runs until the whole script has arrived, so a cut-off download can't run half an installer. Environment
+overrides: `YUNORI_VERSION`, `YUNORI_SKIP_INSTALL=1` (download and verify only), `YUNORI_BASE_URL` (an `https://` or
+`file://` mirror) and `YUNORI_PREFIX`.
+
+Releases are cut by pushing a `v*` tag (`.github/workflows/release.yml`). Each one publishes static musl binaries
+for x86-64 and ARM64, `SHA256SUMS`, and an `install.sh` pinned to that version, so the `latest` URL above always
+installs the newest release. `get.yunori.email/mail` is reserved as a short alias that redirects to it.
 
 The installer has 11 resumable steps:
 1. preflight

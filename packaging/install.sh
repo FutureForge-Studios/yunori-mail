@@ -1,71 +1,166 @@
 #!/bin/sh
-# Yunori Mail Server — bootstrap installer (served at https://get.yunori.email/mail).
+# Yunori Mail Server: one-line installer.
 #
-#   curl -fsSL https://get.yunori.email/mail | sudo sh
-#   curl -fsSL https://get.yunori.email/mail | sudo sh -s -- --domain example.com --admin-email you@gmail.com
+#   curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
+#
+# Unattended (every answer as a flag; see `yunori-mail install --help`):
+#   curl -fsSL …/install.sh | sudo sh -s -- --domain example.com --admin-email you@gmail.com
+#
+# Run it again at any time: a paused install resumes, a finished one is updated in place.
 #
 # What it does, and nothing else:
-#   1. checks this is a supported 64-bit Linux and you are root,
-#   2. downloads ONE pinned yunori-mail release for your CPU,
-#   3. verifies its SHA-256 (and its minisign signature when minisign is installed),
-#   4. installs it to /usr/local/bin/yunori-mail and runs `yunori-mail install` with your arguments.
+#   1. checks this is 64-bit Linux with systemd, and that you are root;
+#   2. downloads ONE yunori-mail release for your CPU (a single static binary);
+#   3. verifies its SHA-256 (and its minisign signature when a key is pinned and minisign is installed);
+#   4. installs it as /usr/local/bin/yunori-mail and runs `yunori-mail install` with your arguments.
 # It never pipes further remote code into a shell. Read it before running it.
+#
+# Environment overrides:
+#   YUNORI_VERSION=0.1.0       install this release instead of the one this script was published with
+#   YUNORI_SKIP_INSTALL=1      download, verify and install the binary only; don't run the installer
+#   YUNORI_BASE_URL=…          download from a mirror (https:// or file://) instead of GitHub releases
+#   YUNORI_PREFIX=/usr/local   where bin/yunori-mail goes
 
 set -eu
 
-YUNORI_VERSION="${YUNORI_VERSION:-0.1.0}"
-BASE_URL="${YUNORI_BASE_URL:-https://github.com/FutureForge-Studios/yunori-mail/releases/download/v${YUNORI_VERSION}}"
-# Release signing key (minisign). Replaced by the real key at the first signed release.
+REPO="FutureForge-Studios/yunori-mail"
+# Release builds pin this line to their own version (see .github/workflows/release.yml).
+DEFAULT_VERSION="latest"
+# Release signing key (minisign). Empty until releases are signed.
 MINISIGN_PUBKEY="${YUNORI_MINISIGN_PUBKEY:-}"
 
 say() { printf '%s\n' "$*"; }
-fail() { printf 'yunori-mail: %s\n' "$*" >&2; exit 1; }
+fail() {
+  printf 'yunori-mail: %s\n' "$*" >&2
+  exit 1
+}
 
-[ "$(id -u)" = "0" ] || fail "please run as root (pipe into: sudo sh)"
-[ "$(uname -s)" = "Linux" ] || fail "Yunori Mail Server runs on Linux"
-
-case "$(uname -m)" in
-  x86_64 | amd64) ARCH="x86_64" ;;
-  aarch64 | arm64) ARCH="aarch64" ;;
-  *) fail "unsupported CPU $(uname -m) — use an x86-64 or ARM64 server" ;;
-esac
-
-if [ -r /etc/os-release ]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  case "${ID:-}:${VERSION_ID:-}" in
-    debian:12 | debian:13 | ubuntu:22.04 | ubuntu:24.04 | ubuntu:26.04) ;;
-    *) say "Note: ${PRETTY_NAME:-this OS} is not a supported release; the installer will tell you what it finds." ;;
+check_system() {
+  [ "$(uname -s)" = "Linux" ] || fail "Yunori Mail Server runs on Linux."
+  case "$(uname -m)" in
+    x86_64 | amd64) ARCH="x86_64" ;;
+    aarch64 | arm64) ARCH="aarch64" ;;
+    *) fail "unsupported CPU $(uname -m): use an x86-64 or ARM64 server." ;;
   esac
-fi
+  if [ "${YUNORI_SKIP_INSTALL:-}" = "1" ]; then
+    return
+  fi
+  [ "$(id -u)" = "0" ] || fail "run it as root: curl -fsSL <this URL> | sudo sh"
+  [ -d /run/systemd/system ] || fail "this machine doesn't run systemd. Use a Debian 12+ or Ubuntu 22.04+ server."
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    case "${ID:-}:${VERSION_ID:-}" in
+      debian:12 | debian:13 | ubuntu:22.04 | ubuntu:24.04 | ubuntu:26.04) ;;
+      *) say "Note: ${PRETTY_NAME:-this OS} isn't a tested release. The installer checks what it needs and tells you." ;;
+    esac
+  fi
+}
 
-command -v curl >/dev/null 2>&1 || fail "curl is required"
-command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
-command -v tar >/dev/null 2>&1 || fail "tar is required"
+pick_downloader() {
+  command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required (coreutils)."
+  command -v tar >/dev/null 2>&1 || fail "tar is required."
+  command -v gzip >/dev/null 2>&1 || fail "gzip is required."
+  if command -v curl >/dev/null 2>&1; then
+    DL="curl"
+  elif command -v wget >/dev/null 2>&1; then
+    DL="wget"
+  else
+    fail "curl or wget is required."
+  fi
+}
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
+# fetch URL FILE: HTTPS only (or file:// for a local mirror), TLS 1.2+, retried.
+fetch() {
+  case "$1" in
+    https://*) proto="=https" ;;
+    file://*) proto="=file" ;;
+    *) fail "refusing to download from $1 (https:// or file:// only)" ;;
+  esac
+  if [ "$DL" = "curl" ]; then
+    curl -fsSL --proto "$proto" --proto-redir '=https' --tlsv1.2 --retry 3 --connect-timeout 15 -o "$2" "$1"
+  else
+    case "$1" in file://*) cp "${1#file://}" "$2" ;; *) wget -q --https-only --tries=3 --timeout=15 -O "$2" "$1" ;; esac
+  fi
+}
 
-ASSET="yunori-mail-${ARCH}-linux.tar.gz"
-say "Downloading Yunori Mail Server ${YUNORI_VERSION} (${ARCH})…"
-curl -fsSL --proto '=https' --tlsv1.2 -o "$TMP/$ASSET" "$BASE_URL/$ASSET"
-curl -fsSL --proto '=https' --tlsv1.2 -o "$TMP/$ASSET.sha256" "$BASE_URL/$ASSET.sha256"
+resolve_version() {
+  VERSION="${YUNORI_VERSION:-$DEFAULT_VERSION}"
+  if [ "$VERSION" = "latest" ]; then
+    url="https://github.com/$REPO/releases/latest"
+    if [ "$DL" = "curl" ]; then
+      final="$(curl -fsSLI --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "$url")" ||
+        fail "couldn't reach GitHub to find the latest release. Set YUNORI_VERSION to install a specific one."
+    else
+      final="$(wget -q --https-only --max-redirect=0 -S --spider "$url" 2>&1 | awk '/^ *[Ll]ocation: / { print $2 }' | tail -n 1)"
+    fi
+    VERSION="${final##*/}"
+  fi
+  VERSION="${VERSION#v}"
+  printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$' ||
+    fail "no published release found (got '$VERSION'). Set YUNORI_VERSION to install a specific one."
+}
 
-(cd "$TMP" && sha256sum -c "$ASSET.sha256" >/dev/null) || fail "checksum mismatch — refusing to install"
+install_binary() {
+  PREFIX="${YUNORI_PREFIX:-/usr/local}"
+  BIN="$PREFIX/bin/yunori-mail"
+  REPLACED=0
+  TMP=""
+  if [ -x "$BIN" ] && [ "$("$BIN" --version 2>/dev/null || true)" = "yunori-mail $VERSION" ]; then
+    say "yunori-mail $VERSION is already installed."
+    return
+  fi
 
-if [ -n "$MINISIGN_PUBKEY" ] && command -v minisign >/dev/null 2>&1; then
-  curl -fsSL --proto '=https' --tlsv1.2 -o "$TMP/$ASSET.minisig" "$BASE_URL/$ASSET.minisig"
-  minisign -Vm "$TMP/$ASSET" -P "$MINISIGN_PUBKEY" >/dev/null || fail "signature check failed — refusing to install"
-  say "Signature verified."
-fi
+  BASE_URL="${YUNORI_BASE_URL:-https://github.com/$REPO/releases/download/v$VERSION}"
+  ASSET="yunori-mail-$ARCH-linux.tar.gz"
+  TMP="$(mktemp -d)"
+  trap 'rm -rf "$TMP"' EXIT INT TERM
 
-tar -xzf "$TMP/$ASSET" -C "$TMP" yunori-mail
-install -m 0755 "$TMP/yunori-mail" /usr/local/bin/yunori-mail
-say "Installed /usr/local/bin/yunori-mail."
-say ""
+  say "Downloading Yunori Mail Server $VERSION ($ARCH)…"
+  fetch "$BASE_URL/$ASSET" "$TMP/$ASSET" || fail "download failed: $BASE_URL/$ASSET"
+  fetch "$BASE_URL/$ASSET.sha256" "$TMP/$ASSET.sha256" || fail "download failed: $ASSET.sha256"
+  (cd "$TMP" && sha256sum -c "$ASSET.sha256" >/dev/null 2>&1) || fail "checksum mismatch. Refusing to install."
 
-# Hand over to the real installer (interactive unless flags are given).
-if [ -t 1 ] && [ ! -t 0 ] && [ -r /dev/tty ]; then
-  exec /usr/local/bin/yunori-mail install "$@" </dev/tty
-fi
-exec /usr/local/bin/yunori-mail install "$@"
+  if [ -n "$MINISIGN_PUBKEY" ] && command -v minisign >/dev/null 2>&1; then
+    fetch "$BASE_URL/$ASSET.minisig" "$TMP/$ASSET.minisig" || fail "download failed: $ASSET.minisig"
+    minisign -Vm "$TMP/$ASSET" -P "$MINISIGN_PUBKEY" >/dev/null || fail "signature check failed. Refusing to install."
+    say "Signature verified."
+  fi
+
+  tar -xzf "$TMP/$ASSET" -C "$TMP" yunori-mail || fail "the download is not a yunori-mail release."
+  [ "$("$TMP/yunori-mail" --version 2>/dev/null || true)" = "yunori-mail $VERSION" ] ||
+    fail "the downloaded binary doesn't run here or isn't version $VERSION."
+
+  # Atomic swap: a running service keeps its old binary until it restarts.
+  mkdir -p "$PREFIX/bin"
+  cp "$TMP/yunori-mail" "$PREFIX/bin/.yunori-mail.new"
+  chmod 0755 "$PREFIX/bin/.yunori-mail.new"
+  mv -f "$PREFIX/bin/.yunori-mail.new" "$BIN"
+  REPLACED=1
+  say "Installed $BIN (checksum verified)."
+}
+
+main() {
+  check_system
+  pick_downloader
+  resolve_version
+  install_binary
+
+  if [ "${YUNORI_SKIP_INSTALL:-}" = "1" ]; then
+    say "Next: sudo $BIN install"
+    exit 0
+  fi
+  say ""
+  # `exec` skips the EXIT trap, so clean up the download now.
+  if [ -n "${TMP:-}" ]; then rm -rf "$TMP"; fi
+  export YUNORI_BINARY_REPLACED="$REPLACED"
+  # When piped (curl … | sh), stdin is this script: answer the questions on the terminal instead.
+  if [ ! -t 0 ] && (exec </dev/tty) 2>/dev/null; then
+    exec "$BIN" install "$@" </dev/tty
+  fi
+  exec "$BIN" install "$@"
+}
+
+# Everything above only defines functions: nothing runs until the whole script
+# has arrived, so a cut-off download can't run half an installer.
+main "$@"
