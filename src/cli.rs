@@ -62,6 +62,9 @@ pub enum Command {
         #[arg(long)]
         yes: bool,
     },
+    /// Upgrade the mail engine to the version pinned by this build (with rollback),
+    /// and refresh the service units.
+    Upgrade,
     /// Stop and remove the services (keeps data unless --purge).
     Uninstall {
         #[arg(long)]
@@ -324,6 +327,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Certificate(c) => cert_cmd(c).await,
         Command::Backup { out } => backup(out).await,
         Command::Restore { file, yes } => restore(file, yes).await,
+        Command::Upgrade => upgrade().await,
         Command::Uninstall { purge, yes } => uninstall(purge, yes),
     }
 }
@@ -1022,6 +1026,22 @@ async fn restore(file: std::path::PathBuf, yes: bool) -> Result<()> {
     let _ = std::fs::remove_dir_all(&work);
     println!(
         "Restored. Point MX, A and reverse DNS at this server if it is a new machine, then run: yunori-mail doctor"
+    );
+    Ok(())
+}
+
+async fn upgrade() -> Result<()> {
+    if !os::is_root() {
+        bail!("run upgrades as root: sudo yunori-mail upgrade");
+    }
+    let app = open_app(false, false)?;
+    if crate::installer::upgrade::refresh_units(&app)? {
+        println!("Service units updated.");
+        let _ = os::systemctl(&["restart", "yunori-mail"]);
+    }
+    println!("{}", crate::installer::upgrade::upgrade_engine(&app).await?);
+    println!(
+        "To upgrade yunori-mail itself, re-run the bootstrap script with YUNORI_VERSION set to the new release."
     );
     Ok(())
 }

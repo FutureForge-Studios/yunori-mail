@@ -5,6 +5,7 @@
 
 pub mod os;
 pub mod state;
+pub mod upgrade;
 
 use crate::app::{App, ENGINE_HTTP_PORT};
 use crate::checks;

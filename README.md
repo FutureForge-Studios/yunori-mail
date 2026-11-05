@@ -84,6 +84,7 @@ yunori-mail mailbox add ana@example.com --name "Ana" --quota-mb 5120
 yunori-mail alias add sales@example.com ana@example.com
 yunori-mail certificate status
 sudo yunori-mail backup                  # encrypted; prints a recovery key once
+sudo yunori-mail upgrade                 # pinned engine upgrade: snapshot → swap → health gate → rollback on failure
 sudo yunori-mail restore <file.ybk>
 sudo yunori-mail uninstall [--purge]
 ```
