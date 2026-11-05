@@ -1,0 +1,52 @@
+# CLAUDE.md
+
+Guidance for Claude Code (claude.ai/code) in this repository.
+
+## What this is
+
+**Yunori Mail Server**: an installable, self-hosted mail server in the Yunori family (FutureForge Studios). One Rust
+binary, `yunori-mail`, is the installer, the control plane, the HTTPS edge and the web console. The mail engine is
+[Stalwart](https://stalw.art) 1.0.x, run **unmodified as a separate, pinned process** and driven only through its JMAP
+management API. The Yunori webmail **client** lives in a different repository ([aka-nahal/Tori](https://github.com/aka-nahal/Tori)).
+
+- Plan, research and decisions: `docs/PLAN.md` (copied from the client repo when this product moved out).
+- Stalwart wire format and what live testing revealed: `docs/stalwart-integration.md`.
+
+## Commands
+
+```bash
+npm --prefix console ci && npm --prefix console run build   # console SPA → console/dist (embedded at compile time)
+cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
+cargo build --release                                        # target/release/yunori-mail (~9 MB, console embedded)
+yunori-mail serve --dev --mock-engine                        # http://127.0.0.1:8787/console, no root, in-memory engine
+YUNORI_STALWART_BIN=/path/to/stalwart cargo test -- --ignored live_   # end-to-end against a real Stalwart
+```
+
+Console checks: `npm --prefix console run typecheck`, `npm --prefix console run lint`. Design drift:
+`node console/scripts/sync-design.mjs --check --from ../../Tori` (client primitives; needs a client checkout) and
+`node console/scripts/sync-yunori-design.mjs --check` (yunori.email tokens; network).
+
+## Layout
+
+| Path | What |
+|---|---|
+| `src/engine/` | `Engine` trait, Stalwart JMAP adapter (`stalwart.rs`), in-memory mock, live tests |
+| `src/dns/` | Expected record set (`records.rs`), zone parser, public-resolver checks, PTR/FCrDNS, DNSBLs |
+| `src/relay.rs` | Relay provider rules (Amazon SES region→host, Easy DKIM, MAIL FROM; Resend DKIM + `send.`) |
+| `src/installer/` | 11 resumable steps + OS operations (pinned engine download, systemd, firewall) |
+| `src/edge/` | rustls + ACME, allowlisted JMAP/DAV proxy, autoconfig, embedded console |
+| `src/api/` | Console + `/account` portal REST API |
+| `src/store/` | SQLite, AES-256-GCM vault, hash-chained audit log |
+| `console/` | React 19 + Vite + Tailwind SPA in the yunori.email design |
+
+## Invariants (don't regress)
+
+- **Stalwart is never patched or re-hosted.** Its admin UI is never exposed (`/admin` → 404 through the edge).
+- **Secrets are write-only.** Relay credentials, engine admin, backup keys: sealed in the vault, API responses carry
+  `hasPassword`/`hasSecret` only.
+- **DNS and PTR are verified against public resolvers**, never self-attested. New records join
+  `dns::records::expected_records` and get an evaluation branch.
+- **Console admins need TOTP**; sessions are revocable DB rows; every mutation is audit-logged (hash chain).
+- **The portal acts as the mailbox user** with the user's own credentials, held in memory for at most 30 minutes.
+- **Design:** colours/type/mark come from yunori.email (`console/src/design/yunori/tokens.css`, generated); primitives
+  are vendored from the client (`console/src/design/vendor/`, generated). Never hand-edit generated files.

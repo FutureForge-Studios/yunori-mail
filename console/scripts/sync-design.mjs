@@ -6,15 +6,16 @@
  *   node scripts/sync-design.mjs --check    exit 1 if any vendored copy drifted
  *                                           (source changed upstream, or the copy
  *                                           was hand-edited) — run this in CI
- *   --from <dir>  /  YUNORI_CLIENT_DIR      the client checkout (default: ../..
- *                                           from console/, i.e. this monorepo)
+ *   --from <dir>  /  YUNORI_CLIENT_DIR      the client checkout, relative to
+ *                                           console/ (default: ../../Tori, a
+ *                                           sibling clone of aka-nahal/Tori)
  *
  * Vendored files are generated, never edited: each starts with a header naming
  * its source path and the source's sha256. The only adaptation is import
  * rewriting — the client's `@/…` alias (→ client src/) becomes a relative path
  * to the vendored copy, and an `@/…` import that isn't vendored fails loudly.
  *
- * Staged plan (docs/YUNORI-MAIL-SERVER-PLAN.md §9.1): this vendoring is the
+ * Staged plan (docs/PLAN.md §9.1): this vendoring is the
  * P0–P1 mechanism; P2 replaces it with a shared `@yunori/ui` package.
  */
 import { createHash } from "node:crypto";
@@ -59,7 +60,7 @@ const check = args.includes("--check");
 const fromIdx = args.indexOf("--from");
 const CLIENT_DIR = path.resolve(
   CONSOLE_DIR,
-  fromIdx >= 0 ? args[fromIdx + 1] : process.env.YUNORI_CLIENT_DIR || "../..",
+  fromIdx >= 0 ? args[fromIdx + 1] : process.env.YUNORI_CLIENT_DIR || "../../Tori",
 );
 
 if (!existsSync(path.join(CLIENT_DIR, "src/globals.css"))) {

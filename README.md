@@ -10,9 +10,10 @@ curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/do
 That one line downloads a single static binary for your CPU (x86-64 or ARM64), checks its SHA-256, and starts the
 guided installer. Run the same line again at any time: a paused install resumes, a finished one is updated in place.
 
-> **Status: pre-release.** This directory incubates the product inside the Yunori client repo until its own
-> repository (`FutureForge-Studios/yunori-mail`) exists. The plan, research and decisions are in
-> [`docs/YUNORI-MAIL-SERVER-PLAN.md`](../docs/YUNORI-MAIL-SERVER-PLAN.md).
+> **Status: pre-release.** The plan, research and decisions are in [`docs/PLAN.md`](docs/PLAN.md); the engine
+> integration notes are in [`docs/stalwart-integration.md`](docs/stalwart-integration.md). The product was
+> incubated inside the [Yunori client repository](https://github.com/aka-nahal/Tori), whose history up to the move
+> is preserved here.
 
 ## What you get
 

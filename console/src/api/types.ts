@@ -1,7 +1,7 @@
 /**
  * Yunori Mail Server — console ⇄ yunori-mail API contract.
  *
- * Source of truth for the JSON the Rust server (`yunori-mail/src/api/`) emits.
+ * Source of truth for the JSON the Rust server (`src/api/`) emits.
  * All endpoints live under `/api/yunori`. All bodies are JSON (camelCase).
  *
  * Auth: admin session cookie `yunori_session` (HttpOnly, Secure, SameSite=Strict).
