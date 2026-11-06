@@ -19,47 +19,30 @@ pub async fn refresh_all_dns(app: &App) {
     }
 }
 
-/// Renew when fewer than 30 days remain (or the cert is self-signed), then push
-/// the certificate into the engine and verify what it serves.
-pub async fn certificate_maintenance(app: &App) {
-    let Some(cfg) = app.config() else { return };
-    if !cfg.install_complete && app.db.get_kv("tls.acme_ok").ok().flatten().is_none() {
-        return; // the installer drives the first issuance
-    }
-    let info = crate::edge::tls::disk_certificate_info(&app.paths);
-    let needs = info
-        .as_ref()
-        .is_none_or(|i| i.self_signed || i.days_left < 30);
-    if needs {
-        let domains: Vec<String> = match app.engine() {
-            Ok(e) => e
-                .list_domains()
-                .await
-                .map(|d| d.into_iter().map(|x| x.name).collect())
-                .unwrap_or_default(),
-            Err(_) => vec![cfg.primary_domain.clone()],
-        };
-        let names =
-            crate::edge::acme::wanted_names(&cfg.hostname, &domains, cfg.public_ipv4.as_deref())
-                .await;
-        match crate::edge::acme::issue(&app.paths, &app.db, &names, &cfg.admin_email).await {
-            Ok(()) => {
-                let _ = app.db.set_kv("tls.acme_ok", "true");
-                tracing::info!("certificate issued for {}", names.join(", "));
-            }
-            Err(e) => {
-                tracing::error!("certificate renewal failed: {e:#}");
-                let _ = app.db.audit(
-                    "system",
-                    "certificate.renew_failed",
-                    Some(&cfg.hostname),
-                    Some(&format!("{e:#}")),
-                );
-                return;
+/// Automatic HTTPS: issue, renew or extend the certificate when it is time
+/// (see `edge::certs`; it backs off on failure, so a short tick is cheap),
+/// then make sure the engine serves the same certificate (`recheck`: verify
+/// what it serves even if it matched last time).
+pub async fn certificate_maintenance(app: &App, recheck: bool) {
+    use crate::edge::certs::Outcome;
+    match crate::edge::certs::ensure(app, false).await {
+        // `ensure` already pushed a new certificate into the engine.
+        Outcome::Issued(_) => {}
+        Outcome::Failed { problem, .. } => {
+            let _ = app.db.audit(
+                "system",
+                "certificate.renew_failed",
+                app.config().map(|c| c.hostname).as_deref(),
+                Some(&problem.sentence()),
+            );
+        }
+        _ => {
+            let served = app.db.get_kv("tls.served_matches").ok().flatten();
+            if recheck || served.as_deref() != Some("true") {
+                push_certificate(app).await;
             }
         }
     }
-    push_certificate(app).await;
 }
 
 /// Install the disk certificate into the engine if what it serves differs.
@@ -112,11 +95,17 @@ pub fn spawn_all(app: Arc<App>) {
     });
     let a = app.clone();
     tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let mut ticks: u64 = 0;
         loop {
-            certificate_maintenance(&a).await;
-            let _ = a.db.purge_expired_sessions();
-            tokio::time::sleep(Duration::from_secs(12 * 3600)).await;
+            // Hourly: re-verify what the engine serves, and tidy sessions.
+            let hourly = ticks % 12 == 0;
+            certificate_maintenance(&a, hourly).await;
+            if hourly {
+                let _ = a.db.purge_expired_sessions();
+            }
+            ticks += 1;
+            tokio::time::sleep(Duration::from_secs(300)).await;
         }
     });
 }

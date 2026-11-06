@@ -4,6 +4,7 @@
 
 pub mod acme;
 pub mod autoconfig;
+pub mod certs;
 pub mod console;
 pub mod proxy;
 pub mod tls;

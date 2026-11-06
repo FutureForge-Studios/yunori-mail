@@ -88,9 +88,59 @@ pub fn valid_email(email: &str) -> bool {
     }
 }
 
+/// The first sentence of a plain-language message (headlines keep it short;
+/// the rest, usually the remedy, is shown where the step is).
+pub fn first_sentence(s: &str) -> &str {
+    match s.find(". ") {
+        Some(i) => &s[..=i],
+        None => s,
+    }
+}
+
+/// "in 2 minutes", "in about 3 hours", "now" — for an RFC 3339 time.
+pub fn when(rfc3339: &str) -> String {
+    let Ok(t) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
+        return "later".into();
+    };
+    let secs = (t.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds();
+    match secs {
+        s if s <= 5 => "now".into(),
+        s if s < 90 => format!("in {s} seconds"),
+        s if s < 90 * 60 => format!("in {} minutes", (s + 30) / 60),
+        s => {
+            let h = (s + 1800) / 3600;
+            format!("in about {h} hour{}", if h == 1 { "" } else { "s" })
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_sentence_keeps_hostnames_whole() {
+        assert_eq!(
+            first_sentence(
+                "Let's Encrypt could not connect to mail.example.com on port 80. Allow TCP 80."
+            ),
+            "Let's Encrypt could not connect to mail.example.com on port 80."
+        );
+        assert_eq!(first_sentence("One sentence."), "One sentence.");
+    }
+
+    #[test]
+    fn when_reads_naturally() {
+        let at = |secs: i64| {
+            (chrono::Utc::now() + chrono::Duration::seconds(secs))
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        };
+        assert_eq!(when(&at(-10)), "now");
+        assert!(when(&at(45)).ends_with("seconds"));
+        assert_eq!(when(&at(300)), "in 5 minutes");
+        assert_eq!(when(&at(3 * 3600)), "in about 3 hours");
+        assert_eq!(when("garbage"), "later");
+    }
 
     #[test]
     fn passwords_are_strong() {

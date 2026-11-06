@@ -28,14 +28,22 @@ use tracing_subscriber::EnvFilter;
 #[tokio::main]
 async fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let cli = cli::Cli::parse();
+    // The service logs to the journal; terminal commands already print every
+    // step in plain words, so they only add log lines for errors.
+    let default_filter = if matches!(cli.command, cli::Command::Serve(_)) {
+        "warn,yunori_mail=info"
+    } else {
+        "warn,yunori_mail=error"
+    };
     tracing_subscriber::fmt()
+        // Colour only on a terminal (never ANSI codes in the journal).
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("warn,yunori_mail=info")),
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )
         .with_target(false)
         .init();
-    let cli = cli::Cli::parse();
     if let Err(e) = cli::run(cli).await {
         eprintln!("error: {e:#}");
         std::process::exit(1);

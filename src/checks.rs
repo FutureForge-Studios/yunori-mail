@@ -294,6 +294,8 @@ pub fn check_existing_mta() -> Check {
         .filter(|svc| {
             Command::new("systemctl")
                 .args(["is-active", "--quiet", svc])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
@@ -375,21 +377,30 @@ pub fn check_outbound_25() -> Check {
     // smtp.mail.me.com accepts on 25 too; any one success proves the port is open.
     let mut last_err = String::from("no targets resolved");
     for t in targets {
-        let addrs: Vec<SocketAddr> = match t.to_socket_addrs() {
-            Ok(a) => a.filter(|a| a.is_ipv4()).collect(),
+        let all: Vec<SocketAddr> = match t.to_socket_addrs() {
+            Ok(a) => a.collect(),
             Err(e) => {
                 last_err = e.to_string();
                 continue;
             }
         };
-        for addr in addrs.into_iter().take(2) {
-            match TcpStream::connect_timeout(&addr, Duration::from_secs(6)) {
+        // IPv4 first (most of the world's mail servers), then IPv6.
+        let addrs = all
+            .iter()
+            .filter(|a| a.is_ipv4())
+            .take(2)
+            .chain(all.iter().filter(|a| a.is_ipv6()).take(1));
+        for addr in addrs {
+            match TcpStream::connect_timeout(addr, Duration::from_secs(6)) {
                 Ok(_) => {
                     return Check::new(
                         "port25",
                         "Outbound port 25",
                         Status::Pass,
-                        "This server can reach other mail servers on port 25.",
+                        format!(
+                            "This server can reach other mail servers on port 25 (over {}).",
+                            if addr.is_ipv4() { "IPv4" } else { "IPv6" }
+                        ),
                     );
                 }
                 Err(e) => last_err = e.to_string(),
@@ -473,12 +484,49 @@ pub async fn public_ips() -> (Option<String>, Option<String>) {
 }
 
 /// Host record gate: does `hostname` resolve to this server on public DNS?
+/// A server without public IPv4 is checked on its AAAA record instead.
 pub async fn check_host_record(
     hostname: &str,
     ipv4: Option<&str>,
+    ipv6: Option<&str>,
     dns_impl: &dyn DnsLookup,
 ) -> Check {
     let label = format!("{hostname} points here");
+    if let (None, Some(v6)) = (ipv4, ipv6) {
+        return match dns_impl.aaaa(hostname).await {
+            Err(e) => Check::new(
+                "host_record",
+                &label,
+                Status::Unknown,
+                format!("Public DNS lookup failed ({e})."),
+            ),
+            Ok(ips) if ips.iter().any(|a| a == v6) => Check::new(
+                "host_record",
+                &label,
+                Status::Pass,
+                format!("{hostname} → {v6} (IPv6)."),
+            ),
+            Ok(ips) if ips.is_empty() => Check::new(
+                "host_record",
+                &label,
+                Status::Fail,
+                format!(
+                    "{hostname} has no AAAA record yet, and this server has only an IPv6 address."
+                ),
+            )
+            .remedy(format!("At your DNS provider, add: {hostname}  AAAA  {v6}")),
+            Ok(ips) => Check::new(
+                "host_record",
+                &label,
+                Status::Fail,
+                format!(
+                    "{hostname} points at {}, not this server ({v6}).",
+                    ips.join(", ")
+                ),
+            )
+            .remedy(format!("Change the AAAA record of {hostname} to {v6}.")),
+        };
+    }
     match dns_impl.a(hostname).await {
         Err(e) => Check::new(
             "host_record",
@@ -505,16 +553,22 @@ pub async fn check_host_record(
                 Status::Pass,
                 format!("{hostname} → {ip}."),
             ),
-            Some(ip) => Check::new(
-                "host_record",
-                &label,
-                Status::Fail,
-                format!(
-                    "{hostname} points at {}, not this server ({ip}).",
-                    ips.join(", ")
-                ),
-            )
-            .remedy(format!("Change the A record of {hostname} to {ip}.")),
+            Some(ip) => {
+                let c = Check::new(
+                    "host_record",
+                    &label,
+                    Status::Fail,
+                    format!(
+                        "{hostname} points at {}, not this server ({ip}).",
+                        ips.join(", ")
+                    ),
+                );
+                if ips.iter().any(|a| crate::edge::certs::is_cloudflare(a)) {
+                    c.remedy(format!("{hostname} is proxied by Cloudflare: set it to \"DNS only\" (grey cloud) so it points straight at {ip}."))
+                } else {
+                    c.remedy(format!("Change the A record of {hostname} to {ip}."))
+                }
+            }
             None => Check::new(
                 "host_record",
                 &label,
@@ -561,6 +615,13 @@ pub async fn preflight(paths: &Paths, hostname: Option<&str>) -> Vec<Check> {
             "This server has no public IP address.",
         )
         .remedy("A mail server needs a static public IPv4 address."),
+        (None, Some(v6)) => Check::new(
+            "public_ip",
+            "Public address",
+            Status::Warn,
+            format!("Only IPv6 ({v6}). Mail servers that speak only IPv4 cannot reach this one, and it cannot deliver to them."),
+        )
+        .remedy("Add a public IPv4 address at your provider. Without one, mail from IPv6-capable providers (Gmail, Outlook, …) still arrives; send through a relay."),
         _ => Check::new(
             "public_ip",
             "Public address",
@@ -595,16 +656,19 @@ pub async fn preflight(paths: &Paths, hostname: Option<&str>) -> Vec<Check> {
         out.push(c);
     }
     if let Some(h) = hostname {
-        out.push(check_host_record(h, v4.as_deref(), &public).await);
+        out.push(check_host_record(h, v4.as_deref(), v6.as_deref(), &public).await);
     }
     out
 }
 
-pub fn has_blocking_failure(checks: &[Check]) -> bool {
+/// A failed check that makes installing pointless (the rest are warnings to act on).
+pub fn is_blocking(c: &Check) -> bool {
     const BLOCKING: &[&str] = &["os", "systemd", "cpu", "memory", "disk", "mta", "public_ip"];
-    checks.iter().any(|c| {
-        c.status == Status::Fail && (BLOCKING.contains(&c.id.as_str()) || c.id.starts_with("port:"))
-    })
+    c.status == Status::Fail && (BLOCKING.contains(&c.id.as_str()) || c.id.starts_with("port:"))
+}
+
+pub fn has_blocking_failure(checks: &[Check]) -> bool {
+    checks.iter().any(is_blocking)
 }
 
 #[cfg(test)]
@@ -654,12 +718,27 @@ mod tests {
     #[tokio::test]
     async fn host_record_gate() {
         let mut d = crate::dns::fake::FakeDns::default();
-        let c = check_host_record("mail.example.com", Some("203.0.113.10"), &d).await;
+        let c = check_host_record("mail.example.com", Some("203.0.113.10"), None, &d).await;
         assert_eq!(c.status, Status::Fail);
         assert!(c.remedy.unwrap().contains("203.0.113.10"));
+        d.a.insert("mail.example.com".into(), vec!["104.21.9.9".into()]);
+        let c = check_host_record("mail.example.com", Some("203.0.113.10"), None, &d).await;
+        assert!(c.remedy.unwrap().contains("Cloudflare"));
         d.a.insert("mail.example.com".into(), vec!["203.0.113.10".into()]);
         assert_eq!(
-            check_host_record("mail.example.com", Some("203.0.113.10"), &d)
+            check_host_record("mail.example.com", Some("203.0.113.10"), None, &d)
+                .await
+                .status,
+            Status::Pass
+        );
+        // An IPv6-only server is checked on AAAA.
+        let v6 = "2001:db8::10";
+        let c = check_host_record("mail.v6.example", None, Some(v6), &d).await;
+        assert_eq!(c.status, Status::Fail);
+        assert!(c.remedy.unwrap().contains(&format!("AAAA  {v6}")));
+        d.aaaa.insert("mail.v6.example".into(), vec![v6.into()]);
+        assert_eq!(
+            check_host_record("mail.v6.example", None, Some(v6), &d)
                 .await
                 .status,
             Status::Pass

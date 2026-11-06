@@ -13,7 +13,10 @@ struct Client {
 
 impl Client {
     fn new() -> (Self, std::sync::Arc<App>) {
-        let app = App::for_tests();
+        Self::with(App::for_tests())
+    }
+
+    fn with(app: std::sync::Arc<App>) -> (Self, std::sync::Arc<App>) {
         (
             Self {
                 router: super::router(app.clone()),
@@ -476,4 +479,90 @@ async fn portal_acts_as_the_user() {
     // The portal session does not grant console access.
     let (s, _) = c.get("/overview").await;
     assert_eq!(s, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn certificate_status_and_try_now() {
+    let (mut c, app) = Client::with(App::for_tests_isolated());
+    let (s, _) = c.get("/certificate").await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    c.sign_in(&app).await;
+    let (s, b) = c.get("/certificate").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["state"], "missing");
+    assert_eq!(b["authority"], "Let's Encrypt");
+    assert_eq!(b["inProgress"], false);
+    // A self-signed certificate is not reported as healthy.
+    let (cert, key) = crate::edge::tls::self_signed(&["mail.example.test".into()]).unwrap();
+    crate::edge::tls::write_cert_files(&app.paths, &cert, &key).unwrap();
+    let (_, b) = c.get("/certificate").await;
+    assert_eq!(b["state"], "self_signed");
+    let (_, b) = c.get("/overview").await;
+    let tls = b["signals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["id"] == "tls")
+        .unwrap()
+        .clone();
+    assert_ne!(tls["status"], "pass", "{tls}");
+    // Development mode never talks to a CA.
+    let (s, b) = c.post("/certificate/renew", json!({})).await;
+    assert_eq!(s, StatusCode::CONFLICT, "{b}");
+}
+
+#[tokio::test]
+async fn onboarding_creates_the_first_mailbox_once() {
+    let (mut c, app) = Client::with(App::for_tests_isolated());
+    c.sign_in(&app).await;
+    // Complete installs send people to Mailboxes instead.
+    let (s, _) = c
+        .post("/install/first-mailbox", json!({"local": "hello"}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+
+    let mut cfg = app.config().unwrap();
+    cfg.install_complete = false;
+    app.save_config(&cfg).unwrap();
+    let engine = app.engine().unwrap();
+    for a in engine.list_accounts().await.unwrap() {
+        if !a.is_admin {
+            engine.delete_account(&a.id).await.unwrap();
+        }
+    }
+    let (s, b) = c
+        .post("/install/first-mailbox", json!({"local": "Bad Name"}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["error"]["field"], "local");
+
+    let (s, b) = c
+        .post(
+            "/install/first-mailbox",
+            json!({"local": "Hello", "displayName": "Front desk"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    assert_eq!(b["mailbox"]["address"], "hello@example.test");
+    assert!(b["password"].as_str().unwrap().len() >= 16);
+    let aliases: Vec<String> = serde_json::from_value(b["mailbox"]["aliases"].clone()).unwrap();
+    assert!(
+        aliases.contains(&"postmaster@example.test".to_string()),
+        "{aliases:?}"
+    );
+    assert!(
+        aliases.contains(&"abuse@example.test".to_string()),
+        "{aliases:?}"
+    );
+
+    let (s, b) = c
+        .post("/install/first-mailbox", json!({"local": "other"}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert!(
+        b["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("hello@example.test")
+    );
 }

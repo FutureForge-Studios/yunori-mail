@@ -679,6 +679,113 @@ Owner direction: "use yunori.mail design". The console and portal now take their
 
 There were no CSP violations, page errors or external requests.
 
+### Proper installer, onboarding and automatic HTTPS (2026-11-06)
+
+Owner direction: "a proper installer, a proper onboarding experience, auto SSL".
+
+**Installer (terminal).**
+- `yunori-mail preflight` is a read-only server check, also reachable as `install.sh … | sudo sh -s -- preflight`.
+- The wizard now runs preflight before it asks anything, and stops a server that cannot work.
+- Bad answers are asked again with a hint. The sending mode is suggested from the outbound-25 result, and relay
+  providers are picked from the registry (region and hidden password included).
+- A summary is confirmed before anything changes. Steps are numbered with timings, and gates wait with a countdown.
+- Every run ends with a card: the console and setup link, the mailbox and mail-app settings, and "your turn" plus
+  what follows. Terminal commands no longer echo log lines twice.
+
+**Steps.** `edge_tls` used to fail the whole install when ACME failed. It is now two steps (12 in total):
+- `edge_tls` (root): starts the edge.
+- `certificate`: a gate that the service can also advance, so a certificate that could not be issued arrives by
+  itself once the cause is fixed.
+
+Other step changes:
+- The host-record gate also runs the certificate pre-checks while the person is still at their DNS provider.
+- Rows of retired steps are dropped on upgrade.
+- The first mailbox can be created from the console (`POST /install/first-mailbox`, which adds postmaster@ and
+  abuse@).
+
+**Automatic HTTPS (`src/edge/certs.rs`).** One manager, used by the installer, the 5-minute job, the CLI and the
+console:
+- **Pre-checks before the CA:** a missing or wrong A record, Cloudflare's proxy, a stale AAAA, CAA (RFC 8659 tree
+  walk), and a local port-80 self-test.
+- **CA failures in plain words:** connection, unauthorized, dns, caa, rateLimited (with `retry after`).
+- **Retries:** exponential backoff, and a staging rehearsal after any failure, so production limits are never spent
+  while a firewall is being fixed.
+- **Coverage:** helper names (autoconfig/autodiscover/mta-sts) are added when they resolve here. A failing helper is
+  excluded for 24 h instead of blocking the mail hostname.
+- **Safety:** a cross-process `flock`, one ACME account per CA directory, and a CA choice
+  (`--acme-directory` / `YUNORI_ACME_*`) persisted so the service uses it.
+- **Honest status:** a self-signed certificate is no longer reported as healthy.
+
+**Onboarding (console).**
+- The installer prints `/console/setup#token=…`. The page reads the fragment, clears it from the address bar and
+  skips the token field.
+- The checklist shows the certificate problem, the CA's own words and a **Try now** button
+  (`POST /certificate/renew`, then polling `GET /certificate`).
+- A form for the first mailbox, then a "ready" card with the one-time password, "Open in Yunori" and IMAP/SMTP
+  settings.
+- The System page shows the automatic-renewal state.
+- The mock gained a "Certificate pending" scenario that mirrors the real step list.
+
+**Verified.**
+- 96 Rust tests (plus 3 opt-in live tests) and clippy `-D warnings`. They cover the scripted-issuer state machine (backoff → staging → production,
+  DNS problems never reach the CA, helper exclusion, no duplicate re-issue), CAA/Cloudflare/AAAA pre-checks, the CA
+  error classification, and the new API endpoints.
+- `live_acme` against the real Let's Encrypt staging CA: an account is created, the order is refused, and the refusal
+  is explained.
+- The interactive wizard, driven through a pseudo-terminal: re-prompts, relay questions, summary, the pause card, and
+  the relay password sealed (not in plaintext).
+- `install.sh … preflight` from a `file://` mirror.
+- Playwright on the real binary (setup link → owner → TOTP → console, System certificate panel), and on the mock
+  build (certificate pending → Try now → DNS → reverse DNS → inline first mailbox → ready card; phone width, dark).
+  No page errors.
+
+**Still not verified:** issuance against production Let's Encrypt and the full install on a public VPS (this sandbox
+has no public IP or systemd). `e2e/vps-smoke.sh` now also asserts that the certificate is Let's Encrypt's and is
+served on 443.
+
+### Tested on a real VM (InstaBox, 2026-11-06)
+
+A fresh Debian 13 VM on InstaBox (Firecracker, systemd), installed the way a user would: the one-line `install.sh`
+from a `file://` mirror of this branch's release build, then `--resume` after each fix. The hostname was
+`mail.<ipv6>.sslip.io`, so the DNS gates ran against real public DNS without owning a domain.
+
+**Worked first time:**
+- preflight;
+- the pinned Stalwart 1.0.3 download, checksum and bootstrap under systemd;
+- the edge on 80/443;
+- a real Let's Encrypt **production** order, and its failure turned into one sentence ("could not connect … on
+  port 80", the CA's own words one click away). InstaBox does not route inbound port 80 to the VM.
+- the setup link → owner → TOTP → console, through a private InstaBox port;
+- `certificate status`.
+
+**Found and fixed:**
+1. **IPv6-only servers could never finish.** Preflight passed them, then the host-record gate demanded an A record
+   that cannot exist. Now:
+   - preflight warns plainly;
+   - the host-record gate, the certificate pre-checks, the DNS checklist (AAAA required) and the reverse-DNS gate
+     use the IPv6 address when there is no IPv4;
+   - the outbound port-25 probe also tries IPv6.
+2. **`unbound` failed to start on images without recommended packages.** Its root trust anchor (`dns-root-data`) is
+   only *recommended*. Now:
+   - the installer installs it explicitly;
+   - apt runs quietly, and its output is shown only on failure;
+   - systemd's start limit is cleared before restarting;
+   - a resolver that still won't start is reported with the reason from its journal, and no longer aborts the
+     install (it only serves blocklist checks).
+3. **Let's Encrypt staging now sends a challenge without a `token`, which `instant-acme` 0.7 could not parse.** That
+   made every staging rehearsal fail. Now:
+   - `instant-acme` is upgraded to 0.8.5, which accepts such challenges;
+   - a staging failure unrelated to our names (outage, unreadable answer) never blocks production; production is
+     then asked at most every 12 minutes, within the 5 failed validations per hour limit.
+4. **Smaller fixes:**
+   - re-running the one-line script on a paused install now restarts the console on the new binary;
+   - no ANSI colour codes in the journal;
+   - installer log lines are no longer echoed twice in the terminal;
+   - a failed command shows one line, not systemd's whole message;
+   - the overview headline is one sentence;
+   - rehearsal failures name Let's Encrypt, not "Let's Encrypt (staging)";
+   - a temporary self-signed certificate no longer shows an expiry in the year 4096.
+
 ---
 
 ## 15. Sources

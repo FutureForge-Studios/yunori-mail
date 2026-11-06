@@ -65,11 +65,24 @@ impl App {
     /// For tests: in-memory DB + mock engine.
     #[cfg(test)]
     pub fn for_tests() -> Arc<Self> {
+        Self::for_tests_at(std::env::temp_dir().join("yunori-test-root"))
+    }
+
+    /// For tests that write files (certificates, locks): a private root.
+    #[cfg(test)]
+    pub fn for_tests_isolated() -> Arc<Self> {
+        Self::for_tests_at(
+            std::env::temp_dir().join(format!("yunori-test-{}", crate::util::random_token(9))),
+        )
+    }
+
+    #[cfg(test)]
+    fn for_tests_at(root: std::path::PathBuf) -> Arc<Self> {
         let db = Db::open_memory().unwrap();
         let cfg = Self::ensure_dev_config(&db).unwrap();
         let mock = Arc::new(MockEngine::seeded(&cfg.hostname, &cfg.primary_domain));
         Arc::new(Self {
-            paths: Paths::with_root(std::env::temp_dir().join("yunori-test-root")),
+            paths: Paths::with_root(root),
             db,
             dev: true,
             engine: RwLock::new(Some(mock.clone() as Arc<dyn Engine>)),

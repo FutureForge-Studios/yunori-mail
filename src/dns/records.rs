@@ -102,8 +102,19 @@ pub fn expected_records(domain: &str, zone_file: &str, ctx: &RecordContext) -> V
             ));
         }
         if let Some(ip) = &ctx.ipv6 {
-            out.push(exp("aaaa", "AAAA", &ctx.hostname, ip.clone(), false,
-                "IPv6 address of the mail server. Only publish it if you can also set IPv6 reverse DNS."));
+            if ctx.ipv4.is_none() {
+                out.push(exp(
+                    "aaaa",
+                    "AAAA",
+                    &ctx.hostname,
+                    ip.clone(),
+                    true,
+                    "Points your mail server's name at this machine (it has only an IPv6 address).",
+                ));
+            } else {
+                out.push(exp("aaaa", "AAAA", &ctx.hostname, ip.clone(), false,
+                    "IPv6 address of the mail server. Only publish it if you can also set IPv6 reverse DNS."));
+            }
         }
     }
 

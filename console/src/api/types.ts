@@ -121,7 +121,7 @@ export interface OverviewResponse {
 export type StepStatus = "pending" | "running" | "done" | "failed" | "waiting" | "skipped";
 
 export interface InstallStep {
-  id: string; // "preflight" | "inputs" | "host_record" | "install_engine" | "bootstrap_engine" | "edge_tls" | "firewall" | "dns" | "ptr" | "first_mailbox" | "done"
+  id: string; // "preflight" | "inputs" | "host_record" | "firewall" | "install_engine" | "bootstrap_engine" | "edge_tls" | "certificate" | "dns" | "ptr" | "first_mailbox" | "done"
   title: string;
   status: StepStatus;
   /** Plain-language status line; for "waiting" it says exactly what the user must do. */
@@ -219,6 +219,11 @@ export interface CreateMailboxRequest {
   quotaMb?: number | null;
   /** Omit to have the server generate a strong password. */
   password?: string;
+}
+/** POST /install/first-mailbox — the onboarding checklist's first mailbox (with postmaster@ and abuse@). */
+export interface FirstMailboxRequest {
+  local: string;
+  displayName?: string;
 }
 /** POST /mailboxes → CreateMailboxResponse (the password is shown once, never again). */
 export interface CreateMailboxResponse {
@@ -379,10 +384,49 @@ export interface ServiceStatus {
   detail: string | null;
 }
 
+/** Why the last certificate attempt failed, in words a person can act on. */
+export interface CertProblem {
+  kind:
+    | "dns_missing"
+    | "dns_elsewhere"
+    | "cloudflare_proxy"
+    | "ipv6_elsewhere"
+    | "caa"
+    | "edge_down"
+    | "unreachable"
+    | "wrong_response"
+    | "dns"
+    | "rate_limited"
+    | "ca_unreachable"
+    | "other";
+  name: string | null;
+  summary: string;
+  remedy: string;
+  /** The certificate authority's own words. */
+  detail?: string;
+  retryAfter?: string;
+}
+
+export type CertState = "valid" | "expiring" | "expired" | "self_signed" | "test" | "missing";
+
+/** GET /certificate (also `certificate` in GET /system). Automatic HTTPS status. */
 export interface CertificateInfo {
+  state: CertState;
   hostnames: string[];
   issuer: string | null;
   notAfter: string | null;
+  daysLeft: number | null;
+  /** "Let's Encrypt", or the configured CA. */
+  authority: string;
+  /** When automatic renewal starts (30 days before expiry). */
+  renewsAt: string | null;
+  lastAttempt: string | null;
+  lastSuccess: string | null;
+  nextAttempt: string | null;
+  failures: number;
+  problem: CertProblem | null;
+  /** A certificate is being requested right now. */
+  inProgress: boolean;
   /** The certificate actually served on 465/993 matches the one on disk. */
   servedMatches: boolean | null;
 }

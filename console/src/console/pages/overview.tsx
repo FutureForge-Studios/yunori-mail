@@ -1,8 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ArrowRight, CheckCircle2, XCircle } from "lucide-react";
 import { Card, KV, SectionLabel, Skeleton, StatCard } from "@/design/vendor/admin/ui";
 import { api } from "@/api/client";
+import type { CreateMailboxResponse } from "@/api/types";
 import { LoadError, usePageTitle } from "@/components/kit";
 import { CheckList, StatusBadge } from "@/components/status";
 import { fmtNumber } from "@/lib/format";
@@ -11,6 +12,7 @@ import { useSession } from "../session";
 import { SIGNAL_TARGET, VERDICT_META, useShell } from "../shell";
 import { navLocation } from "../nav";
 import { InstallChecklist } from "./install-checklist";
+import { SetupComplete } from "./setup-complete";
 
 const VERDICT_ICON = { ok: CheckCircle2, attention: AlertTriangle, degraded: XCircle, down: XCircle } as const;
 
@@ -23,8 +25,12 @@ export function OverviewPage() {
   const { session } = useSession();
   const { refreshHealth } = useShell();
   const { data, error, reload } = useApi("overview", api.overview);
+  // The end of onboarding stays on screen until dismissed, even after the checklist goes.
+  const [created, setCreated] = useState<CreateMailboxResponse | null>(null);
+  const [finished, setFinished] = useState(false);
 
   const onInstallComplete = useCallback(() => {
+    setFinished(true);
     void reload();
     refreshHealth();
   }, [reload, refreshHealth]);
@@ -54,6 +60,7 @@ export function OverviewPage() {
 
   const meta = VERDICT_META[data.verdict.level];
   const { server } = session;
+  const setupMode = !!data.setup && data.setup.steps.length > 0;
   // Where the worst signal gets fixed (skipped while the checklist is showing the way).
   const worst = data.setup ? undefined : data.signals.find((s) => s.status === "fail") ?? data.signals.find((s) => s.status === "warn");
   const fixTo = worst ? SIGNAL_TARGET[worst.id] : undefined;
@@ -65,10 +72,22 @@ export function OverviewPage() {
         <p className="mb-3 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
           Overview · <span className="normal-case tracking-normal font-mono">{server.hostname}</span>
         </p>
-        <h1 className="max-w-3xl font-serif text-[28px] leading-[1.15] tracking-tight sm:text-[34px]">{data.verdict.sentence}</h1>
+        {setupMode ? (
+          <>
+            <h1 className="font-serif text-[28px] leading-[1.15] tracking-tight sm:text-[34px]">Setting up your mail server</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-muted-foreground">
+              Every step is checked for real: DNS against public resolvers, the certificate with Let's Encrypt. You can close this
+              page; setup carries on by itself and picks up the moment something changes.
+            </p>
+          </>
+        ) : (
+          <h1 className="max-w-3xl text-balance font-serif text-[26px] leading-[1.18] tracking-tight [overflow-wrap:anywhere] sm:text-[32px]">
+            {data.verdict.sentence}
+          </h1>
+        )}
         <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-2">
-          <StatusBadge tone={meta.tone} icon={VERDICT_ICON[data.verdict.level]}>
-            {meta.label}
+          <StatusBadge tone={setupMode ? "warn" : meta.tone} icon={setupMode ? AlertTriangle : VERDICT_ICON[data.verdict.level]}>
+            {setupMode ? "Setting up" : meta.label}
           </StatusBadge>
           <span className="text-xs text-muted-foreground">
             Sending {data.sendingMode === "relay" ? "through a relay" : "directly"} · Yunori {server.version}
@@ -85,8 +104,24 @@ export function OverviewPage() {
         </div>
       </header>
 
-      {data.setup && data.setup.steps.length > 0 && <InstallChecklist initial={data.setup} onComplete={onInstallComplete} />}
+      {(created || finished) && (
+        <SetupComplete
+          created={created}
+          finished={finished || !data.setup}
+          onDismiss={() => {
+            setCreated(null);
+            setFinished(false);
+          }}
+        />
+      )}
 
+      {data.setup && data.setup.steps.length > 0 && (
+        <InstallChecklist initial={data.setup} onComplete={onInstallComplete} onMailboxCreated={setCreated} />
+      )}
+
+      {setupMode && (
+        <p className="mb-3 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">This server right now</p>
+      )}
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <StatLink to="/console/domains" label="Domains" value={data.stats.domains} hint={server.primaryDomain ? `Primary: ${server.primaryDomain}` : undefined} />
         <StatLink to="/console/mailboxes" label="Mailboxes" value={data.stats.mailboxes} hint="Across all domains" />

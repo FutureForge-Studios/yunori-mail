@@ -206,7 +206,10 @@ pub fn router(app: AppState) -> Router {
         // console
         .route("/overview", get(admin::overview))
         .route("/install", get(admin::install_state))
+        .route("/install/first-mailbox", post(admin::install_first_mailbox))
         .route("/preflight", get(admin::preflight))
+        .route("/certificate", get(admin::certificate))
+        .route("/certificate/renew", post(admin::certificate_renew))
         .route(
             "/domains",
             get(admin::list_domains).post(admin::create_domain),
