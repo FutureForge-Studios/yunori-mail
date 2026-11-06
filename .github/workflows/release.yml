@@ -1,7 +1,8 @@
 name: release
 
-# Tag a version to publish it (the tag must match Cargo.toml):
+# Publish a version (it must match Cargo.toml) either way:
 #   git tag v0.1.0 && git push origin v0.1.0
+#   Actions → release → Run workflow → version 0.1.0   (creates the v0.1.0 tag on the chosen branch)
 #
 # The release carries:
 #   yunori-mail-{x86_64,aarch64}-linux.tar.gz (+ .sha256)  static musl binaries, console embedded
@@ -13,9 +14,17 @@ name: release
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, e.g. 0.1.0 (must match Cargo.toml)"
+        required: true
 
 permissions:
   contents: read
+
+env:
+  TAG: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
 
 jobs:
   console:
@@ -59,7 +68,7 @@ jobs:
       - name: Tag matches Cargo.toml
         run: |
           v="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -n 1)"
-          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "Cargo.toml says $v but the tag is $GITHUB_REF_NAME"; exit 1; }
+          [ "v$v" = "$TAG" ] || { echo "Cargo.toml says $v but the release is $TAG"; exit 1; }
       - name: Toolchain (Rust, plus zig as the musl cross-linker)
         run: |
           rustup toolchain install stable --profile minimal --target ${{ matrix.target }}
@@ -79,7 +88,7 @@ jobs:
       - name: One-line installer against these files
         if: matrix.arch == 'x86_64'
         run: |
-          YUNORI_SKIP_INSTALL=1 YUNORI_VERSION="${GITHUB_REF_NAME#v}" YUNORI_BASE_URL="file://$PWD/dist" \
+          YUNORI_SKIP_INSTALL=1 YUNORI_VERSION="${TAG#v}" YUNORI_BASE_URL="file://$PWD/dist" \
             YUNORI_PREFIX="$RUNNER_TEMP/prefix" sh packaging/install.sh
           "$RUNNER_TEMP/prefix/bin/yunori-mail" --version
       - uses: actions/upload-artifact@v4
@@ -103,7 +112,7 @@ jobs:
           merge-multiple: true
       - name: Pin the installer to this release
         run: |
-          v="${GITHUB_REF_NAME#v}"
+          v="${TAG#v}"
           sed "s/^DEFAULT_VERSION=\"latest\"$/DEFAULT_VERSION=\"$v\"/" packaging/install.sh > dist/install.sh
           grep -q "^DEFAULT_VERSION=\"$v\"$" dist/install.sh
           (cd dist && sha256sum ./*.tar.gz install.sh | sed 's# \./# #' > SHA256SUMS)
@@ -112,5 +121,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --verify-tag \
-            --title "Yunori Mail Server ${GITHUB_REF_NAME#v}" --generate-notes
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A release made by hand in the GitHub UI: attach the files to it.
+            gh release upload "$TAG" dist/* --clobber
+          elif [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            # Manual run: the release creates the tag on the commit that was built.
+            gh release create "$TAG" dist/* --target "$GITHUB_SHA" \
+              --title "Yunori Mail Server ${TAG#v}" --generate-notes
+          else
+            gh release create "$TAG" dist/* --verify-tag \
+              --title "Yunori Mail Server ${TAG#v}" --generate-notes
+          fi
