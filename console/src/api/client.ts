@@ -1,6 +1,8 @@
 import type {
   AdminUser,
   Alias,
+  AppleProfileRequest,
+  AppleProfileResponse,
   ApiError,
   AuditResponse,
   CreateAliasRequest,
@@ -13,7 +15,11 @@ import type {
   DomainDnsResponse,
   CertificateInfo,
   FirstMailboxRequest,
+  FirstMailboxResponse,
   InstallState,
+  InviteAcceptRequest,
+  InviteInfo,
+  InviteLink,
   LoginRequest,
   Mailbox,
   OverviewResponse,
@@ -171,7 +177,7 @@ export const api = {
 
   overview: () => request<OverviewResponse>("GET", "/overview"),
   install: () => request<InstallState>("GET", "/install"),
-  createFirstMailbox: (body: FirstMailboxRequest) => request<CreateMailboxResponse>("POST", "/install/first-mailbox", body),
+  createFirstMailbox: (body: FirstMailboxRequest) => request<FirstMailboxResponse>("POST", "/install/first-mailbox", body),
   certificate: () => request<CertificateInfo>("GET", "/certificate"),
   /** "Try now": starts an attempt in the background; poll certificate() while inProgress. */
   renewCertificate: () => request<CertificateInfo>("POST", "/certificate/renew"),
@@ -190,6 +196,7 @@ export const api = {
     request<Mailbox>("PATCH", `/mailboxes/${id(mailboxId)}`, body),
   resetMailboxPassword: (mailboxId: string, password?: string) =>
     request<ResetPasswordResponse>("POST", `/mailboxes/${id(mailboxId)}/password`, password ? { password } : {}),
+  inviteMailbox: (mailboxId: string) => request<InviteLink>("POST", `/mailboxes/${id(mailboxId)}/invite`, {}),
   deleteMailbox: (mailboxId: string) => request<void>("DELETE", `/mailboxes/${id(mailboxId)}`),
 
   aliases: () => request<Alias[]>("GET", "/aliases"),
@@ -219,4 +226,8 @@ export const portalApi = {
   revokeAppPassword: (appPasswordId: string) =>
     request<void>("DELETE", `/portal/app-passwords/${id(appPasswordId)}`),
   logout: () => request<void>("POST", "/portal/logout", undefined, { allow401: true }),
+  inviteInfo: (token: string) => request<InviteInfo>("POST", "/portal/invite", { token }, { allow401: true }),
+  acceptInvite: (body: InviteAcceptRequest) =>
+    request<PortalMe>("POST", "/portal/invite/accept", body, { allow401: true }),
+  appleProfile: (body: AppleProfileRequest) => request<AppleProfileResponse>("POST", "/portal/devices/apple", body),
 };

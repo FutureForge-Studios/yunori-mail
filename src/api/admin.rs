@@ -1,13 +1,13 @@
 //! Console endpoints (admin session required).
 
-use super::{AdminAuth, ApiError, ApiResult, AppState};
+use super::{AdminAuth, ApiError, ApiResult, AppState, public_base};
 use crate::engine::{EAccount, EDomain, RelayConfig, alias_addresses};
 use crate::model::{Check, RELAY_PROVIDERS, SendingMode, Status, relay_provider};
 use crate::ops;
 use crate::util::{generate_password, normalize_domain, valid_email, valid_local_part};
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -42,6 +42,8 @@ pub struct MailboxOut {
     used_bytes: Option<u64>,
     aliases: Vec<String>,
     created_at: Option<String>,
+    /// Expiry of an unused invite link, while one is out.
+    invite_expires_at: Option<String>,
 }
 
 fn domain_out(app: &AppState, d: &EDomain, accounts: &[EAccount], primary: &str) -> DomainOut {
@@ -76,7 +78,17 @@ fn mailbox_out(a: &EAccount, domains: &[EDomain]) -> MailboxOut {
         used_bytes: a.used_bytes,
         aliases: alias_addresses(a, domains),
         created_at: a.created_at.clone(),
+        invite_expires_at: None,
     }
+}
+
+/// `https://<host>/account/welcome#invite=<token>`: the token rides the
+/// fragment, so it never reaches a server log or a `Referer`.
+fn invite_link(app: &AppState, headers: &HeaderMap, token: &str) -> String {
+    format!(
+        "{}/account/welcome#invite={token}",
+        public_base(app, headers)
+    )
 }
 
 fn primary(app: &AppState) -> String {
@@ -545,11 +557,20 @@ pub async fn list_mailboxes(
 ) -> ApiResult<Json<Vec<MailboxOut>>> {
     let e = app.engine()?;
     let (domains, accounts) = (e.list_domains().await?, e.list_accounts().await?);
+    let invites = app.db.pending_invites()?;
     Ok(Json(
         accounts
             .iter()
             .filter(|a| q.domain_id.as_ref().is_none_or(|d| &a.domain_id == d))
-            .map(|a| mailbox_out(a, &domains))
+            .map(|a| {
+                let mut m = mailbox_out(a, &domains);
+                m.invite_expires_at = invites
+                    .iter()
+                    .rev()
+                    .find(|(id, _)| id == &a.id)
+                    .map(|(_, exp)| exp.clone());
+                m
+            })
             .collect(),
     ))
 }
@@ -562,6 +583,10 @@ pub struct CreateMailbox {
     display_name: Option<String>,
     quota_mb: Option<u64>,
     password: Option<String>,
+    /// Let the person choose their own password through an invite link
+    /// instead of being handed one.
+    #[serde(default)]
+    invite: bool,
 }
 
 fn check_password(pw: &str) -> ApiResult<()> {
@@ -574,6 +599,7 @@ fn check_password(pw: &str) -> ApiResult<()> {
 pub async fn create_mailbox(
     State(app): State<AppState>,
     a: AdminAuth,
+    headers: HeaderMap,
     Json(req): Json<CreateMailbox>,
 ) -> ApiResult<Response> {
     let local = req.local.trim().to_ascii_lowercase();
@@ -583,12 +609,14 @@ pub async fn create_mailbox(
                 .field("local"),
         );
     }
-    let password = match req.password.filter(|p| !p.is_empty()) {
+    let password = match req.password.filter(|p| !p.is_empty() && !req.invite) {
         Some(p) => {
             check_password(&p)?;
             p
         }
-        None => generate_password(20),
+        // Invite mode: a long random password nobody sees until the person
+        // replaces it with their own.
+        None => generate_password(if req.invite { 32 } else { 20 }),
     };
     let e = app.engine()?;
     let domains = e.list_domains().await?;
@@ -621,11 +649,59 @@ pub async fn create_mailbox(
             .map(|q| format!("quota {} MB", q / 1048576))
             .as_deref(),
     )?;
+    let mut out = mailbox_out(&acct, &domains);
+    if req.invite {
+        let (token, expires_at) = app
+            .db
+            .create_invite(&acct.id, &acct.address, &a.admin.email)?;
+        app.db
+            .audit(&a.admin.email, "mailbox.invite", Some(&acct.address), None)?;
+        out.invite_expires_at = Some(expires_at.clone());
+        return Ok((
+            StatusCode::CREATED,
+            Json(json!({
+                "mailbox": out,
+                "invite": { "url": invite_link(&app, &headers, &token), "expiresAt": expires_at },
+            })),
+        )
+            .into_response());
+    }
     Ok((
         StatusCode::CREATED,
-        Json(json!({ "mailbox": mailbox_out(&acct, &domains), "password": password })),
+        Json(json!({ "mailbox": out, "password": password })),
     )
         .into_response())
+}
+
+/// A fresh invite link for an existing mailbox (replaces an unused one). The
+/// mailbox keeps working with its current password until the person sets theirs.
+pub async fn invite_mailbox(
+    State(app): State<AppState>,
+    a: AdminAuth,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> ApiResult<Json<Value>> {
+    let acct = app
+        .engine()?
+        .list_accounts()
+        .await?
+        .into_iter()
+        .find(|x| x.id == id)
+        .ok_or_else(|| ApiError::not_found("That mailbox"))?;
+    if acct.is_admin {
+        return Err(ApiError::conflict(
+            "This is the mail engine's administrator account; it is not for reading mail.",
+        ));
+    }
+    let (token, expires_at) = app
+        .db
+        .create_invite(&acct.id, &acct.address, &a.admin.email)?;
+    app.db
+        .audit(&a.admin.email, "mailbox.invite", Some(&acct.address), None)?;
+    Ok(Json(json!({
+        "url": invite_link(&app, &headers, &token),
+        "expiresAt": expires_at,
+    })))
 }
 
 #[derive(Deserialize)]
@@ -682,6 +758,8 @@ pub async fn reset_password(
         .find(|x| x.id == id)
         .ok_or_else(|| ApiError::not_found("That mailbox"))?;
     e.set_password(&id, &password).await?;
+    // A password handed over directly supersedes an outstanding invite.
+    app.db.revoke_invites(&id)?;
     app.db.audit(
         &a.admin.email,
         "mailbox.password_reset",
@@ -709,6 +787,7 @@ pub async fn delete_mailbox(
         ));
     }
     e.delete_account(&id).await?;
+    app.db.revoke_invites(&id)?;
     app.db
         .audit(&a.admin.email, "mailbox.delete", Some(&acct.address), None)?;
     Ok(StatusCode::NO_CONTENT)

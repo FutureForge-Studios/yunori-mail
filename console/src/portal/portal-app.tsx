@@ -1,6 +1,6 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
-import { ExternalLink, LogOut, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, LogOut, Plus, Trash2 } from "lucide-react";
 import { YunoriMark } from "@/components/yunori-logo";
 import { Button } from "@/design/vendor/ui/button";
 import { Input } from "@/design/vendor/ui/input";
@@ -16,11 +16,13 @@ import { Meter } from "@/components/meter";
 import { PasswordInput, StrengthHint } from "@/components/password-input";
 import { SecretReveal } from "@/components/secret-reveal";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { fmtBytes, fmtDate, openInYunoriUrl, pct } from "@/lib/format";
+import { fmtBytes, fmtDate, pct } from "@/lib/format";
 import { MIN_PASSWORD } from "@/lib/password";
 import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { NotFound } from "@/pages/not-found";
+import { ConnectDevices } from "./devices";
+import { PortalWelcome } from "./welcome";
 
 /**
  * /account — the self-service portal every mailbox user gets. Separate session
@@ -30,6 +32,7 @@ export default function PortalApp() {
   return (
     <Routes>
       <Route path="login" element={<PortalLogin />} />
+      <Route path="welcome" element={<PortalWelcome />} />
       <Route index element={<PortalHome />} />
       <Route path="*" element={<NotFound />} />
     </Routes>
@@ -94,7 +97,7 @@ function PortalLogin() {
     <AuthFrame
       eyebrow="Yunori Mail"
       title="Your mailbox"
-      subtitle="Sign in to change your password, manage app passwords and find your mail settings."
+      subtitle="Sign in to set up your devices, change your password and manage app passwords."
       footnote="Forgot your password? Ask the person who runs this mail server to reset it."
     >
       <form onSubmit={onSubmit} className="space-y-4" noValidate>
@@ -167,6 +170,15 @@ function PortalHome() {
 }
 
 function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void }) {
+  const [params, setParams] = useSearchParams();
+  // Arrived from an invite: the password is set, devices are next.
+  const [welcome] = useState(() => params.get("welcome") === "1");
+  const connectRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!welcome) return;
+    setParams({}, { replace: true });
+    connectRef.current?.scrollIntoView({ block: "start" });
+  }, [welcome, setParams]);
   const p = pct(me.usedBytes, me.quotaBytes);
   const used = fmtBytes(me.usedBytes ?? 0);
   const storageText = me.quotaBytes ? `${used} of ${fmtBytes(me.quotaBytes)} used` : `${used} used · no limit`;
@@ -183,19 +195,19 @@ function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void
           <CopyButton value={me.address} label="your address" />
         </div>
 
-        <div className="mt-8 flex flex-col gap-3 rounded-xl border border-border/60 bg-card/40 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <p className="text-sm font-medium">Read your mail in Yunori</p>
-            <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">A calm inbox on the web and on your phone. Your address is filled in for you.</p>
-          </div>
-          <Button asChild variant="torii" className="shrink-0">
-            <a href={openInYunoriUrl(me.clientOrigin, me.address)} target="_blank" rel="noopener noreferrer">
-              Open in Yunori
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          </Button>
-        </div>
       </section>
+
+      <div ref={connectRef} className="scroll-mt-6">
+        {welcome && (
+          <p role="status" className="mt-8 flex items-start gap-2 rounded-lg border border-emerald-600/30 bg-emerald-500/5 px-4 py-3 text-sm leading-relaxed">
+            <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
+            <span>Your password is set and your mailbox is ready. Now connect the devices you'll read it on.</span>
+          </p>
+        )}
+        <Section title="Connect your devices" blurb="Each phone, computer or app can get its own app password, so you can sign one out without changing your password.">
+          <ConnectDevices me={me} onChange={onChange} />
+        </Section>
+      </div>
 
       <Section title="Storage">
         <Meter value={p} label="Mailbox storage" valueText={storageText} />
@@ -210,6 +222,7 @@ function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void
           <SettingRow label="Username" value={me.address} />
           <SettingRow label="Incoming (IMAP)" value={me.settings.imap.host} extra={`Port ${me.settings.imap.port} · ${me.settings.imap.security}`} />
           <SettingRow label="Outgoing (SMTP)" value={me.settings.smtp.host} extra={`Port ${me.settings.smtp.port} · ${me.settings.smtp.security}`} />
+          <SettingRow label="Calendars & contacts" value={me.settings.dav.url} extra="CalDAV · CardDAV" />
         </dl>
       </Section>
 

@@ -39,11 +39,23 @@ curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/do
     optionally set a custom MAIL FROM domain.
   - **Resend:** paste the DKIM value; the `send.` bounce records are filled in for your region.
   - The provider's records join each domain's DNS checklist and are checked like every other record.
-- **A self-service portal** at `/account` for every mailbox: change password, app passwords, mail-app settings,
-  and "Open in Yunori".
+- **Invite links instead of handed-over passwords.** Create a mailbox (or pick an existing one) and send its owner
+  a link: they choose their own password and land on their account page. The token travels in the URL fragment,
+  only its hash is stored, it works once and expires after 7 days; a password reset withdraws it.
+- **A self-service portal** at `/account` for every mailbox: password, app passwords, all the settings, and
+  **Connect your devices**:
+  - **Yunori:** a QR code that opens the client on a phone with the address filled in.
+  - **iPhone, iPad & Mac:** a configuration profile (mail, and optionally calendars and contacts) built around an
+    app password made for that device. It downloads once, within 10 minutes, from a QR code or on the device itself,
+    and is never written to disk. iOS Mail ignores autoconfig, so this is how a phone is set up without typing
+    server names.
+  - **Android & other apps:** autoconfig covers mail; DAVx⁵ covers calendars and contacts.
+- **Calendars and contacts** (Stalwart's CalDAV/CardDAV) are reachable through the edge
+  (`/.well-known/caldav`, `/.well-known/carddav`) and announced in autoconfig.
 - **Works with the Yunori client out of the box.**
   - The edge serves Thunderbird autoconfig carrying the Yunori marker, so the client recognises the server.
-  - Consoles link users straight into the client's connect flow (`/welcome?connect=you@domain`).
+  - Consoles and the portal link users straight into the client's connect flow (`/welcome?connect=you@domain`);
+    the client opens its mailbox step with the address filled in and the server's settings detected.
 
 Idle footprint target: under 256 MB RAM for the whole box (Stalwart ~100 MB, `yunori-mail` < 30 MB, unbound).
 

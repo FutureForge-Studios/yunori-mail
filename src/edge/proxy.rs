@@ -63,6 +63,19 @@ fn copy_headers(from: &HeaderMap, to: &mut HeaderMap) {
     }
 }
 
+/// The X-Forwarded-For value for a client, if any. Only a real client address
+/// is forwarded: Stalwart rejects (HTTP 400) one that claims loopback —
+/// including the IPv4-mapped `::ffff:127.0.0.1` a dual-stack listener reports —
+/// and an unknown address is better omitted (it then uses the loopback peer).
+/// Verified on a live 1.0.3 engine.
+fn forwarded_for(client_ip: &str) -> Option<axum::http::HeaderValue> {
+    let ip = client_ip.parse::<std::net::IpAddr>().ok()?.to_canonical();
+    if ip.is_loopback() || ip.is_unspecified() {
+        return None;
+    }
+    ip.to_string().parse().ok()
+}
+
 pub async fn forward(
     engine_url: &str,
     client_ip: &str,
@@ -80,14 +93,7 @@ pub async fn forward(
         .unwrap_or(reqwest::Method::GET);
     let mut headers = HeaderMap::new();
     copy_headers(req.headers(), &mut headers);
-    // Only forward a real client address: Stalwart rejects (HTTP 400) an
-    // X-Forwarded-For that claims loopback, and an unknown address is better
-    // omitted (it then uses the loopback peer). Verified on a live 1.0.3 engine.
-    if let Ok(ip) = client_ip.parse::<std::net::IpAddr>()
-        && !ip.is_loopback()
-        && !ip.is_unspecified()
-        && let Ok(v) = ip.to_string().parse()
-    {
+    if let Some(v) = forwarded_for(client_ip) {
         headers.insert(HeaderName::from_static("x-forwarded-for"), v);
     }
     headers.insert(
@@ -144,5 +150,17 @@ mod tests {
         assert!(!is_proxied("/login"));
         assert!(!is_proxied("/dav/../admin"));
         assert!(!is_proxied("/api/schema"));
+    }
+
+    #[test]
+    fn forwarded_for_is_canonical_and_never_loopback() {
+        let v = |s: &str| forwarded_for(s).map(|h| h.to_str().unwrap().to_string());
+        assert_eq!(v("::ffff:203.0.113.9").as_deref(), Some("203.0.113.9"));
+        assert_eq!(v("203.0.113.9").as_deref(), Some("203.0.113.9"));
+        assert_eq!(v("2001:db8::9").as_deref(), Some("2001:db8::9"));
+        assert_eq!(v("::ffff:127.0.0.1"), None);
+        assert_eq!(v("127.0.0.1"), None);
+        assert_eq!(v("::1"), None);
+        assert_eq!(v("unknown"), None);
     }
 }

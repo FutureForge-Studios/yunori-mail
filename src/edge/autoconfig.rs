@@ -1,7 +1,9 @@
 //! Thunderbird-style autoconfig with the Yunori marker. The Yunori client's
 //! discovery maps `<displayShortName>Yunori</displayShortName>` from a domain's
 //! own autoconfig to its `yunori` provider preset (see
-//! `server/services/discovery.ts` in the client).
+//! `server/services/discovery.ts` in the client). Calendars and contacts use
+//! the same element shape Mail-in-a-Box ships (`addressbook`/`calendar`, after
+//! the provider), pointing at the well-known DAV paths the edge proxies.
 
 fn xml_escape(s: &str) -> String {
     s.replace('&', "&amp;")
@@ -45,6 +47,16 @@ pub fn render(domain: &str, hostname: &str) -> String {
       <descr lang="en">Yunori Mail account portal</descr>
     </documentation>
   </emailProvider>
+  <addressbook type="carddav">
+    <username>%EMAILADDRESS%</username>
+    <authentication system="http">basic</authentication>
+    <url>https://{h}/.well-known/carddav</url>
+  </addressbook>
+  <calendar type="caldav">
+    <username>%EMAILADDRESS%</username>
+    <authentication system="http">basic</authentication>
+    <url>https://{h}/.well-known/caldav</url>
+  </calendar>
 </clientConfig>
 "#
     )
@@ -69,6 +81,11 @@ mod tests {
         assert!(x.contains("<port>993</port>"));
         assert!(x.contains("<port>465</port>"));
         assert!(x.contains("https://mail.example.com/account"));
+        assert!(x.contains("<url>https://mail.example.com/.well-known/carddav</url>"));
+        assert!(x.contains("<url>https://mail.example.com/.well-known/caldav</url>"));
+        // The DAV elements sit after the provider, so a reader that only
+        // knows `emailProvider` is unaffected.
+        assert!(x.find("</emailProvider>") < x.find("<addressbook"));
     }
 
     #[test]

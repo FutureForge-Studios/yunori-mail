@@ -17,7 +17,7 @@ import { Input } from "@/design/vendor/ui/input";
 import { Label } from "@/design/vendor/ui/label";
 import { Card } from "@/design/vendor/admin/ui";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
-import type { CreateMailboxResponse, DnsRecord, InstallState, InstallStep, StepStatus } from "@/api/types";
+import type { FirstMailboxResponse, DnsRecord, InstallState, InstallStep, StepStatus } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { FieldError } from "@/components/kit";
 import { StatusBadge, toneText, type Tone } from "@/components/status";
@@ -60,7 +60,7 @@ export function InstallChecklist({
 }: {
   initial: InstallState;
   onComplete: () => void;
-  onMailboxCreated: (r: CreateMailboxResponse) => void;
+  onMailboxCreated: (r: FirstMailboxResponse) => void;
 }) {
   const [state, setState] = useState<InstallState>(initial);
   const completed = useRef(false);
@@ -259,7 +259,7 @@ function CurrentStep({
   total: number;
   upNext: InstallStep[];
   onRecheck: () => Promise<void>;
-  onMailboxCreated: (r: CreateMailboxResponse) => void;
+  onMailboxCreated: (r: FirstMailboxResponse) => void;
 }) {
   const meta = STATUS[step.status];
   const waiting = step.status === "waiting";
@@ -382,7 +382,7 @@ function CertificateTodo({ fallback, onRecheck }: { fallback: string | null; onR
 }
 
 /** The last thing setup needs: an address. Creates it with postmaster@ and abuse@. */
-function FirstMailboxTodo({ onCreated, onRecheck }: { onCreated: (r: CreateMailboxResponse) => void; onRecheck: () => Promise<void> }) {
+function FirstMailboxTodo({ onCreated, onRecheck }: { onCreated: (r: FirstMailboxResponse) => void; onRecheck: () => Promise<void> }) {
   const { session } = useSession();
   const domain = session.server.primaryDomain ?? "";
   const [local, setLocal] = useState("hello");

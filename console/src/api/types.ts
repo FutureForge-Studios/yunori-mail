@@ -209,6 +209,8 @@ export interface Mailbox {
   usedBytes: number | null;
   aliases: string[]; // full addresses
   createdAt: string | null;
+  /** Expiry of an unused invite link, while one is out. */
+  inviteExpiresAt?: string | null;
 }
 
 /** GET /mailboxes?domainId= → Mailbox[] */
@@ -219,17 +221,32 @@ export interface CreateMailboxRequest {
   quotaMb?: number | null;
   /** Omit to have the server generate a strong password. */
   password?: string;
+  /** Let the person choose their own password through an invite link (no password is returned). */
+  invite?: boolean;
+}
+/** A one-time link to /account/welcome#invite=…, valid for 7 days. */
+export interface InviteLink {
+  url: string;
+  expiresAt: string;
 }
 /** POST /install/first-mailbox — the onboarding checklist's first mailbox (with postmaster@ and abuse@). */
 export interface FirstMailboxRequest {
   local: string;
   displayName?: string;
 }
-/** POST /mailboxes → CreateMailboxResponse (the password is shown once, never again). */
+/** POST /mailboxes → CreateMailboxResponse (the password is shown once, never again).
+ *  With `invite: true` the response carries `invite` instead of `password`. */
 export interface CreateMailboxResponse {
+  mailbox: Mailbox;
+  password?: string;
+  invite?: InviteLink;
+}
+/** POST /install/first-mailbox → the first mailbox and its generated password (shown once). */
+export interface FirstMailboxResponse {
   mailbox: Mailbox;
   password: string;
 }
+/** POST /mailboxes/:id/invite → InviteLink (replaces an unused one; a password reset withdraws it). */
 /** PATCH /mailboxes/:id → Mailbox */
 export interface UpdateMailboxRequest {
   displayName?: string | null;
@@ -489,8 +506,33 @@ export interface PortalMe {
   settings: {
     imap: { host: string; port: number; security: "SSL/TLS" };
     smtp: { host: string; port: number; security: "SSL/TLS" };
+    /** Calendars and contacts (CalDAV/CardDAV); apps find the paths from the host. */
+    dav: { host: string; url: string };
   };
   clientOrigin: string;
+}
+
+/** POST /portal/invite {token} → InviteInfo, or 410 { code: "invite_invalid" } */
+export interface InviteInfo {
+  address: string;
+  displayName: string | null;
+  expiresAt: string;
+}
+/** POST /portal/invite/accept {token, password} → PortalMe (and a portal session) */
+export interface InviteAcceptRequest {
+  token: string;
+  password: string;
+}
+
+/** POST /portal/devices/apple {device, calendars} → a one-time profile link (10 minutes) */
+export interface AppleProfileRequest {
+  device: string;
+  calendars: boolean;
+}
+export interface AppleProfileResponse {
+  url: string;
+  expiresAt: string;
+  appPassword: AppPassword;
 }
 
 /** POST /portal/password {current, next} → 204 */
