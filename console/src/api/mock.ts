@@ -130,6 +130,8 @@ interface DB {
   audit: AuditEntry[];
   portalAddress: string | null;
   appPasswords: Record<string, AppPassword[]>;
+  /** Invite links by token (the real server keeps only a hash). */
+  invites?: Record<string, { mailboxId: string; expiresAt: string }>;
   seq: number;
 }
 
@@ -570,7 +572,31 @@ function addressOf(db: DB, m: MailboxRow) {
 function toMailbox(db: DB, m: MailboxRow): Mailbox {
   const { password: _pw, ...rest } = m;
   const address = addressOf(db, m);
-  return { ...rest, address, aliases: db.aliases.filter((a) => a.mailboxId === m.id).map((a) => a.address) };
+  const invite = Object.values(db.invites ?? {}).find((i) => i.mailboxId === m.id && Date.parse(i.expiresAt) > Date.now());
+  return {
+    ...rest,
+    address,
+    aliases: db.aliases.filter((a) => a.mailboxId === m.id).map((a) => a.address),
+    inviteExpiresAt: invite?.expiresAt ?? null,
+  };
+}
+
+/** A fresh invite for a mailbox, replacing an unused one (7 days, single use). */
+function createInvite(db: DB, mailboxId: string) {
+  const invites = Object.fromEntries(Object.entries(db.invites ?? {}).filter(([, i]) => i.mailboxId !== mailboxId));
+  const token = randomFrom("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789", 43);
+  const expiresAt = new Date(Date.now() + 7 * 864e5).toISOString().replace(/\.\d+Z$/, "Z");
+  invites[token] = { mailboxId, expiresAt };
+  db.invites = invites;
+  return { url: `${window.location.origin}/account/welcome#invite=${token}`, expiresAt };
+}
+
+function liveInvite(db: DB, token: string) {
+  const i = db.invites?.[token];
+  const m = i && Date.parse(i.expiresAt) > Date.now() ? db.mailboxes.find((x) => x.id === i.mailboxId) : undefined;
+  if (!i || !m)
+    fail(410, "invite_invalid", "This invite link has expired or was already used. Ask the person who runs this mail server for a new one.");
+  return { invite: i!, mailbox: m! };
 }
 
 // ── derived views ────────────────────────────────────────────────────────────
@@ -974,6 +1000,21 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
       db.portalAddress = null;
       return [204];
     }
+    if (is("POST", "/portal/invite")) {
+      const { invite, mailbox } = liveInvite(db, str(body, "token").trim());
+      return [200, { address: addressOf(db, mailbox), displayName: mailbox.displayName, expiresAt: invite.expiresAt }];
+    }
+    if (is("POST", "/portal/invite/accept")) {
+      const token = str(body, "token").trim();
+      const password = str(body, "password");
+      if (password.length < 12) fail(400, "invalid_request", "Use at least 12 characters.", "password");
+      const { mailbox } = liveInvite(db, token);
+      delete db.invites![token];
+      mailbox.password = password;
+      db.portalAddress = addressOf(db, mailbox);
+      audit(db, "mailbox.invite_accept", db.portalAddress);
+      return [200, portalMe(db)];
+    }
     const address = requirePortal(db);
     if (is("GET", "/portal/me")) return [200, portalMe(db)];
     if (is("POST", "/portal/password")) {
@@ -993,6 +1034,15 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
       db.appPasswords[address] = [...(db.appPasswords[address] ?? []), ap];
       const secret = [0, 1, 2, 3].map(() => randomFrom("abcdefghijkmnopqrstuvwxyz", 4)).join(" ");
       return [200, { appPassword: ap, secret }];
+    }
+    if (is("POST", "/portal/devices/apple")) {
+      const device = str(body, "device").trim();
+      if (!device || device.length > 40) fail(400, "invalid_request", "Name the device, like “iPhone” (up to 40 characters).", "device");
+      const ap: AppPassword = { id: `ap_${++db.seq}`, description: `${device} (profile)`, createdAt: iso() };
+      db.appPasswords[address] = [...(db.appPasswords[address] ?? []), ap];
+      const token = randomFrom("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789", 32);
+      const expiresAt = new Date(Date.now() + 10 * 60e3).toISOString().replace(/\.\d+Z$/, "Z");
+      return [201, { url: `https://${HOST}/account/profile/${token}`, expiresAt, appPassword: ap }];
     }
     if (method === "DELETE" && seg[1] === "app-passwords" && seg[2]) {
       const list = db.appPasswords[address] ?? [];
@@ -1137,7 +1187,8 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     if (findMailboxByAddress(db, address)) fail(409, "conflict", `${address} already exists.`, "local");
     if (db.aliases.some((a) => a.address === address))
       fail(409, "conflict", `${address} is an alias right now. Remove the alias first, or pick another name.`, "local");
-    const pw = typeof body.password === "string" && body.password ? body.password : null;
+    const inviteMode = body.invite === true;
+    const pw = !inviteMode && typeof body.password === "string" && body.password ? body.password : null;
     if (pw !== null && pw.length < 12) fail(400, "weak_password", "Use at least 12 characters.", "password");
     const password = pw ?? genPassword();
     const quotaMb = typeof body.quotaMb === "number" ? body.quotaMb : null;
@@ -1145,6 +1196,11 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     const row: MailboxRow = { id: `mbx_${++db.seq}`, local, domainId: d!.id, displayName, role: "user", quotaBytes: quotaMb ? quotaMb * MB : null, usedBytes: 0, createdAt: iso(), password };
     db.mailboxes.push(row);
     audit(db, "mailbox.create", address, quotaMb ? `Quota ${quotaMb >= 1024 ? `${quotaMb / 1024} GB` : `${quotaMb} MB`}` : "Unlimited");
+    if (inviteMode) {
+      const invite = createInvite(db, row.id);
+      audit(db, "mailbox.invite", address);
+      return [201, { mailbox: toMailbox(db, row), invite }];
+    }
     return [200, { mailbox: toMailbox(db, row), password }];
   }
   if (seg[0] === "mailboxes" && seg[1]) {
@@ -1152,9 +1208,16 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     if (!m) fail(404, "not_found", "That mailbox doesn't exist (any more).");
     const box = m!;
     const address = addressOf(db, box);
+    if (method === "POST" && seg[2] === "invite") {
+      if (box.role === "admin") fail(409, "conflict", "This is the mail engine's administrator account; it is not for reading mail.");
+      const invite = createInvite(db, box.id);
+      audit(db, "mailbox.invite", address);
+      return [200, invite];
+    }
     if (method === "POST" && seg[2] === "password") {
       const given = str(body, "password");
       if (given && given.length < 12) fail(400, "weak_password", "Use at least 12 characters.", "password");
+      db.invites = Object.fromEntries(Object.entries(db.invites ?? {}).filter(([, i]) => i.mailboxId !== box.id));
       box.password = given || genPassword();
       audit(db, "mailbox.password_reset", address);
       return [200, { password: box.password }];
@@ -1349,7 +1412,11 @@ function portalMe(db: DB): PortalMe {
     quotaBytes: m.quotaBytes,
     usedBytes: m.usedBytes,
     appPasswords: db.appPasswords[address] ?? [],
-    settings: { imap: { host: HOST, port: 993, security: "SSL/TLS" }, smtp: { host: HOST, port: 465, security: "SSL/TLS" } },
+    settings: {
+      imap: { host: HOST, port: 993, security: "SSL/TLS" },
+      smtp: { host: HOST, port: 465, security: "SSL/TLS" },
+      dav: { host: HOST, url: `https://${HOST}/` },
+    },
     clientOrigin: CLIENT_ORIGIN,
   };
 }

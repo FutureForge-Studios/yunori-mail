@@ -6,6 +6,7 @@ pub mod acme;
 pub mod autoconfig;
 pub mod certs;
 pub mod console;
+pub mod mobileconfig;
 pub mod proxy;
 pub mod tls;
 
@@ -73,6 +74,36 @@ async fn autoconfig_handler(
         .into_response()
 }
 
+/// One-time `.mobileconfig` download (the link a portal QR code carries).
+async fn device_profile(State(app): State<AppState>, Path(token): Path<String>) -> Response {
+    let profile = valid_token(&token)
+        .then(|| crate::api::take_profile(&app, &token))
+        .flatten();
+    let Some(p) = profile else {
+        return (
+            StatusCode::GONE,
+            [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+            "This setup link has expired or was already used.\nMake a new one on your account page (/account), under Connect your devices.\n",
+        )
+            .into_response();
+    };
+    (
+        [
+            (
+                header::CONTENT_TYPE,
+                "application/x-apple-aspen-config".to_string(),
+            ),
+            (
+                header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"{}\"", p.filename),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        p.body.as_bytes().to_vec(),
+    )
+        .into_response()
+}
+
 async fn spa() -> Response {
     console::index()
 }
@@ -104,7 +135,10 @@ async fn client_ip(req: Request, next: Next) -> Response {
     let ip = req
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .map(|c| c.0.ip().to_string())
+        // The listener is dual-stack, so IPv4 peers arrive as `::ffff:a.b.c.d`;
+        // canonical form keeps throttling keys, the audit log and the
+        // engine's X-Forwarded-For in plain IPv4.
+        .map(|c| c.0.ip().to_canonical().to_string())
         .unwrap_or_else(|| "unknown".into());
     req.headers_mut().insert(
         "x-yunori-client-ip",
@@ -157,6 +191,7 @@ pub fn router(app: AppState) -> Router {
         .route("/console", get(spa))
         .route("/console/{*rest}", get(spa))
         .route("/account", get(spa))
+        .route("/account/profile/{token}", get(device_profile))
         .route("/account/{*rest}", get(spa))
         .route("/_yunori/{*path}", get(asset))
         .route("/healthz", get(|| async { "ok" }))

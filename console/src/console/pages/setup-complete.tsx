@@ -1,7 +1,7 @@
 import { ArrowUpRight, PartyPopper } from "lucide-react";
 import { Button } from "@/design/vendor/ui/button";
 import { Card, KV, SectionLabel } from "@/design/vendor/admin/ui";
-import type { CreateMailboxResponse } from "@/api/types";
+import type { FirstMailboxResponse } from "@/api/types";
 import { SecretReveal } from "@/components/secret-reveal";
 import { openInYunoriUrl } from "@/lib/format";
 import { useSession } from "../session";
@@ -16,7 +16,7 @@ export function SetupComplete({
   finished,
   onDismiss,
 }: {
-  created: CreateMailboxResponse | null;
+  created: FirstMailboxResponse | null;
   finished: boolean;
   onDismiss: () => void;
 }) {

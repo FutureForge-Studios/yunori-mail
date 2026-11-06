@@ -37,9 +37,9 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 | `src/relay.rs` | Relay provider rules (Amazon SES region→host, Easy DKIM, MAIL FROM; Resend DKIM + `send.`) |
 | `src/installer/` | 12 resumable steps + OS operations (pinned engine download, systemd, firewall) |
 | `src/cli.rs` | Terminal wizard (preflight first, re-asks bad answers, summary card) and day-two commands |
-| `src/edge/` | rustls, automatic HTTPS (`certs.rs`: when/why/backoff/staging rehearsal; `acme.rs`: the CA), allowlisted JMAP/DAV proxy, autoconfig, embedded console |
+| `src/edge/` | rustls, automatic HTTPS (`certs.rs`: when/why/backoff/staging rehearsal; `acme.rs`: the CA), allowlisted JMAP/DAV proxy, autoconfig (mail + DAV), Apple profiles (`mobileconfig.rs`), embedded console |
 | `src/api/` | Console + `/account` portal REST API |
-| `src/store/` | SQLite, AES-256-GCM vault, hash-chained audit log |
+| `src/store/` | SQLite, AES-256-GCM vault, hash-chained audit log, mailbox invites |
 | `console/` | React 19 + Vite + Tailwind SPA in the yunori.email design |
 
 ## Invariants (don't regress)
@@ -52,7 +52,10 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 - **Certificates only go through `edge::certs::ensure`** (never `acme::order` directly): it holds the cross-process
   lock, the backoff and the staging rehearsal that keep Let's Encrypt's production rate limits safe. Every failure
   becomes a `CertProblem` with a summary and a remedy a person can act on.
-- **The setup token travels in the URL fragment** (`/console/setup#token=…`) and is shown once; never log it.
+- **The setup token travels in the URL fragment** (`/console/setup#token=…`) and is shown once; never log it. Mailbox
+  invites follow the same rule (`/account/welcome#invite=…`, hash stored, single use, 7 days).
+- **Device profiles carry an app password**: built in memory, served once (`/account/profile/<token>`, 10 minutes),
+  never written to disk or logged.
 - **Console admins need TOTP**; sessions are revocable DB rows; every mutation is audit-logged (hash chain).
 - **The portal acts as the mailbox user** with the user's own credentials, held in memory for at most 30 minutes.
 - **Design:** colours/type/mark come from yunori.email (`console/src/design/yunori/tokens.css`, generated); primitives

@@ -23,6 +23,14 @@ pub struct PortalSession {
     pub expires: Instant,
 }
 
+/// A device profile waiting to be downloaded once (`/account/profile/<token>`).
+/// It carries an app password, so it lives in memory only, for minutes.
+pub struct PendingProfile {
+    pub body: Zeroizing<String>,
+    pub filename: String,
+    pub expires: Instant,
+}
+
 pub struct App {
     pub paths: Paths,
     pub db: Db,
@@ -32,6 +40,8 @@ pub struct App {
     /// Self-service sessions keep the user's credentials in memory only (never on disk),
     /// for at most 30 minutes — Stalwart is the authority on their password.
     pub portal_sessions: Mutex<HashMap<String, PortalSession>>,
+    /// Keyed by the SHA-256 of the download token.
+    pub profiles: Mutex<HashMap<String, PendingProfile>>,
     pub throttle: Mutex<HashMap<String, Vec<Instant>>>,
 }
 
@@ -56,6 +66,7 @@ impl App {
             engine: RwLock::new(None),
             mock,
             portal_sessions: Mutex::new(HashMap::new()),
+            profiles: Mutex::new(HashMap::new()),
             throttle: Mutex::new(HashMap::new()),
         });
         app.reload_engine()?;
@@ -88,6 +99,7 @@ impl App {
             engine: RwLock::new(Some(mock.clone() as Arc<dyn Engine>)),
             mock: Some(mock),
             portal_sessions: Mutex::new(HashMap::new()),
+            profiles: Mutex::new(HashMap::new()),
             throttle: Mutex::new(HashMap::new()),
         })
     }

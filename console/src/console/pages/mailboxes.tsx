@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ExternalLink, KeyRound, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { ExternalLink, KeyRound, Link2, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Button } from "@/design/vendor/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/design/vendor/ui/dialog";
@@ -14,13 +14,13 @@ import {
 import { Input } from "@/design/vendor/ui/input";
 import { Label } from "@/design/vendor/ui/label";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
-import type { Domain, Mailbox } from "@/api/types";
+import type { CreateMailboxResponse, Domain, Mailbox } from "@/api/types";
 import { ConfirmAction } from "@/components/confirm";
 import { DataTable, FieldError, FilterPills, LoadError, Page, selectClass, usePageTitle, type Column } from "@/components/kit";
 import { Meter } from "@/components/meter";
 import { PasswordInput, StrengthHint } from "@/components/password-input";
 import { SecretReveal } from "@/components/secret-reveal";
-import { fmtBytes, fmtNumber, openInYunoriUrl, pct, timeAgo } from "@/lib/format";
+import { fmtBytes, fmtDate, fmtNumber, openInYunoriUrl, pct, relativeDays, timeAgo } from "@/lib/format";
 import { MIN_PASSWORD } from "@/lib/password";
 import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
@@ -36,9 +36,11 @@ const QUOTAS: { mb: number | null; label: string }[] = [
   { mb: null, label: "No limit" },
 ];
 
-type Reveal = { kind: "created" | "reset"; address: string; password: string };
+type Reveal =
+  | { kind: "created" | "reset"; address: string; password: string }
+  | { kind: "invite"; address: string; name: string | null; url: string; expiresAt: string; isNew: boolean };
 
-/** Mailboxes: create (password shown once), reset, edit, delete. */
+/** Mailboxes: create (invite link, or a password shown once), reset, edit, delete. */
 export default function MailboxesPage() {
   usePageTitle("Mailboxes");
   const { session } = useSession();
@@ -54,6 +56,16 @@ export default function MailboxesPage() {
   const [editing, setEditing] = useState<Mailbox | null>(null);
   const [resetting, setResetting] = useState<Mailbox | null>(null);
   const [deleting, setDeleting] = useState<Mailbox | null>(null);
+
+  async function invite(m: Mailbox) {
+    try {
+      const r = await api.inviteMailbox(m.id);
+      setReveal({ kind: "invite", address: m.address, name: m.displayName, url: r.url, expiresAt: r.expiresAt, isNew: false });
+      void reload();
+    } catch (err) {
+      toast.error(errorMessage(err));
+    }
+  }
 
   useEffect(() => {
     if (params.get("new") === "1") {
@@ -100,6 +112,14 @@ export default function MailboxesPage() {
             <span className="text-sm font-medium text-foreground/90">{m.address}</span>
             {m.role === "admin" && <span className="rounded-full border border-border/70 px-1.5 py-px text-[10px] text-foreground/75">Admin</span>}
             {m.local === "postmaster" && <span className="rounded-full border border-border/70 px-1.5 py-px text-[10px] text-muted-foreground">System</span>}
+            {m.inviteExpiresAt && (
+              <span
+                className="rounded-full border border-amber-600/40 px-1.5 py-px text-[10px] text-amber-800 dark:text-amber-300"
+                title={`The invite link works until ${fmtDate(m.inviteExpiresAt)}`}
+              >
+                Invite pending
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">{m.displayName ?? "No display name"}</p>
         </div>
@@ -155,7 +175,13 @@ export default function MailboxesPage() {
           >
             <MoreHorizontal className="h-4 w-4" />
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-52">
+          <DropdownMenuContent align="end" className="w-56">
+            {m.role !== "admin" && m.local !== "postmaster" && (
+              <DropdownMenuItem onSelect={() => void invite(m)} className="text-xs">
+                <Link2 className="h-3.5 w-3.5" aria-hidden />
+                {m.inviteExpiresAt ? "New invite link" : "Send an invite link"}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={() => setResetting(m)} className="text-xs">
               <KeyRound className="h-3.5 w-3.5" aria-hidden />
               Reset password
@@ -228,7 +254,7 @@ export default function MailboxesPage() {
           rowKey={(m) => m.id}
           loading={loading && !data}
           emptyTitle={q || domainFilter !== "all" ? "No mailboxes match" : "No mailboxes yet"}
-          emptyHint={q || domainFilter !== "all" ? "Try another search or domain." : "Create the first one — its password is shown once, then it's ready for any mail app."}
+          emptyHint={q || domainFilter !== "all" ? "Try another search or domain." : "Create the first one and send its owner an invite link — they choose their own password."}
         />
       )}
 
@@ -238,7 +264,9 @@ export default function MailboxesPage() {
         domains={domains}
         defaultDomainId={domainFilter !== "all" ? domainFilter : undefined}
         onCreated={(r) => {
-          setReveal({ kind: "created", address: r.mailbox.address, password: r.password });
+          if (r.invite)
+            setReveal({ kind: "invite", address: r.mailbox.address, name: r.mailbox.displayName, url: r.invite.url, expiresAt: r.invite.expiresAt, isNew: true });
+          else setReveal({ kind: "created", address: r.mailbox.address, password: r.password ?? "" });
           void reload();
         }}
       />
@@ -247,7 +275,7 @@ export default function MailboxesPage() {
         open={!!resetting}
         onOpenChange={(o) => !o && setResetting(null)}
         title={`Reset the password for ${resetting?.address ?? ""}?`}
-        description="The current password stops working right away, and mail apps using it will ask again. App passwords keep working. The new password is shown once."
+        description="The current password stops working right away, and mail apps using it will ask again. App passwords keep working. The new password is shown once, and an unused invite link stops working. To let them choose a password instead, send an invite link."
         confirmLabel="Reset password"
         onConfirm={async () => {
           const m = resetting!;
@@ -297,6 +325,7 @@ function Dependents({ mailbox, domains }: { mailbox: Mailbox; domains: Domain[] 
 function RevealPanel({ reveal, openUrl, onDone }: { reveal: Reveal; openUrl: string; onDone: () => void }) {
   const ref = useRef<HTMLHeadingElement>(null);
   useEffect(() => ref.current?.focus(), [reveal]);
+  if (reveal.kind === "invite") return <InvitePanel reveal={reveal} headingRef={ref} onDone={onDone} />;
   return (
     <section className="mb-6 rounded-xl border border-foreground/15 bg-card p-5" aria-labelledby="reveal-title">
       <h2 id="reveal-title" ref={ref} tabIndex={-1} className="text-sm font-medium focus:outline-none">
@@ -338,6 +367,54 @@ function RevealPanel({ reveal, openUrl, onDone }: { reveal: Reveal; openUrl: str
   );
 }
 
+function InvitePanel({
+  reveal,
+  headingRef,
+  onDone,
+}: {
+  reveal: Extract<Reveal, { kind: "invite" }>;
+  headingRef: React.RefObject<HTMLHeadingElement | null>;
+  onDone: () => void;
+}) {
+  const who = reveal.name ?? reveal.address;
+  return (
+    <section className="mb-6 rounded-xl border border-foreground/15 bg-card p-5" aria-labelledby="reveal-title">
+      <h2 id="reveal-title" ref={headingRef} tabIndex={-1} className="text-sm font-medium focus:outline-none">
+        {reveal.isNew ? (
+          <>
+            <span className="font-mono">{reveal.address}</span> is ready — send {reveal.name ? reveal.name : "its owner"} this link
+          </>
+        ) : (
+          <>
+            Invite link for <span className="font-mono">{reveal.address}</span>
+          </>
+        )}
+      </h2>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+        {who} opens it, chooses a password, and lands on a page that sets up their phone, computer and Yunori. Nobody else ever sees
+        the password, you included.
+      </p>
+      <div className="mt-4">
+        <SecretReveal
+          label="Invite link"
+          value={reveal.url}
+          note={
+            <>
+              Works once, until {fmtDate(reveal.expiresAt)} ({relativeDays(reveal.expiresAt)}). Send it any way you'd send something
+              private — a chat message, a text, in person. Making a new link cancels this one.
+            </>
+          }
+        />
+      </div>
+      <div className="mt-4 flex justify-end">
+        <Button size="sm" onClick={onDone}>
+          Done
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 function CreateMailboxDialog({
   open,
   onOpenChange,
@@ -349,14 +426,14 @@ function CreateMailboxDialog({
   onOpenChange: (o: boolean) => void;
   domains: Domain[];
   defaultDomainId?: string;
-  onCreated: (r: { mailbox: Mailbox; password: string }) => void;
+  onCreated: (r: CreateMailboxResponse) => void;
 }) {
   const primary = domains.find((d) => d.isPrimary)?.id ?? domains[0]?.id ?? "";
   const [local, setLocal] = useState("");
   const [domainId, setDomainId] = useState(defaultDomainId ?? primary);
   const [displayName, setDisplayName] = useState("");
   const [quota, setQuota] = useState<string>("5120");
-  const [mode, setMode] = useState<"generate" | "manual">("generate");
+  const [mode, setMode] = useState<"invite" | "generate" | "manual">("invite");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -369,7 +446,7 @@ function CreateMailboxDialog({
     setLocal("");
     setDisplayName("");
     setQuota("5120");
-    setMode("generate");
+    setMode("invite");
     setPassword("");
     setErrors({});
   };
@@ -393,6 +470,7 @@ function CreateMailboxDialog({
         displayName: displayName.trim() || undefined,
         quotaMb: quota === "" ? null : Number(quota),
         password: mode === "manual" ? password : undefined,
+        invite: mode === "invite" || undefined,
       });
       onOpenChange(false);
       reset();
@@ -486,9 +564,16 @@ function CreateMailboxDialog({
           </div>
 
           <fieldset>
-            <legend className="mb-1.5 text-xs font-medium text-foreground/80">Password</legend>
+            <legend className="mb-1.5 text-xs font-medium text-foreground/80">How they'll get in</legend>
             <div className="space-y-1.5">
-              <RadioRow name="mb-pw" checked={mode === "generate"} onChange={() => setMode("generate")} label="Generate a strong password" hint="Recommended. Shown once after you create the mailbox." />
+              <RadioRow
+                name="mb-pw"
+                checked={mode === "invite"}
+                onChange={() => setMode("invite")}
+                label="Send them an invite link"
+                hint="Recommended. They choose their own password, then set up their devices. The link works once, for 7 days."
+              />
+              <RadioRow name="mb-pw" checked={mode === "generate"} onChange={() => setMode("generate")} label="Generate a strong password" hint="Shown once after you create the mailbox; you pass it on." />
               <RadioRow name="mb-pw" checked={mode === "manual"} onChange={() => setMode("manual")} label="Set one myself" />
             </div>
             {mode === "manual" && (

@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { AlertTriangle, ArrowRight, CheckCircle2, XCircle } from "lucide-react";
 import { Card, KV, SectionLabel, Skeleton, StatCard } from "@/design/vendor/admin/ui";
 import { api } from "@/api/client";
-import type { CreateMailboxResponse } from "@/api/types";
+import type { FirstMailboxResponse } from "@/api/types";
 import { LoadError, usePageTitle } from "@/components/kit";
 import { CheckList, StatusBadge } from "@/components/status";
 import { fmtNumber } from "@/lib/format";
@@ -26,7 +26,7 @@ export function OverviewPage() {
   const { refreshHealth } = useShell();
   const { data, error, reload } = useApi("overview", api.overview);
   // The end of onboarding stays on screen until dismissed, even after the checklist goes.
-  const [created, setCreated] = useState<CreateMailboxResponse | null>(null);
+  const [created, setCreated] = useState<FirstMailboxResponse | null>(null);
   const [finished, setFinished] = useState(false);
 
   const onInstallComplete = useCallback(() => {

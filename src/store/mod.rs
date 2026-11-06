@@ -5,6 +5,7 @@
 //! Stalwart's store. Losing this file is recoverable (`yunori-mail adopt`).
 
 pub mod audit;
+pub mod invites;
 pub mod vault;
 
 use anyhow::{Context, Result, anyhow};
@@ -15,7 +16,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use vault::Vault;
 use zeroize::Zeroizing;
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -72,7 +74,20 @@ CREATE TABLE IF NOT EXISTS audit (
   prev_hash TEXT NOT NULL,
   hash TEXT NOT NULL
 );
-"#];
+"#,
+    r#"
+CREATE TABLE IF NOT EXISTS invites (
+  token_hash TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL,
+  address TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE INDEX IF NOT EXISTS invites_account ON invites (account_id);
+"#,
+];
 
 #[derive(Clone)]
 pub struct Db {

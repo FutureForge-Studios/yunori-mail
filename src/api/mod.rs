@@ -8,6 +8,8 @@ mod admin;
 mod portal;
 mod session;
 
+pub use portal::take_profile;
+
 use crate::app::App;
 use crate::engine::EngineError;
 use axum::extract::{FromRef, FromRequestParts, Request};
@@ -168,6 +170,24 @@ where
     }
 }
 
+/// Origin people reach this server at: `https://<mail hostname>` in
+/// production; in `--dev` the address the browser used (plain HTTP on loopback).
+pub fn public_base(app: &App, headers: &HeaderMap) -> String {
+    if app.dev {
+        let host = headers
+            .get(header::HOST)
+            .and_then(|v| v.to_str().ok())
+            .filter(|h| {
+                h.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '[' | ']'))
+            })
+            .unwrap_or("127.0.0.1:8787");
+        return format!("http://{host}");
+    }
+    let host = app.config().map(|c| c.hostname).unwrap_or_default();
+    format!("https://{host}")
+}
+
 /// Client IP as seen by the edge (direct peer; the edge is the TLS terminator).
 pub fn client_ip(parts_headers: &HeaderMap) -> String {
     parts_headers
@@ -231,6 +251,7 @@ pub fn router(app: AppState) -> Router {
             patch(admin::update_mailbox).delete(admin::delete_mailbox),
         )
         .route("/mailboxes/{id}/password", post(admin::reset_password))
+        .route("/mailboxes/{id}/invite", post(admin::invite_mailbox))
         .route(
             "/aliases",
             get(admin::list_aliases)
@@ -252,6 +273,9 @@ pub fn router(app: AppState) -> Router {
             "/portal/app-passwords/{id}",
             delete(portal::delete_app_password),
         )
+        .route("/portal/invite", post(portal::invite_check))
+        .route("/portal/invite/accept", post(portal::invite_accept))
+        .route("/portal/devices/apple", post(portal::apple_profile))
         .fallback(|| async { ApiError::not_found("This endpoint") })
         .layer(middleware::from_fn(csrf_guard))
         .with_state(app)

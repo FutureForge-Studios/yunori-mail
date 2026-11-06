@@ -566,3 +566,201 @@ async fn onboarding_creates_the_first_mailbox_once() {
             .contains("hello@example.test")
     );
 }
+
+#[tokio::test]
+async fn invite_links_let_people_choose_their_own_password() {
+    let (mut admin, app) = Client::new();
+    admin.sign_in(&app).await;
+    let (_, domains) = admin.get("/domains").await;
+    let domain_id = domains[0]["id"].as_str().unwrap().to_string();
+
+    // Invite mode: no password is handed to the administrator.
+    let (s, b) = admin
+        .post(
+            "/mailboxes",
+            json!({"local": "mika", "domainId": domain_id, "displayName": "Mika", "invite": true}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    assert!(b.get("password").is_none(), "{b}");
+    let url = b["invite"]["url"].as_str().unwrap().to_string();
+    // Dev mode (the test app) links to the loopback console; production to https://<hostname>.
+    assert!(
+        url.starts_with("http://127.0.0.1:8787/account/welcome#invite="),
+        "{url}"
+    );
+    let token = url.split("#invite=").nth(1).unwrap().to_string();
+    let mailbox_id = b["mailbox"]["id"].as_str().unwrap().to_string();
+    let (_, list) = admin.get("/mailboxes").await;
+    let row = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["id"] == mailbox_id.as_str())
+        .unwrap();
+    assert!(row["inviteExpiresAt"].is_string(), "{row}");
+
+    // The person opens the link.
+    let (mut person, _) = Client::with(app.clone());
+    let (s, b) = person.post("/portal/invite", json!({"token": token})).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["address"], "mika@example.test");
+    assert_eq!(b["displayName"], "Mika");
+
+    let (s, b) = person
+        .post(
+            "/portal/invite/accept",
+            json!({"token": token, "password": "short"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["error"]["field"], "password");
+
+    let (s, b) = person
+        .post(
+            "/portal/invite/accept",
+            json!({"token": token, "password": "mika-chose-this-one"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["address"], "mika@example.test");
+    // Signed in to the portal with the password they chose.
+    let (s, _) = person.get("/portal/me").await;
+    assert_eq!(s, StatusCode::OK);
+    let (mut fresh, _) = Client::with(app.clone());
+    let (s, _) = fresh
+        .post(
+            "/portal/login",
+            json!({"email": "mika@example.test", "password": "mika-chose-this-one"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Single use, and gone from the console's list.
+    let (s, b) = fresh.post("/portal/invite", json!({"token": token})).await;
+    assert_eq!(s, StatusCode::GONE);
+    assert_eq!(b["error"]["code"], "invite_invalid");
+    let (s, _) = fresh
+        .post(
+            "/portal/invite/accept",
+            json!({"token": token, "password": "another-long-password"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::GONE);
+    let (_, list) = admin.get("/mailboxes").await;
+    assert!(
+        list.as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["inviteExpiresAt"].is_null())
+    );
+
+    // A new invite for an existing mailbox; a password reset withdraws it.
+    let (s, b) = admin
+        .post(&format!("/mailboxes/{mailbox_id}/invite"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let again = b["url"]
+        .as_str()
+        .unwrap()
+        .split("#invite=")
+        .nth(1)
+        .unwrap()
+        .to_string();
+    let (s, _) = admin
+        .post(&format!("/mailboxes/{mailbox_id}/password"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (s, _) = fresh.post("/portal/invite", json!({"token": again})).await;
+    assert_eq!(s, StatusCode::GONE);
+
+    // Accepting is audited under the person's own address.
+    let (_, audit) = admin.get("/audit").await;
+    assert!(
+        audit.to_string().contains("mailbox.invite_accept"),
+        "{audit}"
+    );
+}
+
+#[tokio::test]
+async fn invites_need_an_admin_and_never_cover_the_engine_admin() {
+    let (mut c, app) = Client::new();
+    let (s, _) = c.post("/mailboxes/whatever/invite", json!({})).await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    c.sign_in(&app).await;
+    let (_, list) = c.get("/mailboxes").await;
+    if let Some(engine_admin) = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["role"] == "admin")
+    {
+        let id = engine_admin["id"].as_str().unwrap();
+        let (s, _) = c.post(&format!("/mailboxes/{id}/invite"), json!({})).await;
+        assert_eq!(s, StatusCode::CONFLICT);
+    }
+    let (s, _) = c.post("/mailboxes/nope/invite", json!({})).await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn apple_profile_is_made_per_device_and_served_once() {
+    let (mut c, app) = Client::new();
+    let (s, _) = c
+        .post("/portal/devices/apple", json!({"device": "iPhone"}))
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    let (s, _) = c
+        .post(
+            "/portal/login",
+            json!({"email": "ana@example.test", "password": "demo-password-1234"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+
+    let (s, b) = c
+        .post("/portal/devices/apple", json!({"device": "  "}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["error"]["field"], "device");
+
+    let (s, b) = c
+        .post("/portal/devices/apple", json!({"device": "Ana's iPhone"}))
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{b}");
+    assert_eq!(b["appPassword"]["description"], "Ana's iPhone (profile)");
+    let url = b["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("http://127.0.0.1:8787/account/profile/"),
+        "{url}"
+    );
+    let token = url.rsplit('/').next().unwrap();
+    assert!(crate::edge::valid_token(token));
+
+    // The app password is listed (and revocable) like any other.
+    let (_, me) = c.get("/portal/me").await;
+    assert_eq!(me["appPasswords"].as_array().unwrap().len(), 1);
+    assert_eq!(me["settings"]["dav"]["url"], "https://mail.example.test/");
+
+    let p = super::take_profile(&app, token).expect("pending profile");
+    assert!(p.body.contains("<string>ana@example.test</string>"));
+    assert!(p.body.contains("com.apple.caldav.account"));
+    assert_eq!(p.filename, "Yunori-ana.mobileconfig");
+    assert!(super::take_profile(&app, token).is_none(), "served once");
+
+    let (_, b) = c
+        .post(
+            "/portal/devices/apple",
+            json!({"device": "Mac", "calendars": false}),
+        )
+        .await;
+    let token = b["url"]
+        .as_str()
+        .unwrap()
+        .rsplit('/')
+        .next()
+        .unwrap()
+        .to_string();
+    let p = super::take_profile(&app, &token).unwrap();
+    assert!(!p.body.contains("caldav"));
+}

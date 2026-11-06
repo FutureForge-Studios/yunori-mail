@@ -786,6 +786,46 @@ from a `file://` mirror of this branch's release build, then `--resume` after ea
    - rehearsal failures name Let's Encrypt, not "Let's Encrypt (staging)";
    - a temporary self-signed certificate no longer shows an expiry in the year 4096.
 
+### 14.x Connecting people and devices (2026-11-06)
+
+Competitor scan (Openship Mail, Stalwart 0.16–1.0.3, mailcow, Mail-in-a-Box, Mailu, mox, docker-mailserver, Maddy,
+Poste.io, Cloudron, Fastmail, Migadu, Purelymail) ranked the gaps. The ones about getting people connected are
+built:
+
+1. **Invite links** (Migadu has these; mailcow forces a password change instead).
+   - `POST /mailboxes {invite: true}` or `POST /mailboxes/{id}/invite` returns
+     `https://<host>/account/welcome#invite=<token>`.
+   - SQLite `invites` table (migration 2): SHA-256 of the token, single use, 7 days, one live invite per mailbox.
+   - A password reset or deletion withdraws it. Accepting sets the password through the engine's admin API, signs
+     the person in to the portal, and is audited under their own address.
+2. **Apple configuration profiles + QR** (Fastmail, mailcow, mox, Mailu have them; Stalwart does not).
+   - `POST /portal/devices/apple` makes an app password named after the device and renders a `.mobileconfig`
+     (`src/edge/mobileconfig.rs`): IMAP 993 / SMTP 465, optionally CalDAV/CardDAV on 443.
+   - The profile is held in memory and served once from `/account/profile/<token>` within 10 minutes.
+   - It is unsigned; the portal says iOS will call it "Unverified". Signing it with the server's certificate is a
+     follow-up.
+3. **Calendars and contacts.**
+   - The portal shows the DAV URL.
+   - Autoconfig gains `addressbook`/`calendar` elements, in Mail-in-a-Box's shape.
+   - Verified on a real install: `/.well-known/caldav` → 307 `/dav/cal`, and PROPFIND with a profile's app password
+     → 207.
+4. **Fix found while verifying.** The dual-stack listener reports IPv4 peers as `::ffff:a.b.c.d`.
+   `::ffff:127.0.0.1` passed the loopback check and was forwarded, and Stalwart answered every proxied request from
+   a local client with 400. Peer addresses are now canonicalised once, in the edge middleware.
+5. **Client hand-off** (FutureForge-Studios/tori):
+   - `?connect=` opens the mailbox step prefilled, and survives sign-in and sign-up;
+   - the Yunori preset is detected from the autoconfig marker;
+   - the account page link is kept only when it is https on the mail host.
+
+Next from the same scan, not built yet:
+- DNS automation through provider APIs (hand Stalwart the token; keep the public-resolver gate);
+- proactive alerts (certificate, queue, blocklists, DNS drift, disk);
+- import from Gmail, Microsoft 365 or IMAP;
+- PACC (`ua-auto-config`) plus an OAuth "connected apps" list;
+- DMARC/TLS-RPT digests;
+- shared mailboxes and send-as;
+- passkeys.
+
 ---
 
 ## 15. Sources
