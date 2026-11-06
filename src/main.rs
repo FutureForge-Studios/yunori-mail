@@ -37,6 +37,8 @@ async fn main() {
         "warn,yunori_mail=error"
     };
     tracing_subscriber::fmt()
+        // Colour only on a terminal (never ANSI codes in the journal).
+        .with_ansi(std::io::IsTerminal::is_terminal(&std::io::stdout()))
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(default_filter)),
         )

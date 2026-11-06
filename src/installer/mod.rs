@@ -192,6 +192,9 @@ impl Installer {
 
     fn log(&self, level: &str, step: &str, msg: &str) {
         let _ = self.app.db.install_log(level, Some(step), msg);
+        if self.mode == Mode::Cli {
+            return; // The terminal UI already printed it, in plain words.
+        }
         match level {
             "error" => tracing::error!("[{step}] {msg}"),
             "warn" => tracing::warn!("[{step}] {msg}"),
@@ -371,6 +374,7 @@ impl Installer {
         let c = checks::check_host_record(
             &cfg.hostname,
             cfg.public_ipv4.as_deref(),
+            cfg.public_ipv6.as_deref(),
             &Resolver::public(),
         )
         .await;
@@ -407,7 +411,7 @@ impl Installer {
             os::chown_r("stalwart", &dir)?;
         }
         let downloaded = os::install_engine_binary(p).await?;
-        let unbound = os::ensure_unbound()?;
+        let resolver = os::ensure_unbound()?;
         // Install ourselves where the unit expects us.
         let me = std::env::current_exe()?;
         if me != p.yunori_bin() {
@@ -421,14 +425,13 @@ impl Installer {
             os::systemctl(&["daemon-reload"])?;
         }
         Ok(Outcome::Done(format!(
-            "Stalwart {} {}; local resolver {}.",
+            "Stalwart {} {}; {resolver}.",
             os::ENGINE.version,
             if downloaded {
                 "downloaded and verified"
             } else {
                 "already installed"
             },
-            if unbound { "installed" } else { "ready" }
         )))
     }
 
@@ -692,8 +695,9 @@ impl Installer {
     async fn ptr_gate(&self) -> Result<Outcome> {
         let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
         let relayed = cfg.sending_mode == SendingMode::Relay;
-        let Some(ip) = cfg.public_ipv4.clone() else {
-            return Ok(Outcome::Skipped("No public IPv4 address to check.".into()));
+        // An IPv6-only server's reverse DNS is the IPv6 address's.
+        let Some(ip) = cfg.public_ipv4.clone().or_else(|| cfg.public_ipv6.clone()) else {
+            return Ok(Outcome::Skipped("No public IP address to check.".into()));
         };
         let public = Resolver::public();
         let rec = records::evaluate_ptr(&ip, &cfg.hostname, &public, relayed).await;

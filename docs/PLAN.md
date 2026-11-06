@@ -743,6 +743,49 @@ console:
 has no public IP or systemd). `e2e/vps-smoke.sh` now also asserts that the certificate is Let's Encrypt's and is
 served on 443.
 
+### Tested on a real VM (InstaBox, 2026-11-06)
+
+A fresh Debian 13 VM on InstaBox (Firecracker, systemd), installed the way a user would: the one-line `install.sh`
+from a `file://` mirror of this branch's release build, then `--resume` after each fix. The hostname was
+`mail.<ipv6>.sslip.io`, so the DNS gates ran against real public DNS without owning a domain.
+
+**Worked first time:**
+- preflight;
+- the pinned Stalwart 1.0.3 download, checksum and bootstrap under systemd;
+- the edge on 80/443;
+- a real Let's Encrypt **production** order, and its failure turned into one sentence ("could not connect … on
+  port 80", the CA's own words one click away). InstaBox does not route inbound port 80 to the VM.
+- the setup link → owner → TOTP → console, through a private InstaBox port;
+- `certificate status`.
+
+**Found and fixed:**
+1. **IPv6-only servers could never finish.** Preflight passed them, then the host-record gate demanded an A record
+   that cannot exist. Now:
+   - preflight warns plainly;
+   - the host-record gate, the certificate pre-checks, the DNS checklist (AAAA required) and the reverse-DNS gate
+     use the IPv6 address when there is no IPv4;
+   - the outbound port-25 probe also tries IPv6.
+2. **`unbound` failed to start on images without recommended packages.** Its root trust anchor (`dns-root-data`) is
+   only *recommended*. Now:
+   - the installer installs it explicitly;
+   - apt runs quietly, and its output is shown only on failure;
+   - systemd's start limit is cleared before restarting;
+   - a resolver that still won't start is reported with the reason from its journal, and no longer aborts the
+     install (it only serves blocklist checks).
+3. **Let's Encrypt staging now sends a challenge without a `token`, which `instant-acme` 0.7 could not parse.** That
+   made every staging rehearsal fail. Now:
+   - `instant-acme` is upgraded to 0.8.5, which accepts such challenges;
+   - a staging failure unrelated to our names (outage, unreadable answer) never blocks production; production is
+     then asked at most every 12 minutes, within the 5 failed validations per hour limit.
+4. **Smaller fixes:**
+   - re-running the one-line script on a paused install now restarts the console on the new binary;
+   - no ANSI colour codes in the journal;
+   - installer log lines are no longer echoed twice in the terminal;
+   - a failed command shows one line, not systemd's whole message;
+   - the overview headline is one sentence;
+   - rehearsal failures name Let's Encrypt, not "Let's Encrypt (staging)";
+   - a temporary self-signed certificate no longer shows an expiry in the year 4096.
+
 ---
 
 ## 15. Sources

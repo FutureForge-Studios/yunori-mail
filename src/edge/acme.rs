@@ -11,7 +11,7 @@ use crate::store::Db;
 use anyhow::{Result, anyhow};
 use instant_acme::{
     Account, AccountCredentials, AuthorizationStatus, ChallengeType, Identifier, LetsEncrypt,
-    NewAccount, NewOrder, OrderStatus,
+    NewAccount, NewOrder, OrderStatus, RetryPolicy,
 };
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -333,7 +333,9 @@ async fn account(db: &Db, directory: &str, contact: &str) -> Result<Account, Box
     if let Ok(Some(json)) = db.get_secret(&key)
         && let Ok(creds) = serde_json::from_str::<AccountCredentials>(&json)
     {
-        return Account::from_credentials(creds)
+        return Account::builder()
+            .map_err(|e| Box::new(from_acme_error(e, &ca, directory)))?
+            .from_credentials(creds)
             .await
             .map_err(|e| Box::new(from_acme_error(e, &ca, directory)));
     }
@@ -343,17 +345,19 @@ async fn account(db: &Db, directory: &str, contact: &str) -> Result<Account, Box
     } else {
         vec![]
     };
-    let (acct, creds) = Account::create(
-        &NewAccount {
-            contact: &contacts,
-            terms_of_service_agreed: true,
-            only_return_existing: false,
-        },
-        directory,
-        None,
-    )
-    .await
-    .map_err(|e| Box::new(from_acme_error(e, &ca, directory)))?;
+    let (acct, creds) = Account::builder()
+        .map_err(|e| Box::new(from_acme_error(e, &ca, directory)))?
+        .create(
+            &NewAccount {
+                contact: &contacts,
+                terms_of_service_agreed: true,
+                only_return_existing: false,
+            },
+            directory.to_string(),
+            None,
+        )
+        .await
+        .map_err(|e| Box::new(from_acme_error(e, &ca, directory)))?;
     if let Ok(json) = serde_json::to_string(&creds) {
         let _ = db.put_secret(&key, &json);
     }
@@ -393,20 +397,16 @@ pub async fn order(
     let identifiers: Vec<Identifier> = names.iter().map(|n| Identifier::Dns(n.clone())).collect();
     let joined = names.join(", ");
     let mut order = acct
-        .new_order(&NewOrder {
-            identifiers: &identifiers,
-        })
+        .new_order(&NewOrder::new(&identifiers))
         .await
         .map_err(|e| Failure::from(named_acme_error(e, &ca, directory, Some(&joined))))?;
 
     let mut written = Vec::new();
     let result = async {
-        let authorizations = order
-            .authorizations()
-            .await
-            .map_err(|e| Failure::from(from_acme_error(e, &ca, directory)))?;
-        for authz in authorizations {
-            let Identifier::Dns(name) = &authz.identifier;
+        let mut authorizations = order.authorizations();
+        while let Some(next) = authorizations.next().await {
+            let mut authz = next.map_err(|e| Failure::from(from_acme_error(e, &ca, directory)))?;
+            let name = authz.identifier().to_string();
             match authz.status {
                 AuthorizationStatus::Valid => continue,
                 AuthorizationStatus::Pending => {}
@@ -414,7 +414,7 @@ pub async fn order(
                     return Err(Failure {
                         problem: Box::new(CertProblem::new(
                             ProblemKind::Other,
-                            Some(name),
+                            Some(&name),
                             format!("{ca} reports the authorization for {name} as {other:?}."),
                             "Yunori will start a fresh order on the next attempt.",
                         )),
@@ -422,68 +422,62 @@ pub async fn order(
                     });
                 }
             }
-            let ch = authz
-                .challenges
-                .iter()
-                .find(|c| c.r#type == ChallengeType::Http01)
-                .ok_or_else(|| {
-                    Failure::from(CertProblem::new(
-                        ProblemKind::Other,
-                        Some(name),
-                        format!("{ca} offered no HTTP-01 challenge for {name}."),
-                        "Use a CA that supports HTTP-01 validation.",
-                    ))
-                })?;
+            // CAs may offer challenge types this server does not use (and the
+            // library cannot always describe); only HTTP-01 matters here.
+            let mut ch = authz.challenge(ChallengeType::Http01).ok_or_else(|| {
+                Failure::from(CertProblem::new(
+                    ProblemKind::Other,
+                    Some(&name),
+                    format!("{ca} offered no HTTP-01 challenge for {name}."),
+                    "Use a CA that supports HTTP-01 validation.",
+                ))
+            })?;
             if !super::valid_token(&ch.token) {
                 return Err(CertProblem::new(
                     ProblemKind::Other,
-                    Some(name),
+                    Some(&name),
                     format!("{ca} sent a malformed challenge token."),
                     "Yunori will try again by itself.",
                 )
                 .into());
             }
-            let ka = order.key_authorization(ch);
             let file = challenges.join(&ch.token);
-            std::fs::write(&file, ka.as_str())
+            std::fs::write(&file, ch.key_authorization().as_str())
                 .map_err(|e| Failure::from(local_problem("writing the challenge file", e)))?;
             written.push(file);
-            order
-                .set_challenge_ready(&ch.url)
+            ch.set_ready()
                 .await
                 .map_err(|e| Failure::from(from_acme_error(e, &ca, directory)))?;
         }
 
-        let mut delay = Duration::from_millis(500);
-        let mut status = OrderStatus::Pending;
-        for _ in 0..14 {
-            tokio::time::sleep(delay).await;
-            status = order
-                .refresh()
-                .await
-                .map_err(|e| Failure::from(from_acme_error(e, &ca, directory)))?
-                .status;
-            if matches!(
-                status,
-                OrderStatus::Ready | OrderStatus::Invalid | OrderStatus::Valid
-            ) {
-                break;
+        let policy = RetryPolicy::new()
+            .initial_delay(Duration::from_millis(500))
+            .backoff(2.0)
+            .timeout(Duration::from_secs(90));
+        let status = match order.poll_ready(&policy).await {
+            Ok(s) => s,
+            Err(instant_acme::Error::Timeout(_)) => {
+                return Err(CertProblem::new(
+                    ProblemKind::Other,
+                    None,
+                    format!("{ca} did not finish validating in time."),
+                    "Yunori will try again by itself.",
+                )
+                .into());
             }
-            delay = (delay * 2).min(Duration::from_secs(8));
-        }
-        if status == OrderStatus::Invalid {
-            return Err(invalid_order(&mut order, &ca).await);
-        }
-        if status != OrderStatus::Ready && status != OrderStatus::Valid {
-            return Err(CertProblem::new(
+            Err(e) => return Err(from_acme_error(e, &ca, directory).into()),
+        };
+        match status {
+            OrderStatus::Ready | OrderStatus::Valid => Ok(()),
+            OrderStatus::Invalid => Err(invalid_order(&mut order, &ca).await),
+            other => Err(CertProblem::new(
                 ProblemKind::Other,
                 None,
-                format!("{ca} did not finish validating in time."),
+                format!("{ca} left the order {other:?}."),
                 "Yunori will try again by itself.",
             )
-            .into());
+            .into()),
         }
-        Ok(())
     }
     .await;
     for f in &written {
@@ -500,29 +494,21 @@ pub async fn order(
         .serialize_request(&key)
         .map_err(|e| Failure::from(local_problem("signing the request", e)))?;
     order
-        .finalize(csr.der())
+        .finalize_csr(csr.der())
         .await
         .map_err(|e| Failure::from(from_acme_error(e, &ca, directory)))?;
-    let mut tries = 0;
-    let chain = loop {
-        match order.certificate().await {
-            Ok(Some(c)) => break c,
-            Ok(None) if tries < 30 => {
-                tries += 1;
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-            Ok(None) => {
-                return Err(CertProblem::new(
-                    ProblemKind::Other,
-                    None,
-                    format!("{ca} took too long to sign the certificate."),
-                    "Yunori will try again by itself.",
-                )
-                .into());
-            }
-            Err(e) => return Err(from_acme_error(e, &ca, directory).into()),
-        }
-    };
+    let chain = order
+        .poll_certificate(&RetryPolicy::new().timeout(Duration::from_secs(60)))
+        .await
+        .map_err(|e| match e {
+            instant_acme::Error::Timeout(_) => Failure::from(CertProblem::new(
+                ProblemKind::Other,
+                None,
+                format!("{ca} took too long to sign the certificate."),
+                "Yunori will try again by itself.",
+            )),
+            other => Failure::from(from_acme_error(other, &ca, directory)),
+        })?;
     Ok(Issued {
         chain_pem: chain,
         key_pem: key.serialize_pem(),
@@ -534,25 +520,26 @@ async fn invalid_order(order: &mut instant_acme::Order, ca: &str) -> Failure {
     let order_error = order.state().error.clone();
     let mut failed = Vec::new();
     let mut first: Option<CertProblem> = None;
-    if let Ok(authzs) = order.authorizations().await {
-        for a in authzs {
-            if a.status != AuthorizationStatus::Invalid {
-                continue;
-            }
-            let Identifier::Dns(name) = &a.identifier;
-            failed.push(name.clone());
-            if first.is_none() {
-                let err = a
-                    .challenges
-                    .iter()
-                    .find(|c| c.r#type == ChallengeType::Http01)
-                    .and_then(|c| c.error.clone());
-                first = Some(match err {
-                    Some(p) => classify(p.r#type.as_deref(), p.detail.as_deref(), Some(name), ca),
-                    None => classify(None, None, Some(name), ca),
-                });
-            }
+    let mut authorizations = order.authorizations();
+    while let Some(Ok(mut authz)) = authorizations.next().await {
+        // The cached state may predate validation: ask again.
+        let _ = authz.refresh().await;
+        if authz.status != AuthorizationStatus::Invalid {
+            continue;
         }
+        let name = authz.identifier().to_string();
+        if first.is_none() {
+            let err = authz
+                .challenges
+                .iter()
+                .find(|c| c.r#type == ChallengeType::Http01)
+                .and_then(|c| c.error.clone());
+            first = Some(match err {
+                Some(p) => classify(p.r#type.as_deref(), p.detail.as_deref(), Some(&name), ca),
+                None => classify(None, None, Some(&name), ca),
+            });
+        }
+        failed.push(name);
     }
     let problem = first.unwrap_or_else(|| match order_error {
         Some(p) => classify(p.r#type.as_deref(), p.detail.as_deref(), None, ca),

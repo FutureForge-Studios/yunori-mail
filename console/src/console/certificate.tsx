@@ -164,7 +164,11 @@ export function CertificatePanel() {
       </div>
       {cert.state !== "missing" && (
         <>
-          <KV label="Expires">{cert.notAfter ? `${fmtDate(cert.notAfter)} (${relativeDays(cert.notAfter)})` : "—"}</KV>
+          {cert.state === "self_signed" ? (
+            <KV label="Expires">When the real one arrives</KV>
+          ) : (
+            <KV label="Expires">{cert.notAfter ? `${fmtDate(cert.notAfter)} (${relativeDays(cert.notAfter)})` : "—"}</KV>
+          )}
           {healthy && cert.renewsAt && <KV label="Renews">{new Date(cert.renewsAt).getTime() > Date.now() ? `from ${fmtDate(cert.renewsAt)}` : "now"}</KV>}
           <div className="flex items-center justify-between gap-4 py-1.5">
             <span className="text-xs text-muted-foreground">Served on 465/993</span>

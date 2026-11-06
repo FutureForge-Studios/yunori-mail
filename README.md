@@ -54,7 +54,7 @@ Idle footprint target: under 256 MB RAM for the whole box (Stalwart ~100 MB, `yu
 | OS | Debian 12/13 or Ubuntu 22.04/24.04/26.04, with systemd, on a fresh server |
 | CPU | x86-64-v2 or ARM64 (on Proxmox, use CPU type `host`, not `kvm64`) |
 | RAM / disk | 1 GB+ / 10 GB+ |
-| Network | A static public IPv4, and the A record `mail.<your-domain>` pointed at it **before** installing |
+| Network | A static public IPv4, and the A record `mail.<your-domain>` pointed at it **before** installing. IPv6-only servers install too (AAAA instead of A), but servers that speak only IPv4 cannot reach them; preflight says so |
 | Sending directly | Outbound port 25 open and reverse DNS (PTR) settable at your VPS provider; otherwise use relay mode |
 
 ## Install

@@ -125,7 +125,7 @@ pub async fn domain_dns(app: &App, domain: &EDomain, fresh: bool) -> Result<Doma
     let lookup: &dyn DnsLookup = &resolver;
     let mut evaluated = records::evaluate(&expected, lookup, &ctx).await;
     if ctx.is_primary
-        && let Some(ip) = &cfg.public_ipv4
+        && let Some(ip) = cfg.public_ipv4.as_ref().or(cfg.public_ipv6.as_ref())
     {
         let relayed = cfg.sending_mode == SendingMode::Relay;
         evaluated.push(records::evaluate_ptr(ip, &cfg.hostname, lookup, relayed).await);
@@ -355,7 +355,7 @@ pub fn verdict(v: &VerdictInputs) -> Verdict {
         return mk(
             "attention",
             match v.waiting_detail {
-                Some(d) => format!("Setup is not finished: {d}"),
+                Some(d) => format!("Setup is not finished: {}", crate::util::first_sentence(d)),
                 None => "Setup is not finished yet.".into(),
             },
         );

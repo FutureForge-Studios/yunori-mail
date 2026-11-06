@@ -610,6 +610,24 @@ async fn install(args: InstallArgs) -> Result<()> {
         inst.save_inputs(&inputs)?;
     }
 
+    // The one-line script swapped the binary of a paused install: the running
+    // console/edge must pick it up too, or it keeps the old code.
+    if resume
+        && app.paths.is_production()
+        && std::env::var("YUNORI_BINARY_REPLACED").is_ok_and(|v| v == "1")
+        && matches!(
+            app.db.step_status("edge_tls")?,
+            crate::installer::state::StepStatus::Done
+        )
+    {
+        crate::installer::upgrade::refresh_units(&app)?;
+        os::systemctl(&["restart", "yunori-mail"])?;
+        println!(
+            "  Restarted the console and HTTPS edge on yunori-mail {}.",
+            crate::app::VERSION
+        );
+    }
+
     let outcome = loop {
         match inst.run(&mut term).await {
             Ok(RunResult::Complete) => break Ok(None),
@@ -1502,20 +1520,26 @@ async fn cert_cmd(c: CertCmd) -> Result<()> {
                 _ => {
                     row("Covers", &s.hostnames.join(", "));
                     row("Issuer", s.issuer.as_deref().unwrap_or("—"));
-                    row(
-                        "Expires",
-                        &format!(
-                            "{} ({} days){}",
-                            s.not_after.as_deref().unwrap_or("—"),
-                            s.days_left.unwrap_or(0),
-                            match s.state {
-                                "self_signed" => " — temporary self-signed",
-                                "test" => " — test certificate",
-                                "expired" => " — EXPIRED",
-                                _ => "",
-                            }
-                        ),
-                    );
+                    if s.state == "self_signed" {
+                        row(
+                            "Expires",
+                            "— (temporary self-signed; replaced as soon as the real one is issued)",
+                        );
+                    } else {
+                        row(
+                            "Expires",
+                            &format!(
+                                "{} ({} days){}",
+                                s.not_after.as_deref().unwrap_or("—"),
+                                s.days_left.unwrap_or(0),
+                                match s.state {
+                                    "test" => " — test certificate",
+                                    "expired" => " — EXPIRED",
+                                    _ => "",
+                                }
+                            ),
+                        );
+                    }
                 }
             }
             row("Authority", &format!("{} (automatic renewal)", s.authority));

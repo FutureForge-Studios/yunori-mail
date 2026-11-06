@@ -46,7 +46,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 rustls-pemfile = "2"
 x509-parser = "0.16"
-instant-acme = { version = "0.7", default-features = false, features = ["ring", "hyper-rustls"] }
+instant-acme = { version = "0.8", default-features = false, features = ["ring", "hyper-rustls"] }
 rcgen = "0.13"
 webpki-roots = "0.26"
 

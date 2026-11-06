@@ -43,10 +43,11 @@ pub fn run(cmd: &str, args: &[&str]) -> Result<String> {
         .output()
         .with_context(|| format!("running {cmd}"))?;
     if !out.status.success() {
+        // One line: a step's detail is shown in lists and the console.
         bail!(
             "`{cmd} {}` failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
+            last_lines(&String::from_utf8_lossy(&out.stderr), 2)
         );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -241,22 +242,115 @@ pub fn is_active(unit: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Install the local validating resolver (Spamhaus refuses public resolvers).
-pub fn ensure_unbound() -> Result<bool> {
-    if Path::new("/usr/sbin/unbound").exists() {
-        let _ = systemctl(&["enable", "--now", "unbound"]);
-        return Ok(false);
+/// Install and start the local validating resolver, which blocklist checks
+/// need (Spamhaus refuses queries that arrive through public resolvers).
+/// Mail flows without it, so a resolver that will not start is reported, not
+/// fatal. Returns a phrase for the step's summary.
+pub fn ensure_unbound() -> Result<String> {
+    // `dns-root-data` carries the DNSSEC root key unbound refuses to start
+    // without. apt only *recommends* it, and minimal images skip recommends.
+    let installed = Path::new("/usr/sbin/unbound").exists();
+    let have_key = Path::new("/usr/share/dns/root.key").exists();
+    if !installed || !have_key {
+        apt_install(&["unbound", "dns-root-data"])?;
     }
-    run("apt-get", &["update", "-qq"])?;
-    let status = Command::new("apt-get")
-        .args(["install", "-y", "-qq", "unbound"])
-        .env("DEBIAN_FRONTEND", "noninteractive")
-        .status()?;
-    if !status.success() {
-        bail!("apt-get install unbound failed");
+    // A unit that failed before may be held by systemd's start limit.
+    let _ = Command::new("systemctl")
+        .args(["reset-failed", "unbound"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = Command::new("systemctl")
+        .args(["enable", "unbound"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    let _ = Command::new("systemctl")
+        .args(["restart", "unbound"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+    if is_active("unbound") {
+        return Ok(if installed {
+            "local resolver ready".into()
+        } else {
+            "local resolver installed".into()
+        });
     }
-    systemctl(&["enable", "--now", "unbound"])?;
-    Ok(true)
+    Ok(format!(
+        "the local resolver (unbound) did not start{}. Mail still flows; blocklist checks may be refused until it runs (`journalctl -u unbound`)",
+        unit_failure_reason("unbound")
+            .map(|r| format!(": {r}"))
+            .unwrap_or_default()
+    ))
+}
+
+/// `apt-get install` quietly; its output is shown only when it fails.
+pub fn apt_install(packages: &[&str]) -> Result<()> {
+    let quiet = |args: &[&str]| {
+        Command::new("apt-get")
+            .args(args)
+            .env("DEBIAN_FRONTEND", "noninteractive")
+            .stdin(Stdio::null())
+            .output()
+    };
+    let update = quiet(&["update", "-qq"]).context("running apt-get update")?;
+    if !update.status.success() {
+        bail!(
+            "apt-get update failed: {}",
+            last_lines(&String::from_utf8_lossy(&update.stderr), 3)
+        );
+    }
+    let mut args = vec!["install", "-y", "-qq"];
+    args.extend_from_slice(packages);
+    let out = quiet(&args).context("running apt-get install")?;
+    if !out.status.success() {
+        bail!(
+            "apt-get install {} failed: {}",
+            packages.join(" "),
+            last_lines(&String::from_utf8_lossy(&out.stderr), 3)
+        );
+    }
+    Ok(())
+}
+
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    lines[lines.len().saturating_sub(n)..].join(" / ")
+}
+
+/// The last error a unit logged, for a one-line explanation.
+pub fn unit_failure_reason(unit: &str) -> Option<String> {
+    let out = Command::new("journalctl")
+        .args(["-u", unit, "-n", "40", "--no-pager", "-o", "cat"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    pick_failure_reason(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// The first "error"/"fatal" line of the most recent start attempt.
+fn pick_failure_reason(journal: &str) -> Option<String> {
+    let lines: Vec<&str> = journal.lines().collect();
+    let start = lines
+        .iter()
+        .rposition(|l| l.contains("Starting "))
+        .unwrap_or(0);
+    lines[start..]
+        .iter()
+        .find(|l| {
+            let l = l.to_ascii_lowercase();
+            l.contains("error") || l.contains("fatal")
+        })
+        .map(|l| {
+            // Drop "[pid:thread] " prefixes.
+            let l = l.trim();
+            match l.split_once("] ") {
+                Some((head, rest)) if head.starts_with('[') => rest.trim().to_string(),
+                _ => l.to_string(),
+            }
+        })
 }
 
 pub const PUBLIC_PORTS: &[u16] = &[25, 80, 443, 465, 587, 993, 4190];
@@ -408,6 +502,24 @@ mod tests {
         let y = yunori_unit(&p);
         assert!(y.contains("ExecStart=/usr/local/bin/yunori-mail serve"));
         assert!(y.contains("User=yunori"));
+    }
+
+    #[test]
+    fn unit_failure_reason_reads_the_last_attempt() {
+        let journal = "Starting unbound.service - Unbound DNS server...\n\
+            [10:0] error: old failure\n\
+            Starting unbound.service - Unbound DNS server...\n\
+            [2686:0] notice: init module 0: validator\n\
+            [2686:0] error: unable to open /var/lib/unbound/root.key for reading: No such file or directory\n\
+            [2686:0] fatal error: failed to init modules\n";
+        assert_eq!(
+            pick_failure_reason(journal).as_deref(),
+            Some(
+                "error: unable to open /var/lib/unbound/root.key for reading: No such file or directory"
+            )
+        );
+        assert_eq!(pick_failure_reason("all good\n"), None);
+        assert_eq!(last_lines("a\n\nb\nc\n", 2), "b / c");
     }
 
     #[test]

@@ -88,6 +88,15 @@ pub fn valid_email(email: &str) -> bool {
     }
 }
 
+/// The first sentence of a plain-language message (headlines keep it short;
+/// the rest, usually the remedy, is shown where the step is).
+pub fn first_sentence(s: &str) -> &str {
+    match s.find(". ") {
+        Some(i) => &s[..=i],
+        None => s,
+    }
+}
+
 /// "in 2 minutes", "in about 3 hours", "now" — for an RFC 3339 time.
 pub fn when(rfc3339: &str) -> String {
     let Ok(t) = chrono::DateTime::parse_from_rfc3339(rfc3339) else {
@@ -108,6 +117,17 @@ pub fn when(rfc3339: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_sentence_keeps_hostnames_whole() {
+        assert_eq!(
+            first_sentence(
+                "Let's Encrypt could not connect to mail.example.com on port 80. Allow TCP 80."
+            ),
+            "Let's Encrypt could not connect to mail.example.com on port 80."
+        );
+        assert_eq!(first_sentence("One sentence."), "One sentence.");
+    }
 
     #[test]
     fn when_reads_naturally() {

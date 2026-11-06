@@ -53,6 +53,32 @@ pub struct AcmeState {
     pub coverage_reissue: Option<String>,
     /// Last time helper names were looked up (DNS) while the certificate was fine.
     pub coverage_checked: Option<String>,
+    /// Last order sent to Let's Encrypt production (spacing while failing).
+    pub last_production_attempt: Option<String>,
+}
+
+/// While failing without a rehearsal, production is asked at most this often
+/// (Let's Encrypt allows 5 failed validations per hostname per hour).
+const PRODUCTION_SPACING_MINUTES: i64 = 12;
+
+/// A rehearsal failure, told as what it predicts: the same answer from the
+/// real CA. Where it came from stays in the detail.
+fn as_rehearsal(mut p: CertProblem) -> CertProblem {
+    p.summary = p.summary.replace(
+        &acme::ca_name(acme::LE_STAGING),
+        &acme::ca_name(acme::LE_PRODUCTION),
+    );
+    p.detail = Some(match p.detail.take() {
+        Some(d) => format!("{d} (a test run on Let's Encrypt's staging service, which spares the real rate limits)"),
+        None => "Seen in a test run on Let's Encrypt's staging service, which spares the real rate limits.".into(),
+    });
+    p
+}
+
+/// Did the staging CA judge *our* setup (so production would say the same)?
+/// An outage or an answer we cannot read says nothing about this server.
+fn staging_conclusive(p: &CertProblem) -> bool {
+    !matches!(p.kind, ProblemKind::CaUnreachable | ProblemKind::Other)
 }
 
 /// CA-issued, covering the hostname, not near expiry, and not a test certificate.
@@ -223,46 +249,65 @@ pub async fn precheck(
     dns: &dyn DnsLookup,
     caa_identity: Option<&str>,
 ) -> Result<(), Box<CertProblem>> {
-    match dns.a(name).await {
-        Ok(ips) if ips.is_empty() => {
+    let ipv6_only = ipv4.is_none() && ipv6.is_some();
+    if ipv6_only {
+        // Checked on AAAA below; an A record elsewhere doesn't matter to a CA
+        // that reaches this name over IPv6, and there is no IPv4 to point it at.
+        if let Ok(v6s) = dns.aaaa(name).await
+            && v6s.is_empty()
+        {
             return Err(Box::new(CertProblem::new(
                 ProblemKind::DnsMissing,
                 Some(name),
-                format!("{name} has no A record on public DNS yet."),
-                match ipv4 {
-                    Some(ip) => format!("At your DNS provider, add: {name}  A  {ip}"),
-                    None => format!(
-                        "At your DNS provider, add an A record for {name} pointing at this server."
-                    ),
-                },
+                format!("{name} has no AAAA record on public DNS yet."),
+                format!(
+                    "At your DNS provider, add: {name}  AAAA  {}",
+                    ipv6.unwrap_or_default()
+                ),
             )));
         }
-        Ok(ips) => {
-            if let Some(ip) = ipv4
-                && !ips.iter().any(|a| a == ip)
-            {
-                if ips.iter().any(|a| is_cloudflare(a)) {
-                    return Err(Box::new(CertProblem::new(
-                        ProblemKind::CloudflareProxy,
-                        Some(name),
-                        format!("{name} is proxied by Cloudflare (the orange cloud)."),
-                        format!(
-                            "In Cloudflare's DNS settings, set {name} to \"DNS only\" (grey cloud): mail needs a direct connection to {ip}."
-                        ),
-                    )));
-                }
+    } else {
+        match dns.a(name).await {
+            Ok(ips) if ips.is_empty() => {
                 return Err(Box::new(CertProblem::new(
-                    ProblemKind::DnsElsewhere,
+                    ProblemKind::DnsMissing,
                     Some(name),
-                    format!(
-                        "{name} points at {}, not this server ({ip}).",
-                        ips.join(", ")
-                    ),
-                    format!("Change the A record of {name} to {ip}."),
+                    format!("{name} has no A record on public DNS yet."),
+                    match ipv4 {
+                        Some(ip) => format!("At your DNS provider, add: {name}  A  {ip}"),
+                        None => format!(
+                            "At your DNS provider, add an A record for {name} pointing at this server."
+                        ),
+                    },
                 )));
             }
+            Ok(ips) => {
+                if let Some(ip) = ipv4
+                    && !ips.iter().any(|a| a == ip)
+                {
+                    if ips.iter().any(|a| is_cloudflare(a)) {
+                        return Err(Box::new(CertProblem::new(
+                            ProblemKind::CloudflareProxy,
+                            Some(name),
+                            format!("{name} is proxied by Cloudflare (the orange cloud)."),
+                            format!(
+                                "In Cloudflare's DNS settings, set {name} to \"DNS only\" (grey cloud): mail needs a direct connection to {ip}."
+                            ),
+                        )));
+                    }
+                    return Err(Box::new(CertProblem::new(
+                        ProblemKind::DnsElsewhere,
+                        Some(name),
+                        format!(
+                            "{name} points at {}, not this server ({ip}).",
+                            ips.join(", ")
+                        ),
+                        format!("Change the A record of {name} to {ip}."),
+                    )));
+                }
+            }
+            Err(_) => {} // The CA will say what it sees.
         }
-        Err(_) => {} // The CA will say what it sees.
     }
     if let Ok(v6s) = dns.aaaa(name).await
         && !v6s.is_empty()
@@ -575,16 +620,45 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
     // 2. After a failure, rehearse on staging so production's limits stay untouched.
     for attempt in 0..2 {
         if st.failures > 0 && directory == acme::LE_PRODUCTION {
-            if let Err(f) = deps.issuer.issue(acme::LE_STAGING, &names).await {
-                if attempt == 0 && drop_helpers(&mut st, &mut names, &f, &cfg.hostname, now) {
-                    if fine && adds_nothing(disk.as_ref(), &names) {
-                        save_state(app, &st);
-                        return Outcome::Current;
+            match deps.issuer.issue(acme::LE_STAGING, &names).await {
+                Ok(_) => {}
+                Err(f) if staging_conclusive(&f.problem) => {
+                    if attempt == 0 && drop_helpers(&mut st, &mut names, &f, &cfg.hostname, now) {
+                        if fine && adds_nothing(disk.as_ref(), &names) {
+                            save_state(app, &st);
+                            return Outcome::Current;
+                        }
+                        continue;
                     }
-                    continue;
+                    return record_failure(app, st, as_rehearsal(*f.problem), &names, now);
                 }
-                return record_failure(app, st, *f.problem, &names, now);
+                Err(f) => {
+                    // The staging CA itself failed: that must never block
+                    // production, but production is then asked sparingly.
+                    let _ = app.db.install_log(
+                        "warn",
+                        Some("certificate"),
+                        &format!(
+                            "The staging rehearsal was inconclusive ({}); asking {ca} directly.",
+                            f.problem.summary
+                        ),
+                    );
+                    if let Some(last) = parse_time(&st.last_production_attempt)
+                        && now - last < ChronoDuration::minutes(PRODUCTION_SPACING_MINUTES)
+                    {
+                        let next = last + ChronoDuration::minutes(PRODUCTION_SPACING_MINUTES);
+                        st.next_attempt = Some(stamp(next));
+                        save_state(app, &st);
+                        return Outcome::Later {
+                            problem: st.problem.clone(),
+                            next_attempt: stamp(next),
+                        };
+                    }
+                }
             }
+        }
+        if directory == acme::LE_PRODUCTION {
+            st.last_production_attempt = Some(stamp(now));
         }
         match deps.issuer.issue(&directory, &names).await {
             Ok(issued) => {
@@ -1199,6 +1273,76 @@ mod tests {
         };
         assert_eq!(ensure_with(&app, false, &deps).await, Outcome::Current);
         assert!(idle.calls().is_empty());
+    }
+
+    #[test]
+    fn rehearsal_failures_name_the_real_ca() {
+        let p = acme::classify(
+            Some("urn:ietf:params:acme:error:connection"),
+            Some("Timeout during connect (likely firewall problem)"),
+            Some("mail.example.com"),
+            &acme::ca_name(acme::LE_STAGING),
+        );
+        let p = as_rehearsal(p);
+        assert!(
+            p.summary.starts_with("Let's Encrypt could not connect"),
+            "{}",
+            p.summary
+        );
+        assert!(p.detail.unwrap().contains("staging"));
+    }
+
+    #[tokio::test]
+    async fn a_broken_staging_ca_never_blocks_production() {
+        let app = test_app();
+        let host = app.config().unwrap().hostname;
+        let dns = dns_ok(&app);
+        let staging_broken = || {
+            Failure::from(CertProblem::new(
+                ProblemKind::CaUnreachable,
+                None,
+                "Could not reach Let's Encrypt (staging).",
+                "Yunori tries again by itself.",
+            ))
+        };
+        // An earlier failure, long enough ago.
+        let st = AcmeState {
+            failures: 2,
+            last_production_attempt: Some(stamp(Utc::now() - ChronoDuration::minutes(30))),
+            ..Default::default()
+        };
+        save_state(&app, &st);
+        let issuer = Scripted::new(vec![Err(staging_broken()), Ok(())]);
+        let deps = Deps {
+            dns: &dns,
+            issuer: &issuer,
+            self_test_port: None,
+        };
+        assert_eq!(
+            ensure_with(&app, true, &deps).await,
+            Outcome::Issued(vec![host.clone()])
+        );
+        let calls = issuer.calls();
+        assert_eq!(calls[0].0, acme::LE_STAGING);
+        assert_eq!(calls[1].0, acme::LE_PRODUCTION);
+
+        // Without a rehearsal, production is not asked again within 12 minutes.
+        std::fs::remove_file(tls::cert_path(&app.paths)).unwrap();
+        let st = AcmeState {
+            failures: 3,
+            last_production_attempt: Some(stamp(Utc::now() - ChronoDuration::minutes(2))),
+            ..Default::default()
+        };
+        save_state(&app, &st);
+        let issuer = Scripted::new(vec![Err(staging_broken())]);
+        let deps = Deps {
+            dns: &dns,
+            issuer: &issuer,
+            self_test_port: None,
+        };
+        let out = ensure_with(&app, true, &deps).await;
+        assert!(matches!(out, Outcome::Later { .. }), "{out:?}");
+        assert_eq!(issuer.calls().len(), 1, "staging only");
     }
 
     #[tokio::test]
