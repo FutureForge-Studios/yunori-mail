@@ -141,10 +141,11 @@ export default function SystemPage() {
             <SectionLabel>Versions</SectionLabel>
             <KV label="Yunori Mail">{data.versions.yunori}</KV>
             <KV label="Stalwart">{data.versions.engine ?? "Not installed"}</KV>
-            <div className="mt-3 border-t border-border/50 pt-3">
-              <SectionLabel>Certificate</SectionLabel>
-              <CertificatePanel />
-            </div>
+          </Card>
+
+          <Card className="lg:col-span-3">
+            <SectionLabel>Certificate</SectionLabel>
+            <CertificatePanel />
           </Card>
         </div>
       )}

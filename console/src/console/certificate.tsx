@@ -147,48 +147,58 @@ export function CertificateProblem({
   );
 }
 
-/** The System page's certificate panel. */
+/** The System page's certificate card: the facts on the left, what is being done about it on the right. */
 export function CertificatePanel() {
   const { cert, busy, tryNow } = useCertificate({ live: true });
   if (!cert) return <p className="text-xs text-muted-foreground">Loading…</p>;
   const meta = CERT_STATE[cert.state];
   const healthy = cert.state === "valid";
   return (
-    <div>
-      <div className="mb-1 flex items-center justify-between gap-2">
-        <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <ShieldCheck aria-hidden className="h-3.5 w-3.5" />
-          {cert.authority} · automatic
-        </span>
-        <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
-      </div>
-      {cert.state !== "missing" && (
-        <>
-          {cert.state === "self_signed" ? (
-            <KV label="Expires">When the real one arrives</KV>
-          ) : (
-            <KV label="Expires">{cert.notAfter ? `${fmtDate(cert.notAfter)} (${relativeDays(cert.notAfter)})` : "—"}</KV>
-          )}
-          {healthy && cert.renewsAt && <KV label="Renews">{new Date(cert.renewsAt).getTime() > Date.now() ? `from ${fmtDate(cert.renewsAt)}` : "now"}</KV>}
-          <div className="flex items-center justify-between gap-4 py-1.5">
-            <span className="text-xs text-muted-foreground">Served on 465/993</span>
-            {cert.servedMatches === null ? (
-              <StatusBadge tone="muted">Not checked</StatusBadge>
-            ) : cert.servedMatches ? (
-              <StatusBadge tone="ok">Matches</StatusBadge>
+    <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+      <div>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
+          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <ShieldCheck aria-hidden className="h-3.5 w-3.5" />
+            {cert.authority} · renews automatically
+          </span>
+        </div>
+        {cert.state === "missing" ? (
+          <p className="text-sm text-muted-foreground">Not issued yet.</p>
+        ) : (
+          <>
+            {cert.state === "self_signed" ? (
+              <KV label="Expires">When the real one arrives</KV>
             ) : (
-              <StatusBadge tone="warn">Different certificate</StatusBadge>
+              <KV label="Expires">{cert.notAfter ? `${fmtDate(cert.notAfter)} (${relativeDays(cert.notAfter)})` : "—"}</KV>
             )}
-          </div>
-          <div className="mt-2 flex flex-wrap gap-1">
-            {cert.hostnames.map((h) => (
-              <Chip key={h}>{h}</Chip>
-            ))}
-          </div>
-        </>
-      )}
-      {!healthy && (
-        <div className="mt-3 rounded-lg border border-border bg-muted/30 p-3">
+            {healthy && cert.renewsAt && <KV label="Renews">{new Date(cert.renewsAt).getTime() > Date.now() ? `from ${fmtDate(cert.renewsAt)}` : "now"}</KV>}
+            <div className="flex items-center justify-between gap-4 py-1.5">
+              <span className="text-xs text-muted-foreground">Mail ports (465/587/993)</span>
+              {cert.servedMatches === null ? (
+                <StatusBadge tone="muted">Not checked</StatusBadge>
+              ) : cert.servedMatches ? (
+                <StatusBadge tone="ok">Same certificate</StatusBadge>
+              ) : (
+                <StatusBadge tone="warn">Different certificate</StatusBadge>
+              )}
+            </div>
+            <div className="mt-2 flex flex-wrap gap-1">
+              {cert.hostnames.map((h) => (
+                <Chip key={h}>{h}</Chip>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+      {healthy ? (
+        <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-sm leading-relaxed text-foreground/85">
+          Nothing to do. Yunori renews this certificate 30 days before it expires, adds the autoconfig and MTA-STS names of
+          your domains once they point here, and hands the same certificate to the mail engine.
+          {cert.lastSuccess && <span className="mt-2 block text-xs text-muted-foreground">Last issued {timeAgo(cert.lastSuccess)}.</span>}
+        </div>
+      ) : (
+        <div className="rounded-lg border border-border bg-muted/30 p-4">
           <SectionLabel>{cert.problem ? "Last attempt" : "Next step"}</SectionLabel>
           <CertificateProblem
             cert={cert}

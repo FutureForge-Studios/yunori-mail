@@ -2,47 +2,56 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowRight,
-  CheckCircle2,
+  Check,
   ChevronRight,
-  Circle,
   Hourglass,
   Loader2,
-  MinusCircle,
+  Minus,
   RefreshCw,
-  XCircle,
+  X,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Button } from "@/design/vendor/ui/button";
 import { Input } from "@/design/vendor/ui/input";
 import { Label } from "@/design/vendor/ui/label";
-import { Card, SectionLabel } from "@/design/vendor/admin/ui";
+import { Card } from "@/design/vendor/admin/ui";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { CreateMailboxResponse, DnsRecord, InstallState, InstallStep, StepStatus } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { FieldError } from "@/components/kit";
-import { toneText, type Tone } from "@/components/status";
-import { fmtDateTime, timeAgo } from "@/lib/format";
+import { StatusBadge, toneText, type Tone } from "@/components/status";
+import { fmtDateTime } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useSession } from "../session";
 import { CertificateProblem, useCertificate } from "../certificate";
 
-const STEP_META: Record<StepStatus, { label: string; icon: LucideIcon; tone: Tone; spin?: boolean }> = {
-  done: { label: "Done", icon: CheckCircle2, tone: "ok" },
-  running: { label: "Running", icon: Loader2, tone: "muted", spin: true },
-  waiting: { label: "Waiting for you", icon: Hourglass, tone: "warn" },
-  failed: { label: "Failed", icon: XCircle, tone: "bad" },
-  pending: { label: "Not started", icon: Circle, tone: "muted" },
-  skipped: { label: "Skipped", icon: MinusCircle, tone: "muted" },
+const STATUS: Record<StepStatus, { label: string; tone: Tone }> = {
+  done: { label: "Done", tone: "ok" },
+  running: { label: "Working on it", tone: "muted" },
+  waiting: { label: "Waiting for you", tone: "warn" },
+  failed: { label: "Stopped", tone: "bad" },
+  pending: { label: "Up next", tone: "muted" },
+  skipped: { label: "Skipped", tone: "muted" },
 };
+
+/** The installer's steps, grouped the way a person thinks about them. */
+const PHASES: { title: string; ids: string[] }[] = [
+  { title: "This server", ids: ["preflight", "inputs", "host_record", "firewall"] },
+  { title: "Mail engine", ids: ["install_engine", "bootstrap_engine", "edge_tls"] },
+  { title: "On the internet", ids: ["certificate", "dns", "ptr"] },
+  { title: "Your mail", ids: ["first_mailbox", "done"] },
+];
 
 const isActive = (s: InstallState) => s.steps.some((x) => x.status === "running" || x.status === "waiting");
 const isFinished = (s: InstallState) => s.steps.length > 0 && s.steps.every((x) => x.status === "done" || x.status === "skipped");
+const isDone = (x: InstallStep) => x.status === "done" || x.status === "skipped";
 
 /**
- * The installer's checklist, live. Polls GET /install every 3 s while a step
- * is running or waiting on the user; the waiting step is expanded with exactly
- * what to do (for DNS: the records, copyable, plus "Check now").
+ * Setup, live: progress, the steps grouped into four phases, and one card for
+ * the step that needs attention now, with its action right there (Try now,
+ * Check now, the records to copy, the first mailbox). Polls GET /install every
+ * 3 s while a step is running or waiting.
  */
 export function InstallChecklist({
   initial,
@@ -86,119 +95,282 @@ export function InstallChecklist({
     return () => window.clearInterval(t);
   }, [active, poll]);
 
-  const doneCount = state.steps.filter((s) => s.status === "done" || s.status === "skipped").length;
-  const current = state.steps.find((s) => s.status === "waiting" || s.status === "running" || s.status === "failed");
+  const steps = state.steps;
+  const doneCount = steps.filter(isDone).length;
+  const currentIndex = steps.findIndex((s) => s.status === "waiting" || s.status === "running" || s.status === "failed");
+  const current = currentIndex >= 0 ? steps[currentIndex] : undefined;
+  const upNext = steps.filter((s, i) => i > currentIndex && s.status === "pending").slice(0, 3);
 
   return (
-    <Card className="mb-4 p-0">
-      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-border/50 px-5 pb-4 pt-5">
-        <div>
-          <SectionLabel>Setup checklist</SectionLabel>
-          <p className="-mt-1.5 text-sm text-foreground/90">
-            {doneCount} of {state.steps.length} steps done
-            {current ? <span className="text-muted-foreground"> · now: {current.title}</span> : ""}
+    <Card className="mb-6 overflow-hidden p-0">
+      {/* Progress */}
+      <div className="border-b border-border/50 px-5 pb-5 pt-5 sm:px-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            Setup · {doneCount} of {steps.length} done
           </p>
+          {active && (
+            <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground" aria-live="off">
+              <span aria-hidden className="relative flex h-1.5 w-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-foreground/30 motion-reduce:animate-none" />
+                <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground/50" />
+              </span>
+              Checking every few seconds
+            </p>
+          )}
         </div>
-        {active && (
-          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground" aria-live="off">
-            <span aria-hidden className="relative flex h-1.5 w-1.5">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-foreground/30 motion-reduce:animate-none" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-foreground/50" />
-            </span>
-            Live — refreshes every few seconds
-          </p>
-        )}
+        <ol className="mt-3 flex gap-1" aria-label={`${doneCount} of ${steps.length} steps done`}>
+          {steps.map((s) => (
+            <li
+              key={s.id}
+              title={s.title}
+              className={cn(
+                "h-1.5 flex-1 rounded-full",
+                isDone(s)
+                  ? "bg-foreground/70"
+                  : s.status === "waiting" || s.status === "running"
+                    ? "bg-torii"
+                    : s.status === "failed"
+                      ? "bg-torii/60"
+                      : "bg-foreground/10",
+              )}
+            />
+          ))}
+        </ol>
       </div>
 
-      <ol className="px-5 py-2" aria-label="Install steps">
-        {state.steps.map((step, i) => (
-          <StepRow key={step.id} step={step} index={i + 1} onRecheck={poll} onMailboxCreated={onMailboxCreated} />
-        ))}
-      </ol>
+      <div className="grid lg:grid-cols-[17rem_minmax(0,1fr)]">
+        {/* Steps, by phase (folded away on small screens) */}
+        <nav aria-label="Install steps" className="border-b border-border/50 lg:border-b-0 lg:border-r">
+          <details className="group lg:hidden">
+            <summary className="flex cursor-pointer list-none items-center gap-1.5 px-5 py-3 text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring sm:px-6 [&::-webkit-details-marker]:hidden">
+              <ChevronRight aria-hidden className="h-3.5 w-3.5 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
+              All steps
+            </summary>
+            <div className="px-5 pb-4 sm:px-6">
+              <PhaseList steps={steps} />
+            </div>
+          </details>
+          <div className="hidden px-5 py-5 lg:block">
+            <PhaseList steps={steps} />
+          </div>
+        </nav>
 
-      <details className="group border-t border-border/50 px-5 py-3">
-        <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-          <ChevronRight aria-hidden className="h-3.5 w-3.5 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
-          Install log
-          <span className="tabular-nums">({state.logs.length} lines)</span>
-        </summary>
-        <div className="mt-3 max-h-72 overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3" tabIndex={0} aria-label="Install log">
-          <ul className="space-y-1 font-mono text-[11px] leading-relaxed">
-            {state.logs.map((l, i) => (
-              <li key={i} className="flex gap-3">
-                <time dateTime={l.at} className="shrink-0 text-muted-foreground" title={fmtDateTime(l.at)}>
-                  {new Date(l.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-                </time>
-                <span className={cn("w-10 shrink-0 uppercase", l.level === "info" ? "text-muted-foreground" : toneText(l.level === "warn" ? "warn" : "bad"))}>
-                  {l.level}
-                </span>
-                {l.step && <span className="hidden shrink-0 text-muted-foreground sm:inline">{l.step}</span>}
-                <span className="min-w-0 break-words text-foreground/85">{l.message}</span>
-              </li>
-            ))}
-          </ul>
+        {/* The step that needs attention now */}
+        <div className="min-w-0 px-5 py-5 sm:px-6 sm:py-6">
+          {current ? (
+            <CurrentStep
+              step={current}
+              number={currentIndex + 1}
+              total={steps.length}
+              upNext={upNext}
+              onRecheck={poll}
+              onMailboxCreated={onMailboxCreated}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">{isFinished(state) ? "Every step is done." : "Starting the next step…"}</p>
+          )}
+          <InstallLog state={state} />
         </div>
-      </details>
+      </div>
     </Card>
   );
 }
 
-function StepRow({
+function PhaseList({ steps }: { steps: InstallStep[] }) {
+  const byId = new Map(steps.map((s, i) => [s.id, { step: s, n: i + 1 }]));
+  const known = new Set(PHASES.flatMap((p) => p.ids));
+  const phases = [...PHASES, { title: "Other", ids: steps.filter((s) => !known.has(s.id)).map((s) => s.id) }].filter((p) =>
+    p.ids.some((id) => byId.has(id)),
+  );
+  return (
+    <div className="space-y-4">
+      {phases.map((phase) => {
+        const items = phase.ids.map((id) => byId.get(id)).filter((x): x is { step: InstallStep; n: number } => !!x);
+        const allDone = items.every((x) => isDone(x.step));
+        return (
+          <div key={phase.title}>
+            <p className="mb-1.5 flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              {phase.title}
+              {allDone && <Check aria-label="done" className={cn("h-3 w-3", toneText("ok"))} strokeWidth={2.25} />}
+            </p>
+            <ol className="space-y-0.5">
+              {items.map(({ step, n }) => (
+                <PhaseItem key={step.id} step={step} n={n} />
+              ))}
+            </ol>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const ITEM_ICON: Record<StepStatus, LucideIcon | null> = {
+  done: Check,
+  skipped: Minus,
+  running: Loader2,
+  waiting: Hourglass,
+  failed: X,
+  pending: null,
+};
+
+function PhaseItem({ step, n }: { step: InstallStep; n: number }) {
+  const Icon = ITEM_ICON[step.status];
+  const now = step.status === "waiting" || step.status === "running" || step.status === "failed";
+  return (
+    <li
+      className={cn(
+        "relative flex items-start gap-2.5 rounded-md py-1.5 pl-2.5 pr-2 text-[13px] leading-snug",
+        now ? "bg-foreground/[0.05] text-foreground" : isDone(step) ? "text-foreground/70" : "text-muted-foreground",
+      )}
+      aria-current={now ? "step" : undefined}
+      title={step.detail ?? undefined}
+    >
+      {now && <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-torii" />}
+      <span
+        aria-hidden
+        className={cn(
+          "mt-px grid h-4 w-4 shrink-0 place-items-center rounded-full text-[9px] tabular-nums",
+          step.status === "done" && "bg-foreground/80 text-background",
+          step.status === "skipped" && "bg-foreground/15 text-foreground/70",
+          step.status === "pending" && "border border-foreground/20",
+          now && "text-torii",
+        )}
+      >
+        {Icon ? <Icon className={cn("h-3 w-3", step.status === "running" && "animate-spin motion-reduce:animate-none")} strokeWidth={2.5} /> : n}
+      </span>
+      <span className={cn("min-w-0", now && "font-medium")}>{step.title}</span>
+      <span className="sr-only">: {STATUS[step.status].label}</span>
+    </li>
+  );
+}
+
+function CurrentStep({
   step,
-  index,
+  number,
+  total,
+  upNext,
   onRecheck,
   onMailboxCreated,
 }: {
   step: InstallStep;
-  index: number;
+  number: number;
+  total: number;
+  upNext: InstallStep[];
   onRecheck: () => Promise<void>;
   onMailboxCreated: (r: CreateMailboxResponse) => void;
 }) {
-  const m = STEP_META[step.status];
-  const expanded = step.status === "waiting" || step.status === "failed";
-  const done = step.status === "done" || step.status === "skipped";
+  const meta = STATUS[step.status];
+  const waiting = step.status === "waiting";
   return (
-    <li className={done ? "py-1.5" : "py-2.5"} aria-current={expanded || step.status === "running" ? "step" : undefined}>
-      <div className="flex items-start gap-3">
-        <m.icon
-          aria-hidden
-          strokeWidth={1.75}
-          className={cn("mt-0.5 h-4 w-4 shrink-0", toneText(m.tone), m.spin && "animate-spin motion-reduce:animate-none", step.status === "pending" && "opacity-50")}
-        />
-        <div className="min-w-0 flex-1">
-          <div className="flex items-baseline justify-between gap-x-3">
-            <p className={cn("min-w-0 text-sm", step.status === "pending" ? "text-muted-foreground" : "text-foreground/90", done && "truncate")}>
-              <span className="sr-only">Step {index}: </span>
-              {step.title}
-              {/* Finished steps stay one quiet line; the detail is still there for anyone who looks. */}
-              {done && step.detail && <span className="ml-2 hidden text-xs text-muted-foreground md:inline">{step.detail}</span>}
-            </p>
-            <span className={cn("shrink-0 text-[11px]", done ? "text-muted-foreground" : toneText(m.tone), (expanded || step.status === "running") && "font-medium")}>
-              {m.label}
-              {done && step.finishedAt && <> · {timeAgo(step.finishedAt)}</>}
-            </span>
-          </div>
-          {step.detail && !expanded && !done && <p className="mt-0.5 text-xs text-muted-foreground">{step.detail}</p>}
-        </div>
+    <section aria-labelledby="current-step-title">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <p className="text-[11px] tabular-nums text-muted-foreground">
+          Step {number} of {total}
+        </p>
+        <StatusBadge tone={meta.tone} icon={step.status === "running" ? Loader2 : step.status === "waiting" ? Hourglass : undefined}>
+          {meta.label}
+        </StatusBadge>
       </div>
-      {expanded && (
-        <div className="ml-7 mt-2.5 rounded-lg border border-border bg-muted/30 p-4">
-          {step.id === "certificate" ? (
-            <CertificateTodo fallback={step.detail} onRecheck={onRecheck} />
-          ) : step.id === "first_mailbox" && step.status === "waiting" ? (
-            <FirstMailboxTodo onCreated={onMailboxCreated} onRecheck={onRecheck} />
-          ) : (
-            step.detail && <p className="text-sm leading-relaxed text-foreground">{step.detail}</p>
-          )}
-          {step.id === "dns" && step.status === "waiting" && <DnsTodo onRecheck={onRecheck} />}
-          {step.id === "ptr" && step.status === "waiting" && (
-            <p className="mt-2 text-xs text-muted-foreground">
-              Reverse DNS is set in your VPS provider's control panel (often under “Networking” or “rDNS”), not at your DNS host.
-            </p>
-          )}
-        </div>
+      <h2 id="current-step-title" className="mt-2 font-serif text-[24px] leading-tight tracking-tight sm:text-[26px]">
+        {step.title}
+      </h2>
+
+      <div className="mt-4 max-w-3xl">
+        {step.id === "certificate" ? (
+          <CertificateTodo fallback={step.detail} onRecheck={onRecheck} />
+        ) : step.id === "first_mailbox" && waiting ? (
+          <FirstMailboxTodo onCreated={onMailboxCreated} onRecheck={onRecheck} />
+        ) : step.id === "dns" && waiting ? (
+          <>
+            {step.detail && <p className="text-sm leading-relaxed text-foreground/90">{step.detail}</p>}
+            <DnsTodo onRecheck={onRecheck} />
+          </>
+        ) : step.id === "ptr" && waiting ? (
+          <PtrTodo detail={step.detail} />
+        ) : (
+          step.detail && <p className="text-sm leading-relaxed text-foreground/90 [overflow-wrap:anywhere]">{step.detail}</p>
+        )}
+        {step.status === "failed" && (
+          <p className="mt-3 text-xs text-muted-foreground">
+            Fix the cause, then run <code className="font-mono text-foreground/80">sudo yunori-mail install --resume</code> on the server.
+          </p>
+        )}
+      </div>
+
+      {upNext.length > 0 && (
+        <p className="mt-6 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-muted-foreground">
+          <span>Then</span>
+          {upNext.map((s, i) => (
+            <span key={s.id} className="inline-flex items-center gap-1.5">
+              {i > 0 && <ArrowRight aria-hidden className="h-3 w-3 opacity-60" />}
+              <span className="text-foreground/75">{s.title}</span>
+            </span>
+          ))}
+        </p>
       )}
-    </li>
+    </section>
+  );
+}
+
+/** Reverse DNS lives at the VPS provider, not the DNS host: say exactly what to set. */
+function PtrTodo({ detail }: { detail: string | null }) {
+  const { session } = useSession();
+  const host = session.server.hostname;
+  const ip = detail?.match(/reverse DNS for (\S+) to/i)?.[1] ?? null;
+  return (
+    <div className="space-y-3">
+      <p className="text-sm leading-relaxed text-foreground/90">
+        Receiving servers check that this server's address names it back. Set it in your <strong className="font-medium">VPS provider's</strong>{" "}
+        control panel (often “Networking” or “Reverse DNS”), not at your DNS host.
+      </p>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {ip && <CopyField label="IP address" value={ip} />}
+        <CopyField label="Reverse DNS (PTR) name" value={host} />
+      </div>
+      {detail && <p className="text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{detail}</p>}
+    </div>
+  );
+}
+
+function CopyField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border border-border/60 bg-card px-3 py-2">
+      <p className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">{label}</p>
+      <div className="mt-0.5 flex items-center justify-between gap-2">
+        <code className="min-w-0 break-all font-mono text-[13px] text-foreground">{value}</code>
+        <CopyButton value={value} label={label} />
+      </div>
+    </div>
+  );
+}
+
+function InstallLog({ state }: { state: InstallState }) {
+  return (
+    <details className="group mt-6 border-t border-border/50 pt-3">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <ChevronRight aria-hidden className="h-3.5 w-3.5 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
+        Install log
+        <span className="tabular-nums">({state.logs.length} lines)</span>
+      </summary>
+      <div className="mt-3 max-h-72 overflow-auto rounded-lg border border-border/60 bg-muted/30 p-3" tabIndex={0} aria-label="Install log">
+        <ul className="space-y-1 font-mono text-[11px] leading-relaxed">
+          {state.logs.map((l, i) => (
+            <li key={i} className="flex gap-3">
+              <time dateTime={l.at} className="shrink-0 text-muted-foreground" title={fmtDateTime(l.at)}>
+                {new Date(l.at).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </time>
+              <span className={cn("w-10 shrink-0 uppercase", l.level === "info" ? "text-muted-foreground" : toneText(l.level === "warn" ? "warn" : "bad"))}>
+                {l.level}
+              </span>
+              {l.step && <span className="hidden shrink-0 text-muted-foreground sm:inline">{l.step}</span>}
+              <span className="min-w-0 break-words text-foreground/85">{l.message}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </details>
   );
 }
 
@@ -242,8 +414,8 @@ function FirstMailboxTodo({ onCreated, onRecheck }: { onCreated: (r: CreateMailb
   return (
     <form onSubmit={onSubmit} noValidate className="space-y-3">
       <p className="text-sm leading-relaxed text-foreground">
-        Create your first mailbox. <span className="font-mono text-[13px]">postmaster@</span> and <span className="font-mono text-[13px]">abuse@</span>, which
-        every mail domain needs, deliver to it too.
+        Pick the address for your first mailbox. <span className="font-mono text-[13px]">postmaster@</span> and{" "}
+        <span className="font-mono text-[13px]">abuse@</span>, which every mail domain needs, deliver to it too.
       </p>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1.5">
@@ -323,7 +495,7 @@ function DnsTodo({ onRecheck }: { onRecheck: () => Promise<void> }) {
   const todo = (records ?? []).filter((r) => r.required && r.status === "fail");
 
   return (
-    <div className="mt-3">
+    <div className="mt-4">
       {records === null ? (
         <p className="text-xs text-muted-foreground">Loading the records…</p>
       ) : todo.length > 0 ? (
