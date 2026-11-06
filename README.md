@@ -94,8 +94,8 @@ Nothing runs until the whole script has arrived, so a cut-off download can't run
 overrides: `YUNORI_VERSION`, `YUNORI_SKIP_INSTALL=1` (download and verify only), `YUNORI_BASE_URL` (an `https://` or
 `file://` mirror) and `YUNORI_PREFIX`.
 
-Releases are cut by pushing a `v*` tag, or from **Actions → release → Run workflow** with the version
-(`.github/workflows/release.yml`). Each one publishes static musl binaries
+Releases are cut by pushing a `v*` tag, by pushing a `release/v<version>` branch, or from **Actions → release → Run
+workflow** with the version (`.github/workflows/release.yml`). Each one publishes static musl binaries
 for x86-64 and ARM64, `SHA256SUMS`, and an `install.sh` pinned to that version, so the `latest` URL above always
 installs the newest release. `get.yunori.email/mail` is reserved as a short alias that redirects to it.
 
