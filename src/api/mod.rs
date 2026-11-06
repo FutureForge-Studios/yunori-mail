@@ -261,6 +261,7 @@ pub fn router(app: AppState) -> Router {
         .route("/sending", get(admin::get_sending).put(admin::put_sending))
         .route("/deliverability", get(admin::deliverability))
         .route("/system", get(admin::system))
+        .route("/updates/check", post(admin::update_check))
         .route("/audit", get(admin::audit))
         .route("/admins", get(admin::admins))
         // portal

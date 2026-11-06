@@ -73,6 +73,13 @@ pub enum Command {
     /// Upgrade the mail engine to the version pinned by this build (with rollback),
     /// and refresh the service units.
     Upgrade,
+    /// Update Yunori Mail Server to the newest release from yunori.email (the
+    /// one-line installer: verified download, binary swap, engine upgrade).
+    Update {
+        /// Only say whether there is a newer release; change nothing.
+        #[arg(long)]
+        check: bool,
+    },
     /// Stop and remove the services (keeps data unless --purge).
     Uninstall {
         #[arg(long)]
@@ -450,6 +457,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Backup { out } => backup(out).await,
         Command::Restore { file, yes } => restore(file, yes).await,
         Command::Upgrade => upgrade().await,
+        Command::Update { check } => update_cmd(check).await,
         Command::Uninstall { purge, yes } => uninstall(purge, yes),
     }
 }
@@ -1744,8 +1752,79 @@ async fn upgrade() -> Result<()> {
         let _ = os::systemctl(&["restart", "yunori-mail"]);
     }
     println!("{}", crate::installer::upgrade::upgrade_engine(&app).await?);
-    println!("To update yunori-mail itself, run the one-line installer again.");
+    println!("To update yunori-mail itself: sudo yunori-mail update");
     Ok(())
+}
+
+/// `yunori-mail update [--check]`: compare with the newest release on
+/// yunori.email, then (unless `--check`) run the same one-line installer people
+/// install with. It verifies the download's SHA-256, swaps the binary, and hands
+/// back to `yunori-mail install`, which updates a finished install in place.
+async fn update_cmd(check_only: bool) -> Result<()> {
+    let latest = match open_app(false, false) {
+        Ok(app) => crate::updates::check(&app).await,
+        // No state directory yet (or not root): ask without remembering.
+        Err(_) => crate::updates::check_now().await,
+    };
+    match (&latest.latest, &latest.problem) {
+        (Some(l), _) if latest.available => {
+            println!(
+                "yunori-mail {} is installed; {l} is available.",
+                latest.current
+            );
+            if let Some(notes) = &latest.notes_url {
+                println!("What changed: {notes}");
+            }
+        }
+        (Some(l), None) => println!(
+            "yunori-mail {} is up to date (newest: {l}).",
+            latest.current
+        ),
+        (_, Some(p)) => println!("Couldn't check for updates: {p}"),
+        (None, None) => println!("No release is published yet."),
+    }
+    if let (Some(p), Some(_)) = (&latest.problem, &latest.latest) {
+        println!("(That is the last answer; checking just now failed: {p})");
+    }
+    if check_only {
+        return Ok(());
+    }
+    if !latest.available && latest.problem.is_none() {
+        return Ok(());
+    }
+    if !os::is_root() {
+        bail!("run it as root: sudo yunori-mail update");
+    }
+    let script = crate::updates::fetch_installer().await?;
+    let dir = tempfile_dir()?;
+    let path = dir.join("install.sh");
+    std::fs::write(&path, script)?;
+    println!(
+        "Running the installer from {}/install.sh…
+",
+        crate::updates::feed_base()
+    );
+    let status = std::process::Command::new("sh")
+        .arg(&path)
+        .env("YUNORI_FEED", crate::updates::feed_base())
+        .status()
+        .context("running the installer")?;
+    let _ = std::fs::remove_dir_all(&dir);
+    if !status.success() {
+        bail!(
+            "the installer stopped (exit {}). Nothing was changed after the step it reports.",
+            status.code().unwrap_or(1)
+        );
+    }
+    Ok(())
+}
+
+/// A private directory for the downloaded installer (0700, removed afterwards).
+fn tempfile_dir() -> Result<std::path::PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let dir = std::env::temp_dir().join(format!("yunori-update-{}", crate::util::random_token(8)));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    Ok(dir)
 }
 
 /// The one-line installer ran on a machine that is already set up: pick up a

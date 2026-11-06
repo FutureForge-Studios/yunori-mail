@@ -1184,7 +1184,16 @@ pub async fn system(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<Jso
             "load1": load1,
         },
         "certificate": cert,
+        "update": crate::updates::status(&app),
     })))
+}
+
+/// "Check now" on the System page: ask yunori.email for the newest release.
+pub async fn update_check(
+    State(app): State<AppState>,
+    _a: AdminAuth,
+) -> ApiResult<Json<crate::updates::UpdateStatus>> {
+    Ok(Json(crate::updates::check(&app).await))
 }
 
 #[derive(Deserialize)]

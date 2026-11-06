@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Stethoscope } from "lucide-react";
+import { ArrowUpRight, RefreshCw, Stethoscope } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Button } from "@/design/vendor/ui/button";
 import { Card, KV, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
 import { api, errorMessage } from "@/api/client";
-import type { Check, ServiceStatus } from "@/api/types";
+import type { Check, ServiceStatus, UpdateStatus } from "@/api/types";
+import { CopyButton } from "@/components/copy-button";
 import { LoadError, Page, usePageTitle } from "@/components/kit";
 import { Meter } from "@/components/meter";
 import { CheckList, CheckPill, StatusBadge, worstStatus, type Tone } from "@/components/status";
@@ -141,6 +142,7 @@ export default function SystemPage() {
             <SectionLabel>Versions</SectionLabel>
             <KV label="Yunori Mail">{data.versions.yunori}</KV>
             <KV label="Stalwart">{data.versions.engine ?? "Not installed"}</KV>
+            <Updates initial={data.update} />
           </Card>
 
           <Card className="lg:col-span-3">
@@ -167,6 +169,88 @@ function Resource({ label, used, total, extra }: { label: string; used: number; 
       </div>
       <Meter value={p} label={`${label} used`} valueText={`${text}${extra ? `, ${extra}` : ""}`} />
       {extra && <p className="mt-1 text-[11px] text-muted-foreground">{extra}</p>}
+    </div>
+  );
+}
+
+const UPDATE_COMMAND = "sudo yunori-mail update";
+
+/**
+ * Whether a newer release is out, from the daily check against
+ * yunori.email/server/latest.json. Nothing is installed from here: the
+ * command does that on the server, verified and with an engine rollback.
+ */
+function Updates({ initial }: { initial: UpdateStatus }) {
+  const [u, setU] = useState(initial);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setU(initial), [initial]);
+
+  async function checkNow() {
+    setBusy(true);
+    try {
+      const next = await api.checkForUpdate();
+      setU(next);
+      if (next.problem) toast.error(`Couldn't check for updates: ${next.problem}`);
+      else toast.success(next.available ? `Yunori Mail ${next.latest} is available.` : "You're on the newest release.");
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="mt-3 border-t border-border/50 pt-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {u.available ? (
+          <StatusBadge tone="warn">{u.latest} is available</StatusBadge>
+        ) : u.latest ? (
+          <StatusBadge tone="ok">Up to date</StatusBadge>
+        ) : (
+          <StatusBadge tone="muted">Not checked yet</StatusBadge>
+        )}
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => void checkNow()}
+          disabled={busy}
+          aria-label={busy ? "Checking for updates" : "Check now for updates"}
+          className="h-7 px-2 text-xs text-muted-foreground"
+        >
+          <RefreshCw aria-hidden className={cn("h-3.5 w-3.5", busy && "animate-spin motion-reduce:animate-none")} />
+          {busy ? "Checking…" : "Check now"}
+        </Button>
+      </div>
+      {u.available && (
+        <>
+          <p className="mt-2 text-xs leading-relaxed text-foreground/85">
+            {u.publishedAt && <>Released {timeAgo(u.publishedAt)}. </>}
+            Run this on the server; your settings and mail stay as they are.
+          </p>
+          <div className="mt-2 flex items-center gap-1 rounded-md border border-border/60 bg-muted/30 py-1 pl-2.5 pr-1">
+            <code className="min-w-0 flex-1 truncate font-mono text-xs">{UPDATE_COMMAND}</code>
+            <CopyButton value={UPDATE_COMMAND} label="the update command" />
+          </div>
+          {u.notesUrl && (
+            <a
+              href={u.notesUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-2 inline-flex items-center gap-1 rounded-sm text-xs text-foreground underline underline-offset-4 hover:no-underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            >
+              What changed
+              <ArrowUpRight aria-hidden className="h-3 w-3" />
+            </a>
+          )}
+        </>
+      )}
+      <p className="mt-2 text-[11px] text-muted-foreground">
+        {u.problem
+          ? `Last check failed: ${u.problem}`
+          : u.checkedAt
+            ? `Checked ${timeAgo(u.checkedAt)} against yunori.email.`
+            : "Checked once a day against yunori.email."}
+      </p>
     </div>
   );
 }

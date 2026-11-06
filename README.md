@@ -4,7 +4,7 @@ Install a real, deliverable mail server on your own VPS in minutes, and run it f
 and feels like the [Yunori](https://yunori.email) client.
 
 ```bash
-curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
+curl -fsSL https://yunori.email/server/install.sh | sudo sh
 ```
 
 That one line downloads a single static binary for your CPU (x86-64 or ARM64), checks its SHA-256, and starts the
@@ -13,7 +13,7 @@ guided installer. Run the same line again at any time: a paused install resumes,
 Not sure your server is suitable? Check it first. This installs only the binary and changes nothing else:
 
 ```bash
-curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh -s -- preflight
+curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
 ```
 
 > **Status: pre-release.** The plan, research and decisions are in [`docs/PLAN.md`](docs/PLAN.md); the engine
@@ -73,14 +73,14 @@ Idle footprint target: under 256 MB RAM for the whole box (Stalwart ~100 MB, `yu
 
 ```bash
 # One line, interactive
-curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
+curl -fsSL https://yunori.email/server/install.sh | sudo sh
 
 # One line, unattended: every answer as a flag after `-s --` (--yes never asks)
-curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh \
+curl -fsSL https://yunori.email/server/install.sh \
   | sudo sh -s -- --domain example.com --admin-email you@gmail.com --first-mailbox hello --yes
 
 # Read it first, or pin a version
-curl -fsSLO https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh
+curl -fsSLO https://yunori.email/server/install.sh
 less install.sh
 sudo YUNORI_VERSION=0.1.0 sh install.sh
 
@@ -111,12 +111,25 @@ What the one-line script does, and nothing else (`packaging/install.sh`):
 
 Nothing runs until the whole script has arrived, so a cut-off download can't run half an installer. Environment
 overrides: `YUNORI_VERSION`, `YUNORI_SKIP_INSTALL=1` (download and verify only), `YUNORI_BASE_URL` (an `https://` or
-`file://` mirror) and `YUNORI_PREFIX`.
+`file://` mirror), `YUNORI_FEED` (the release feed) and `YUNORI_PREFIX`.
+
+**Where the bytes come from.** [yunori.email/server](https://yunori.email/server) serves this repository's releases
+(the Yunori website, `server/mail-server-feed.ts` in the client repository):
+
+| Address | What |
+|---|---|
+| `https://yunori.email/server/install.sh` | The latest release's installer |
+| `https://yunori.email/server/v<version>/<file>` | A release file; the installer downloads the binary and its `.sha256` from here |
+| `https://yunori.email/server/latest.json` | `{version, tag, publishedAt, notesUrl, install}`; servers check it daily |
+
+Files are redirects to the GitHub release, so the SHA-256 check is unchanged. If yunori.email can't be reached, the
+installer downloads from GitHub instead, and the GitHub URL works as a one-liner too:
+`curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh`.
 
 Releases are cut by pushing a `v*` tag, by pushing a `release/v<version>` branch, or from **Actions → release → Run
 workflow** with the version (`.github/workflows/release.yml`). Each one publishes static musl binaries
-for x86-64 and ARM64, `SHA256SUMS`, and an `install.sh` pinned to that version, so the `latest` URL above always
-installs the newest release. `get.yunori.email/mail` is reserved as a short alias that redirects to it.
+for x86-64 and ARM64, `SHA256SUMS`, and an `install.sh` pinned to that version, so the line above always installs the
+newest release.
 
 ### What the installer does
 
@@ -203,6 +216,8 @@ yunori-mail certificate status          # automatic HTTPS: state, last attempt, 
 sudo yunori-mail certificate renew       # ask the CA now
 sudo yunori-mail setup-token             # a new one-time console setup link
 sudo yunori-mail backup                  # encrypted; prints a recovery key once
+yunori-mail update --check               # is there a newer release? (the console's System page says so too)
+sudo yunori-mail update                  # take it: verified download, binary swap, then the engine upgrade below
 sudo yunori-mail upgrade                 # pinned engine upgrade: snapshot → swap → health gate → rollback on failure
 sudo yunori-mail restore <file.ybk>
 sudo yunori-mail uninstall [--purge]

@@ -1,7 +1,10 @@
 #!/bin/sh
 # Yunori Mail Server: one-line installer.
 #
-#   curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
+#   curl -fsSL https://yunori.email/server/install.sh | sudo sh
+#
+# (yunori.email serves this repository's releases; the GitHub release URL works the same:
+#  https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh)
 #
 # Unattended (every answer as a flag; see `yunori-mail install --help`):
 #   curl -fsSL …/install.sh | sudo sh -s -- --domain example.com --admin-email you@gmail.com
@@ -10,6 +13,7 @@
 #   curl -fsSL …/install.sh | sudo sh -s -- preflight
 #
 # Run it again at any time: a paused install resumes, a finished one is updated in place.
+# On an installed server, `sudo yunori-mail update` runs this same script.
 #
 # What it does, and nothing else:
 #   1. checks this is 64-bit Linux with systemd, and that you are root;
@@ -22,12 +26,15 @@
 # Environment overrides:
 #   YUNORI_VERSION=0.1.0       install this release instead of the one this script was published with
 #   YUNORI_SKIP_INSTALL=1      download, verify and install the binary only; don't run the installer
-#   YUNORI_BASE_URL=…          download from a mirror (https:// or file://) instead of GitHub releases
+#   YUNORI_BASE_URL=…          download from a mirror (https:// or file://) instead of yunori.email/GitHub
+#   YUNORI_FEED=…              the release feed (default https://yunori.email/server; GitHub is the fallback)
 #   YUNORI_PREFIX=/usr/local   where bin/yunori-mail goes
 
 set -eu
 
 REPO="FutureForge-Studios/yunori-mail"
+# yunori.email answers for this repository's releases: /latest.json and /v<version>/<file>.
+FEED="${YUNORI_FEED:-https://yunori.email/server}"
 # Release builds pin this line to their own version (see .github/workflows/release.yml).
 DEFAULT_VERSION="latest"
 # Release signing key (minisign). Empty until releases are signed.
@@ -49,7 +56,7 @@ check_system() {
   if [ "${YUNORI_SKIP_INSTALL:-}" = "1" ]; then
     return
   fi
-  [ "$(id -u)" = "0" ] || fail "run it as root: curl -fsSL <this URL> | sudo sh"
+  [ "$(id -u)" = "0" ] || fail "run it as root: curl -fsSL https://yunori.email/server/install.sh | sudo sh"
   [ -d /run/systemd/system ] || fail "this machine doesn't run systemd. Use a Debian 12+ or Ubuntu 22.04+ server."
   if [ -r /etc/os-release ]; then
     # shellcheck disable=SC1091
@@ -88,9 +95,22 @@ fetch() {
   fi
 }
 
+# The newest release's version from the feed's latest.json, or nothing.
+feed_version() {
+  case "$FEED" in https://*) ;; *) return 0 ;; esac
+  json="$(mktemp)"
+  if fetch "$FEED/latest.json" "$json" 2>/dev/null; then
+    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json" | head -n 1
+  fi
+  rm -f "$json"
+}
+
 resolve_version() {
   VERSION="${YUNORI_VERSION:-$DEFAULT_VERSION}"
   if [ "$VERSION" = "latest" ]; then
+    VERSION="$(feed_version)"
+  fi
+  if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
     url="https://github.com/$REPO/releases/latest"
     if [ "$DL" = "curl" ]; then
       final="$(curl -fsSLI --proto '=https' --tlsv1.2 -o /dev/null -w '%{url_effective}' "$url")" ||
@@ -115,13 +135,24 @@ install_binary() {
     return
   fi
 
-  BASE_URL="${YUNORI_BASE_URL:-https://github.com/$REPO/releases/download/v$VERSION}"
   ASSET="yunori-mail-$ARCH-linux.tar.gz"
   TMP="$(mktemp -d)"
   trap 'rm -rf "$TMP"' EXIT INT TERM
 
   say "Downloading Yunori Mail Server $VERSION ($ARCH)…"
-  fetch "$BASE_URL/$ASSET" "$TMP/$ASSET" || fail "download failed: $BASE_URL/$ASSET"
+  # A mirror, if one is set; else yunori.email, and GitHub if yunori.email can't be reached.
+  # The checksum always comes from the same place as the binary it checks.
+  if [ -n "${YUNORI_BASE_URL:-}" ]; then
+    BASE_URL="$YUNORI_BASE_URL"
+    fetch "$BASE_URL/$ASSET" "$TMP/$ASSET" || fail "download failed: $BASE_URL/$ASSET"
+  else
+    BASE_URL="$FEED/v$VERSION"
+    if ! fetch "$BASE_URL/$ASSET" "$TMP/$ASSET" 2>/dev/null; then
+      BASE_URL="https://github.com/$REPO/releases/download/v$VERSION"
+      say "yunori.email didn't answer; downloading from GitHub instead."
+      fetch "$BASE_URL/$ASSET" "$TMP/$ASSET" || fail "download failed: $BASE_URL/$ASSET"
+    fi
+  fi
   fetch "$BASE_URL/$ASSET.sha256" "$TMP/$ASSET.sha256" || fail "download failed: $ASSET.sha256"
   (cd "$TMP" && sha256sum -c "$ASSET.sha256" >/dev/null 2>&1) || fail "checksum mismatch. Refusing to install."
 

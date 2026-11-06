@@ -37,6 +37,7 @@ import type {
   UpdateDomainRequest,
   UpdateMailboxRequest,
   UpdateSendingRequest,
+  UpdateStatus,
 } from "./types";
 
 /**
@@ -208,6 +209,7 @@ export const api = {
 
   deliverability: () => request<DeliverabilityResponse>("GET", "/deliverability"),
   system: () => request<SystemResponse>("GET", "/system"),
+  checkForUpdate: () => request<UpdateStatus>("POST", "/updates/check"),
   preflight: () => request<PreflightResponse>("GET", "/preflight"),
   audit: () => request<AuditResponse>("GET", "/audit"),
   admins: () => request<AdminUser[]>("GET", "/admins"),

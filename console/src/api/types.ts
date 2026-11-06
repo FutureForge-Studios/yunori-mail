@@ -459,6 +459,25 @@ export interface SystemResponse {
     load1: number;
   };
   certificate: CertificateInfo | null;
+  update: UpdateStatus;
+}
+
+/**
+ * The daily check against yunori.email/server/latest.json (src/updates.rs).
+ * POST /updates/check → UpdateStatus asks again now. Nothing is installed by
+ * either; `sudo yunori-mail update` does that.
+ */
+export interface UpdateStatus {
+  current: string;
+  /** Newest published release, once a check has got an answer. */
+  latest: string | null;
+  available: boolean;
+  publishedAt: string | null;
+  /** Release notes on github.com. */
+  notesUrl: string | null;
+  checkedAt: string | null;
+  /** Why the last check got no answer; the last answer is kept. */
+  problem: string | null;
 }
 
 /** GET /preflight → Check[] (fresh run of the installer's preflight). */

@@ -36,6 +36,7 @@ import type {
   RelayRecord,
   SessionResponse,
   SystemResponse,
+  UpdateStatus,
   VerdictLevel,
 } from "./types";
 
@@ -804,6 +805,20 @@ function system(db: DB): SystemResponse {
     ],
     resources: { memTotalBytes: 4 * GB, memUsedBytes: 1.38 * GB, diskTotalBytes: 80 * GB, diskFreeBytes: (db.install ? 77.6 : 61.2) * GB, load1: 0.18 },
     certificate: certStatus(db),
+    update: updateStatus(),
+  };
+}
+
+/** The healthy box is one release behind, so the System page shows the update card. */
+function updateStatus(): UpdateStatus {
+  return {
+    current: VERSION,
+    latest: "0.2.0",
+    available: true,
+    publishedAt: iso(2 * 864e5),
+    notesUrl: "https://github.com/FutureForge-Studios/yunori-mail/releases/tag/v0.2.0",
+    checkedAt: iso(3 * 3600e3),
+    problem: null,
   };
 }
 
@@ -1057,6 +1072,7 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
   requireAdmin(db);
 
   if (is("GET", "/overview")) return [200, overview(db)];
+  if (is("POST", "/updates/check")) return [200, { ...updateStatus(), checkedAt: iso() }];
   if (is("GET", "/install")) {
     advanceInstall(db);
     const st: InstallState = db.install ? { steps: db.install.steps, logs: db.install.logs } : { steps: [], logs: [] };
