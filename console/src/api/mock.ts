@@ -7,7 +7,7 @@
  *
  * State is consistent across endpoints (a created mailbox appears in lists,
  * counts and the portal) and survives reloads via sessionStorage. Scenarios:
- *   ?mock=setup | signedout | installing | healthy | degraded
+ *   ?mock=setup | signedout | certificate | installing | healthy | degraded
  * (or the dev panel, bottom-left) reseed the data.
  */
 import type {
@@ -16,6 +16,9 @@ import type {
   ApiError,
   AppPassword,
   AuditEntry,
+  CertificateInfo,
+  CertProblem,
+  CertState,
   Check,
   CheckStatus,
   DnsRecord,
@@ -36,12 +39,13 @@ import type {
   VerdictLevel,
 } from "./types";
 
-export type Scenario = "setup" | "signedout" | "installing" | "healthy" | "degraded";
+export type Scenario = "setup" | "signedout" | "certificate" | "installing" | "healthy" | "degraded";
 
 export const SCENARIOS: { key: Scenario; label: string; hint: string; path: string }[] = [
   { key: "setup", label: "First run", hint: "setupRequired — any token ≥ 8 chars; code: any 6 digits but 000000", path: "/console/setup" },
   { key: "signedout", label: "Signed out", hint: "aiko@example.com · any 12+ char password · any 6 digits but 000000", path: "/console/login" },
-  { key: "installing", label: "Installing", hint: "DNS step waiting — press “Check now” to let it finish", path: "/console" },
+  { key: "certificate", label: "Certificate pending", hint: "Port 80 blocked at the provider — press “Try now” to let it issue", path: "/console" },
+  { key: "installing", label: "Installing", hint: "DNS step waiting — “Check now”, then create the first mailbox inline", path: "/console" },
   { key: "healthy", label: "Healthy", hint: "Everything passes · portal signed in as aiko@example.com", path: "/console" },
   { key: "degraded", label: "Port 25 blocked", hint: "Direct sending fails → relay recommended", path: "/console" },
 ];
@@ -95,6 +99,15 @@ interface InstallRow {
   logs: InstallLogLine[];
   ptrStartedAt: number | null;
 }
+interface MockCert {
+  state: CertState;
+  problem: CertProblem | null;
+  /** A "Try now" attempt finishes at this time. */
+  attemptUntil: number | null;
+  lastAttempt: string | null;
+  nextAttempt: string | null;
+  failures: number;
+}
 interface DB {
   scenario: Scenario;
   setupRequired: boolean;
@@ -113,6 +126,7 @@ interface DB {
   queue: QueueSummary;
   install: InstallRow | null;
   installComplete: boolean;
+  cert: MockCert;
   audit: AuditEntry[];
   portalAddress: string | null;
   appPasswords: Record<string, AppPassword[]>;
@@ -190,6 +204,7 @@ function seed(scenario: Scenario): DB {
     queue: { total: 0, deferred: 0, groups: [] },
     install: null,
     installComplete: true,
+    cert: { state: "valid", problem: null, attemptUntil: null, lastAttempt: iso(14 * DAY), nextAttempt: null, failures: 0 },
     audit: [],
     portalAddress: null,
     appPasswords: {},
@@ -205,19 +220,23 @@ function seed(scenario: Scenario): DB {
       adminId: null,
       installComplete: false,
       domains: [primaryDomain("installing")],
-      mailboxes: [postmaster()],
-      install: installingState(),
+      mailboxes: [],
+      install: installingState("dns"),
       audit: installerAudit(),
     };
   }
 
-  if (scenario === "installing") {
+  if (scenario === "installing" || scenario === "certificate") {
+    const cert = scenario === "certificate";
     return {
       ...base,
       installComplete: false,
       domains: [primaryDomain("installing")],
-      mailboxes: [postmaster()],
-      install: installingState(),
+      mailboxes: [],
+      install: installingState(cert ? "certificate" : "dns"),
+      cert: cert
+        ? { state: "self_signed", problem: port80Problem(), attemptUntil: null, lastAttempt: iso(2 * MIN), nextAttempt: new Date(now() + 4 * MIN).toISOString(), failures: 3 }
+        : base.cert,
       audit: [...adminAudit().slice(-1), ...installerAudit()],
     };
   }
@@ -311,7 +330,18 @@ function secondaryDomain(): DomainRow {
   return { id: "dom_net", name: "example.net", enabled: true, isPrimary: false, catchAll: "sam@example.net", dnsCheckedAt: iso(22 * MIN), createdAt: iso(4 * DAY), published };
 }
 
-function installingState(): InstallRow {
+function port80Problem(): CertProblem {
+  return {
+    kind: "unreachable",
+    name: HOST,
+    summary: `Let's Encrypt could not connect to ${HOST} on port 80.`,
+    remedy: "Allow incoming TCP 80 and 443 in your provider's firewall or security group (the server's own firewall was opened by the installer).",
+    detail: `${IPV4}: Fetching http://${HOST}/.well-known/acme-challenge/yWq…: Timeout during connect (likely firewall problem)`,
+  };
+}
+
+/** Mirrors `STEPS` in src/installer/state.rs. */
+function installingState(stage: "certificate" | "dns"): InstallRow {
   const t = (m: number) => iso(m * MIN);
   const step = (id: string, title: string, status: InstallStep["status"], detail: string | null, start?: number, end?: number): InstallStep => ({
     id,
@@ -321,43 +351,54 @@ function installingState(): InstallRow {
     startedAt: start === undefined ? null : t(start),
     finishedAt: end === undefined ? null : t(end),
   });
+  const cert = stage === "certificate";
   return {
     ptrStartedAt: null,
     steps: [
-      step("preflight", "Preflight checks", "done", "Ubuntu 24.04, 4 GB RAM, ports 25, 80 and 443 reachable.", 19, 19),
-      step("inputs", "Server details", "done", `${HOST} will serve mail for example.com.`, 18, 18),
-      step("host_record", "Host record", "done", `${HOST} resolves to ${IPV4}.`, 18, 16),
-      step("install_engine", "Install the mail engine", "done", `Stalwart ${ENGINE} downloaded, verified and installed.`, 16, 14),
-      step("bootstrap_engine", "Configure the mail engine", "done", "Listeners, DKIM keys and the postmaster mailbox are ready.", 14, 12),
-      step("edge_tls", "TLS certificate", "done", `Let's Encrypt issued a certificate for ${HOST}.`, 12, 11),
-      step("firewall", "Firewall", "done", "Opened 25, 465, 587, 993, 80 and 443; everything else stays closed.", 11, 11),
-      step(
-        "dns",
-        "DNS records",
-        "waiting",
-        "Publish the 5 required records for example.com at your DNS provider — MX, SPF, two DKIM keys and DMARC. Yunori checks every minute and continues on its own once they resolve.",
-        11,
-      ),
-      step("ptr", "Reverse DNS (PTR)", "pending", null),
-      step("first_mailbox", "First mailbox", "pending", null),
+      step("preflight", "Check this server", "done", "Ready, with 1 warning to review.", 19, 19),
+      step("inputs", "Your domain", "done", `example.com on ${HOST} (${IPV4}).`, 18, 18),
+      step("host_record", "Point the mail hostname here", "done", `${HOST} → ${IPV4}.`, 18, 16),
+      step("firewall", "Open mail ports", "done", "Opened 25, 80, 443, 465, 587, 993, 4190 in ufw.", 16, 16),
+      step("install_engine", "Install the mail engine", "done", `Stalwart ${ENGINE} downloaded and verified; local resolver installed.`, 16, 14),
+      step("bootstrap_engine", "Configure the mail engine", "done", `Stalwart ${ENGINE} is running.`, 14, 12),
+      step("edge_tls", "Start the console and HTTPS edge", "done", "The console and HTTPS edge are running on ports 80 and 443.", 12, 12),
+      cert
+        ? step(
+            "certificate",
+            "Get a trusted TLS certificate",
+            "waiting",
+            `${port80Problem().summary} ${port80Problem().remedy} Retrying by itself in 4 minutes.`,
+            12,
+          )
+        : step("certificate", "Get a trusted TLS certificate", "done", `Let's Encrypt issued a certificate for ${HOST}, valid until ${fmtIsoDay(now() + 89 * DAY)}; it renews automatically.`, 12, 11),
+      cert
+        ? step("dns", "Publish DNS records", "pending", null)
+        : step("dns", "Publish DNS records", "waiting", "Publish 5 records at your DNS provider: MX example.com, TXT example.com, TXT v1-ed25519-" + SETUP_DAY + "._domainkey.example.com, TXT v1-rsa-" + SETUP_DAY + "._domainkey.example.com, TXT _dmarc.example.com.", 11),
+      step("ptr", "Set reverse DNS", "pending", null),
+      step("first_mailbox", "Create your first mailbox", "pending", null),
       step("done", "Finish", "pending", null),
     ],
     logs: [
-      log(19, "info", "preflight", "Ubuntu 24.04.1 LTS, x86_64, 4 vCPU, 4 GB RAM, 78 GB free"),
-      log(19, "info", "preflight", "Outbound :25 to the reflector succeeded"),
-      log(19, "warn", "preflight", "IPv6 present but no PTR for 2001:db8:5::24 — AAAA stays optional"),
-      log(18, "info", "inputs", `Hostname ${HOST}, primary domain example.com`),
-      log(16, "info", "host_record", `${HOST} A ${IPV4} (via 3 public resolvers)`),
-      log(14, "info", "install_engine", `stalwart ${ENGINE} sha256 verified, installed to /usr/local/bin`),
-      log(12, "info", "bootstrap_engine", "Bootstrap complete; recovery admin removed"),
-      log(12, "info", "bootstrap_engine", `DKIM keys generated: v1-ed25519-${SETUP_DAY}, v1-rsa-${SETUP_DAY}`),
-      log(11, "info", "edge_tls", "ACME order finalised (HTTP-01)"),
-      log(11, "info", "firewall", "nftables ruleset applied"),
-      log(10, "info", "dns", "Waiting for MX, SPF, DKIM (2) and DMARC on example.com"),
-      log(5, "info", "dns", "Checked 3 resolvers: 0 of 5 required records found"),
-      log(1, "info", "dns", "Checked 3 resolvers: 0 of 5 required records found"),
+      log(19, "info", "preflight", "Ready, with 1 warning to review."),
+      log(18, "info", "inputs", `example.com on ${HOST} (${IPV4}).`),
+      log(16, "info", "host_record", `${HOST} → ${IPV4}.`),
+      log(14, "info", "install_engine", `Stalwart ${ENGINE} downloaded and verified; local resolver installed.`),
+      log(12, "info", "bootstrap_engine", "Listeners and proxy trust configured"),
+      log(12, "info", "certificate", "Requesting a certificate from Let's Encrypt: there is no certificate yet."),
+      ...(cert
+        ? [
+            log(12, "warn", "certificate", `${port80Problem().summary} ${port80Problem().remedy}`),
+            log(12, "warn", "certificate", `The CA said: ${port80Problem().detail}`),
+            log(2, "info", "certificate", "Requesting a certificate from Let's Encrypt: a temporary self-signed certificate is in use."),
+            log(2, "warn", "certificate", `${port80Problem().summary} ${port80Problem().remedy}`),
+          ]
+        : [log(11, "info", "certificate", `Let's Encrypt issued a certificate for ${HOST}.`), log(10, "info", "dns", "Waiting for MX, SPF, DKIM (2) and DMARC on example.com")]),
     ],
   };
+}
+
+function fmtIsoDay(ms: number) {
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 function log(minAgo: number, level: InstallLogLine["level"], step: string | null, message: string): InstallLogLine {
@@ -366,7 +407,6 @@ function log(minAgo: number, level: InstallLogLine["level"], step: string | null
 
 function installerAudit(): AuditEntry[] {
   return [
-    { id: 4, at: iso(12 * MIN + 14 * DAY), actor: "installer", action: "mailbox.create", target: "postmaster@example.com", detail: "System mailbox" },
     { id: 3, at: iso(12 * MIN + 14 * DAY + MIN), actor: "installer", action: "domain.create", target: "example.com", detail: "Primary domain; DKIM ed25519 + rsa" },
     { id: 2, at: iso(14 * MIN + 14 * DAY), actor: "installer", action: "engine.install", target: `stalwart ${ENGINE}`, detail: null },
     { id: 1, at: iso(19 * MIN + 14 * DAY), actor: "installer", action: "install.start", target: HOST, detail: `yunori-mail ${VERSION}` },
@@ -601,7 +641,15 @@ function signals(db: DB): Check[] {
   return [
     dns,
     ptrCheck(db),
-    { id: "tls", label: "TLS certificate", status: "pass", detail: `Valid for ${HOST} until ${fmtDay(now() + 64 * DAY)} (Let's Encrypt). The served certificate matches.` },
+    db.cert.state === "valid"
+      ? { id: "tls", label: "TLS certificate", status: "pass", detail: `Valid for 64 more days (${HOST}); renews automatically.` }
+      : {
+          id: "tls",
+          label: "TLS certificate",
+          status: "warn",
+          detail: "A temporary self-signed certificate is in use until Let's Encrypt issues the real one.",
+          remedy: db.cert.problem ? `${db.cert.problem.summary} ${db.cert.problem.remedy}` : undefined,
+        },
     port25Check(db),
     { id: "blocklists", label: "Blocklists", status: "pass", detail: `${IPV4} isn't listed on Spamhaus ZEN, Barracuda or SpamCop.` },
     { id: "engine", label: "Mail engine", status: "pass", detail: `Stalwart ${ENGINE} is running; SMTP, IMAP and JMAP answer.` },
@@ -609,14 +657,13 @@ function signals(db: DB): Check[] {
   ];
 }
 
-function fmtDay(ms: number) {
-  return new Intl.DateTimeFormat("en-US", { dateStyle: "medium" }).format(new Date(ms));
-}
-
 function verdict(db: DB): { level: VerdictLevel; sentence: string } {
-  if (db.install) {
-    const dns = db.install.steps.find((s) => s.id === "dns");
-    if (dns?.status === "waiting") return { level: "attention", sentence: "Setup is waiting on you: publish the DNS records for example.com so mail can find this server." };
+  if (db.install && !db.install.steps.every((s) => s.status === "done" || s.status === "skipped")) {
+    const st = (id: string) => db.install!.steps.find((s) => s.id === id)?.status;
+    if (st("certificate") === "waiting")
+      return { level: "attention", sentence: `Setup is waiting on a certificate: Let's Encrypt can't reach ${HOST} on port 80 yet.` };
+    if (st("dns") === "waiting") return { level: "attention", sentence: "Setup is waiting on you: publish the DNS records for example.com so mail can find this server." };
+    if (st("first_mailbox") === "waiting") return { level: "attention", sentence: "Almost there: create your first mailbox." };
     return { level: "attention", sentence: `Almost there — confirming reverse DNS for ${HOST}.` };
   }
   if (!db.port25Open && db.sending.mode === "direct") {
@@ -639,22 +686,76 @@ function overview(db: DB): OverviewResponse {
   };
 }
 
+function setStep(ins: InstallRow, id: string, patch: Partial<InstallStep>) {
+  ins.steps = ins.steps.map((s) => (s.id === id ? { ...s, ...patch } : s));
+}
+
 function advanceInstall(db: DB) {
+  advanceCert(db);
   const ins = db.install;
   if (!ins || ins.ptrStartedAt === null) return;
   if (now() - ins.ptrStartedAt < 6000) return;
-  const set = (id: string, patch: Partial<InstallStep>) => {
-    ins.steps = ins.steps.map((s) => (s.id === id ? { ...s, ...patch } : s));
-  };
-  set("ptr", { status: "done", detail: `${IPV4} → ${HOST}, confirmed both ways.`, finishedAt: iso() });
-  set("first_mailbox", { status: "done", detail: "aiko@example.com is ready — its password was shown in the terminal.", startedAt: iso(), finishedAt: iso() });
-  set("done", { status: "done", detail: "Your server is ready.", startedAt: iso(), finishedAt: iso() });
-  ins.logs = [...ins.logs, log(0, "info", "ptr", `PTR ${IPV4} → ${HOST} (forward-confirmed)`), log(0, "info", "first_mailbox", "Created aiko@example.com"), log(0, "info", "done", "Install complete")];
+  setStep(ins, "ptr", { status: "done", detail: `${IPV4} → ${HOST}`, finishedAt: iso() });
+  setStep(ins, "first_mailbox", { status: "waiting", detail: "Create your first mailbox: right here, or with `sudo yunori-mail install --resume` on the server.", startedAt: iso() });
+  ins.logs = [...ins.logs, log(0, "info", "ptr", `${IPV4} → ${HOST}`)];
   ins.ptrStartedAt = null;
-  db.mailboxes = [
-    { id: "mbx_aiko", local: "aiko", domainId: "dom_com", displayName: "Aiko Tanaka", role: "admin", quotaBytes: 10 * GB, usedBytes: 0, createdAt: iso(), password: null },
-    ...db.mailboxes,
-  ];
+}
+
+/** A "Try now" attempt in flight finishes: the certificate is issued. */
+function advanceCert(db: DB) {
+  const c = db.cert;
+  if (c.attemptUntil === null || now() < c.attemptUntil) return;
+  c.attemptUntil = null;
+  c.state = "valid";
+  c.problem = null;
+  c.failures = 0;
+  c.nextAttempt = null;
+  c.lastAttempt = iso();
+  const ins = db.install;
+  if (ins && ins.steps.find((s) => s.id === "certificate")?.status === "waiting") {
+    setStep(ins, "certificate", {
+      status: "done",
+      detail: `Let's Encrypt issued a certificate for ${HOST}, valid until ${fmtIsoDay(now() + 90 * DAY)}; it renews automatically.`,
+      finishedAt: iso(),
+    });
+    setStep(ins, "dns", {
+      status: "waiting",
+      detail: `Publish 5 records at your DNS provider: MX example.com, TXT example.com, TXT v1-ed25519-${SETUP_DAY}._domainkey.example.com, TXT v1-rsa-${SETUP_DAY}._domainkey.example.com, TXT _dmarc.example.com.`,
+      startedAt: iso(),
+    });
+    ins.logs = [...ins.logs, log(0, "info", "certificate", `Let's Encrypt issued a certificate for ${HOST}.`)];
+  }
+  audit(db, "certificate.issue", HOST, "Let's Encrypt: a temporary self-signed certificate is in use");
+}
+
+function certStatus(db: DB): CertificateInfo {
+  advanceCert(db);
+  const c = db.cert;
+  const valid = c.state === "valid";
+  const notAfter = valid ? new Date(now() + 64 * DAY).toISOString() : new Date(now() + 3650 * DAY).toISOString();
+  return {
+    state: c.state,
+    hostnames: valid ? [HOST, ...db.domains.flatMap((d) => [`autoconfig.${d.name}`, `mta-sts.${d.name}`])] : [HOST],
+    issuer: valid ? "C=US, O=Let's Encrypt, CN=R11" : `CN=${HOST}`,
+    notAfter,
+    daysLeft: valid ? 64 : 3650,
+    authority: "Let's Encrypt",
+    renewsAt: valid ? new Date(now() + 34 * DAY).toISOString() : null,
+    lastAttempt: c.lastAttempt,
+    lastSuccess: valid ? iso(26 * DAY) : null,
+    nextAttempt: c.nextAttempt,
+    failures: c.failures,
+    problem: c.problem,
+    inProgress: c.attemptUntil !== null,
+    servedMatches: valid ? true : null,
+  };
+}
+
+function finishInstall(db: DB) {
+  const ins = db.install;
+  if (!ins) return;
+  setStep(ins, "done", { status: "done", detail: "Yunori Mail Server is ready.", startedAt: iso(), finishedAt: iso() });
+  ins.logs = [...ins.logs, log(0, "info", "done", "Yunori Mail Server is ready.")];
   // Keep the finished checklist visible for one more poll, then drop it.
   window.setTimeout(() => {
     const cur = load();
@@ -676,12 +777,7 @@ function system(db: DB): SystemResponse {
       { name: "unbound", status: "running", detail: "Local resolver · DNSSEC validating" },
     ],
     resources: { memTotalBytes: 4 * GB, memUsedBytes: 1.38 * GB, diskTotalBytes: 80 * GB, diskFreeBytes: (db.install ? 77.6 : 61.2) * GB, load1: 0.18 },
-    certificate: {
-      hostnames: [HOST, ...db.domains.flatMap((d) => [`autoconfig.${d.name}`, `mta-sts.${d.name}`])],
-      issuer: "Let's Encrypt (R11)",
-      notAfter: new Date(now() + 64 * DAY).toISOString(),
-      servedMatches: true,
-    },
+    certificate: certStatus(db),
   };
 }
 
@@ -915,6 +1011,43 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     advanceInstall(db);
     const st: InstallState = db.install ? { steps: db.install.steps, logs: db.install.logs } : { steps: [], logs: [] };
     return [200, st];
+  }
+  if (is("GET", "/certificate")) return [200, certStatus(db)];
+  if (is("POST", "/certificate/renew")) {
+    if (db.cert.attemptUntil === null) db.cert.attemptUntil = now() + 2500;
+    audit(db, "certificate.renew_requested", HOST);
+    return [202, certStatus(db)];
+  }
+  if (is("POST", "/install/first-mailbox")) {
+    const ins = db.install;
+    if (!ins) fail(409, "conflict", "Setup is already complete; create mailboxes under Mailboxes.");
+    const existing = db.mailboxes.find((m) => m.role === "user");
+    if (existing) fail(409, "conflict", `${addressOf(db, existing!)} already exists, so this step is done.`);
+    const local = str(body, "local").trim().toLowerCase();
+    if (!LOCAL_RE.test(local)) fail(400, "invalid", "Use letters, digits, dots, dashes or underscores.", "local");
+    const primary = db.domains.find((d) => d.isPrimary)!;
+    const password = genPassword();
+    const row: MailboxRow = {
+      id: `mbx_${++db.seq}`,
+      local,
+      domainId: primary.id,
+      displayName: str(body, "displayName").trim() || null,
+      role: "user",
+      quotaBytes: null,
+      usedBytes: 0,
+      createdAt: iso(),
+      password,
+    };
+    db.mailboxes.push(row);
+    const address = addressOf(db, row);
+    for (const a of ["postmaster", "abuse"]) {
+      if (a !== local) db.aliases.push({ address: `${a}@${primary.name}`, mailboxId: row.id, mailboxAddress: address, enabled: true });
+    }
+    setStep(ins!, "first_mailbox", { status: "done", detail: `${address} exists.`, finishedAt: iso() });
+    ins!.logs = [...ins!.logs, log(0, "info", "first_mailbox", `${address} created (postmaster@ and abuse@ deliver to it).`)];
+    audit(db, "mailbox.create", address, "first mailbox; postmaster+abuse aliases");
+    finishInstall(db);
+    return [201, { mailbox: toMailbox(db, row), password }];
   }
 
   // ── domains

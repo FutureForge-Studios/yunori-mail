@@ -209,7 +209,7 @@ pub async fn overview(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<J
         };
         signals.push(Check::new("blocklists", "Blocklists", worst, detail));
     }
-    signals.push(certificate_check(&app));
+    signals.push(crate::edge::certs::check(&app));
 
     Ok(Json(json!({
         "verdict": verdict,
@@ -218,46 +218,6 @@ pub async fn overview(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<J
         "signals": signals,
         "setup": if install_complete { Value::Null } else { serde_json::to_value(&install).unwrap_or(Value::Null) },
     })))
-}
-
-fn certificate_check(app: &AppState) -> Check {
-    match crate::edge::tls::disk_certificate_info(&app.paths) {
-        None => Check::new(
-            "tls",
-            "TLS certificate",
-            if app.dev { Status::Info } else { Status::Warn },
-            "No certificate has been issued yet.",
-        ),
-        Some(info) => {
-            let days = info.days_left;
-            if days < 0 {
-                Check::new(
-                    "tls",
-                    "TLS certificate",
-                    Status::Fail,
-                    "The certificate has expired.",
-                )
-                .remedy("Run: yunori-mail certificate renew")
-            } else if days < 14 {
-                Check::new(
-                    "tls",
-                    "TLS certificate",
-                    Status::Warn,
-                    format!("Expires in {days} days; automatic renewal has not succeeded yet."),
-                )
-            } else {
-                Check::new(
-                    "tls",
-                    "TLS certificate",
-                    Status::Pass,
-                    format!(
-                        "Valid for {days} more days ({}).",
-                        info.hostnames.join(", ")
-                    ),
-                )
-            }
-        }
-    }
 }
 
 pub async fn install_state(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<Json<Value>> {
@@ -271,6 +231,111 @@ pub async fn preflight(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<
     Ok(Json(
         crate::checks::preflight(&app.paths, hostname.as_deref()).await,
     ))
+}
+
+// ── certificate (automatic HTTPS) ────────────────────────────────────────
+
+pub async fn certificate(
+    State(app): State<AppState>,
+    _a: AdminAuth,
+) -> ApiResult<Json<crate::edge::certs::CertStatus>> {
+    Ok(Json(crate::edge::certs::status(&app)))
+}
+
+/// "Try now": request a certificate immediately (ignoring the backoff, never
+/// the staging rehearsal). Runs in the background; poll GET /certificate.
+pub async fn certificate_renew(State(app): State<AppState>, a: AdminAuth) -> ApiResult<Response> {
+    if app.dev {
+        return Err(ApiError::conflict(
+            "Development mode does not request certificates.",
+        ));
+    }
+    if app.throttled(
+        &format!("cert-renew:{}", a.admin.id),
+        6,
+        std::time::Duration::from_secs(900),
+    ) {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "rate_limited",
+            "That was tried several times already. Yunori keeps retrying by itself; give it a few minutes.",
+        ));
+    }
+    app.db.audit(
+        &a.admin.email,
+        "certificate.renew_requested",
+        app.config().map(|c| c.hostname).as_deref(),
+        None,
+    )?;
+    let bg = app.clone();
+    tokio::spawn(async move {
+        crate::edge::certs::ensure(&bg, true).await;
+        crate::installer::advance_gates(bg).await;
+    });
+    // Give the task a moment to take the lock so the response reads "in progress".
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    Ok((StatusCode::ACCEPTED, Json(crate::edge::certs::status(&app))).into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FirstMailbox {
+    local: String,
+    display_name: Option<String>,
+}
+
+/// The onboarding checklist's "Create your first mailbox": the same mailbox
+/// the terminal installer would create (with postmaster@ and abuse@).
+pub async fn install_first_mailbox(
+    State(app): State<AppState>,
+    a: AdminAuth,
+    Json(req): Json<FirstMailbox>,
+) -> ApiResult<Response> {
+    let cfg = app
+        .config()
+        .ok_or_else(|| ApiError::conflict("The server is not configured yet."))?;
+    if cfg.install_complete {
+        return Err(ApiError::conflict(
+            "Setup is already complete; create mailboxes under Mailboxes.",
+        ));
+    }
+    let local = req.local.trim().to_ascii_lowercase();
+    if !valid_local_part(&local) {
+        return Err(
+            ApiError::bad_request("Use letters, digits, dots, dashes or underscores.")
+                .field("local"),
+        );
+    }
+    let e = app.engine()?;
+    let accounts = e.list_accounts().await?;
+    if let Some(existing) = accounts.iter().find(|x| !x.is_admin) {
+        return Err(ApiError::conflict(format!(
+            "{} already exists, so this step is done.",
+            existing.address
+        )));
+    }
+    let password = generate_password(20);
+    let display = req
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let acct = ops::create_first_mailbox(&app, &local, display, &password, &a.admin.email)
+        .await
+        .map_err(
+            |err| match err.downcast_ref::<crate::engine::EngineError>() {
+                Some(_) => ApiError::from(err),
+                None => ApiError::bad_request(format!("{err}")).field("local"),
+            },
+        )?;
+    let domains = e.list_domains().await?;
+    let bg = app.clone();
+    tokio::spawn(async move { crate::installer::advance_gates(bg).await });
+    Ok((
+        StatusCode::CREATED,
+        Json(json!({ "mailbox": mailbox_out(&acct, &domains), "password": password })),
+    )
+        .into_response())
 }
 
 // ── domains ──────────────────────────────────────────────────────────────
@@ -959,7 +1024,7 @@ pub async fn deliverability(State(app): State<AppState>, _a: AdminAuth) -> ApiRe
             unknown("ptr", "Reverse DNS (PTR)"),
         ],
     };
-    checks.push(certificate_check(&app));
+    checks.push(crate::edge::certs::check(&app));
     let relayed = cfg
         .as_ref()
         .is_some_and(|c| c.sending_mode == SendingMode::Relay);
@@ -1019,12 +1084,9 @@ pub async fn system(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<Jso
                 .and_then(|v| v.parse::<f64>().ok())
         })
         .unwrap_or(0.0);
-    let cert = crate::edge::tls::disk_certificate_info(&app.paths).map(|c| json!({
-        "hostnames": c.hostnames,
-        "issuer": c.issuer,
-        "notAfter": c.not_after,
-        "servedMatches": app.db.get_kv("tls.served_matches").ok().flatten().map(|v| v == "true"),
-    }));
+    let status = crate::edge::certs::status(&app);
+    let cert = (status.state != "missing" || status.problem.is_some())
+        .then(|| serde_json::to_value(&status).unwrap_or(Value::Null));
     let services: Vec<Value> = ["stalwart", "yunori-mail", "unbound"]
         .iter()
         .map(|s| service_status(s, app.dev))

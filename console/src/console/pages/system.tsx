@@ -3,15 +3,16 @@ import { useSearchParams } from "react-router-dom";
 import { Stethoscope } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Button } from "@/design/vendor/ui/button";
-import { Card, Chip, KV, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
+import { Card, KV, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
 import { api, errorMessage } from "@/api/client";
 import type { Check, ServiceStatus } from "@/api/types";
 import { LoadError, Page, usePageTitle } from "@/components/kit";
 import { Meter } from "@/components/meter";
 import { CheckList, CheckPill, StatusBadge, worstStatus, type Tone } from "@/components/status";
-import { fmtBytes, fmtDate, pct, relativeDays, timeAgo } from "@/lib/format";
+import { fmtBytes, pct, timeAgo } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
+import { CertificatePanel } from "../certificate";
 
 const SERVICE_LABEL: Record<string, string> = {
   stalwart: "Mail engine (Stalwart)",
@@ -142,31 +143,7 @@ export default function SystemPage() {
             <KV label="Stalwart">{data.versions.engine ?? "Not installed"}</KV>
             <div className="mt-3 border-t border-border/50 pt-3">
               <SectionLabel>Certificate</SectionLabel>
-              {data.certificate ? (
-                <>
-                  <KV label="Issuer">{data.certificate.issuer ?? "—"}</KV>
-                  <KV label="Expires">
-                    {data.certificate.notAfter ? `${fmtDate(data.certificate.notAfter)} (${relativeDays(data.certificate.notAfter)})` : "—"}
-                  </KV>
-                  <div className="flex items-center justify-between gap-4 py-1.5">
-                    <span className="text-xs text-muted-foreground">Served on 465/993</span>
-                    {data.certificate.servedMatches === null ? (
-                      <StatusBadge tone="muted">Not checked</StatusBadge>
-                    ) : data.certificate.servedMatches ? (
-                      <StatusBadge tone="ok">Matches</StatusBadge>
-                    ) : (
-                      <StatusBadge tone="bad">Different certificate</StatusBadge>
-                    )}
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1">
-                    {data.certificate.hostnames.map((h) => (
-                      <Chip key={h}>{h}</Chip>
-                    ))}
-                  </div>
-                </>
-              ) : (
-                <p className="text-xs text-muted-foreground">No certificate yet — it's issued once the host name resolves to this server.</p>
-              )}
+              <CertificatePanel />
             </div>
           </Card>
         </div>

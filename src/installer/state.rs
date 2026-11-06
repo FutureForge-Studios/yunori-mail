@@ -84,7 +84,8 @@ pub const STEPS: &[(&str, &str)] = &[
     ("firewall", "Open mail ports"),
     ("install_engine", "Install the mail engine"),
     ("bootstrap_engine", "Configure the mail engine"),
-    ("edge_tls", "HTTPS and certificates"),
+    ("edge_tls", "Start the console and HTTPS edge"),
+    ("certificate", "Get a trusted TLS certificate"),
     ("dns", "Publish DNS records"),
     ("ptr", "Set reverse DNS"),
     ("first_mailbox", "Create your first mailbox"),
@@ -96,6 +97,16 @@ const MAX_LOG_LINES: i64 = 800;
 impl Db {
     pub fn init_steps(&self) -> Result<()> {
         let conn = self.conn();
+        // Steps an older release had and this one does not: drop them, so the
+        // checklist only ever shows the steps that will actually run.
+        let known: Vec<String> = STEPS.iter().map(|(id, _)| format!("'{id}'")).collect();
+        conn.execute(
+            &format!(
+                "DELETE FROM install_steps WHERE id NOT IN ({})",
+                known.join(",")
+            ),
+            [],
+        )?;
         for (i, (id, title)) in STEPS.iter().enumerate() {
             conn.execute(
                 "INSERT INTO install_steps (id, ord, title, status) VALUES (?1, ?2, ?3, 'pending')
@@ -200,6 +211,14 @@ mod tests {
         db.set_step("dns", StepStatus::Waiting, Some("Publish the MX record"))
             .unwrap();
         db.install_log("info", Some("preflight"), "ok").unwrap();
+        // A row from an older release disappears on the next init.
+        db.conn()
+            .execute(
+                "INSERT INTO install_steps (id, ord, title, status) VALUES ('retired', 99, 'Old', 'done')",
+                [],
+            )
+            .unwrap();
+        db.init_steps().unwrap();
         let st = load(&db).unwrap();
         assert_eq!(st.steps.len(), STEPS.len());
         assert_eq!(st.steps[0].status, StepStatus::Done);

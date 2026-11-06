@@ -14,13 +14,18 @@ import {
 } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Button } from "@/design/vendor/ui/button";
+import { Input } from "@/design/vendor/ui/input";
+import { Label } from "@/design/vendor/ui/label";
 import { Card, SectionLabel } from "@/design/vendor/admin/ui";
-import { api, errorMessage } from "@/api/client";
-import type { DnsRecord, InstallState, InstallStep, StepStatus } from "@/api/types";
+import { ApiRequestError, api, errorMessage } from "@/api/client";
+import type { CreateMailboxResponse, DnsRecord, InstallState, InstallStep, StepStatus } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
+import { FieldError } from "@/components/kit";
 import { toneText, type Tone } from "@/components/status";
 import { fmtDateTime, timeAgo } from "@/lib/format";
 import { toast } from "@/lib/toast";
+import { useSession } from "../session";
+import { CertificateProblem, useCertificate } from "../certificate";
 
 const STEP_META: Record<StepStatus, { label: string; icon: LucideIcon; tone: Tone; spin?: boolean }> = {
   done: { label: "Done", icon: CheckCircle2, tone: "ok" },
@@ -39,14 +44,29 @@ const isFinished = (s: InstallState) => s.steps.length > 0 && s.steps.every((x) 
  * is running or waiting on the user; the waiting step is expanded with exactly
  * what to do (for DNS: the records, copyable, plus "Check now").
  */
-export function InstallChecklist({ initial, onComplete }: { initial: InstallState; onComplete: () => void }) {
+export function InstallChecklist({
+  initial,
+  onComplete,
+  onMailboxCreated,
+}: {
+  initial: InstallState;
+  onComplete: () => void;
+  onMailboxCreated: (r: CreateMailboxResponse) => void;
+}) {
   const [state, setState] = useState<InstallState>(initial);
   const completed = useRef(false);
 
+  const prev = useRef<InstallState>(initial);
   const poll = useCallback(async () => {
     try {
       const next = await api.install();
-      if (next.steps.length) setState(next);
+      if (next.steps.length) {
+        const was = prev.current.steps.find((x) => x.id === "certificate")?.status;
+        const now = next.steps.find((x) => x.id === "certificate")?.status;
+        if (was && was !== "done" && now === "done") toast.success("Certificate issued: browsers and mail apps now trust this server.");
+        prev.current = next;
+        setState(next);
+      }
       if ((next.steps.length === 0 || isFinished(next)) && !completed.current) {
         completed.current = true;
         toast.success("Setup is complete — your server is ready for mail.");
@@ -92,7 +112,7 @@ export function InstallChecklist({ initial, onComplete }: { initial: InstallStat
 
       <ol className="px-5 py-2" aria-label="Install steps">
         {state.steps.map((step, i) => (
-          <StepRow key={step.id} step={step} index={i + 1} onRecheck={poll} />
+          <StepRow key={step.id} step={step} index={i + 1} onRecheck={poll} onMailboxCreated={onMailboxCreated} />
         ))}
       </ol>
 
@@ -123,7 +143,17 @@ export function InstallChecklist({ initial, onComplete }: { initial: InstallStat
   );
 }
 
-function StepRow({ step, index, onRecheck }: { step: InstallStep; index: number; onRecheck: () => Promise<void> }) {
+function StepRow({
+  step,
+  index,
+  onRecheck,
+  onMailboxCreated,
+}: {
+  step: InstallStep;
+  index: number;
+  onRecheck: () => Promise<void>;
+  onMailboxCreated: (r: CreateMailboxResponse) => void;
+}) {
   const m = STEP_META[step.status];
   const expanded = step.status === "waiting" || step.status === "failed";
   const done = step.status === "done" || step.status === "skipped";
@@ -153,7 +183,13 @@ function StepRow({ step, index, onRecheck }: { step: InstallStep; index: number;
       </div>
       {expanded && (
         <div className="ml-7 mt-2.5 rounded-lg border border-border bg-muted/30 p-4">
-          {step.detail && <p className="text-sm leading-relaxed text-foreground">{step.detail}</p>}
+          {step.id === "certificate" ? (
+            <CertificateTodo fallback={step.detail} onRecheck={onRecheck} />
+          ) : step.id === "first_mailbox" && step.status === "waiting" ? (
+            <FirstMailboxTodo onCreated={onMailboxCreated} onRecheck={onRecheck} />
+          ) : (
+            step.detail && <p className="text-sm leading-relaxed text-foreground">{step.detail}</p>
+          )}
           {step.id === "dns" && step.status === "waiting" && <DnsTodo onRecheck={onRecheck} />}
           {step.id === "ptr" && step.status === "waiting" && (
             <p className="mt-2 text-xs text-muted-foreground">
@@ -163,6 +199,79 @@ function StepRow({ step, index, onRecheck }: { step: InstallStep; index: number;
         </div>
       )}
     </li>
+  );
+}
+
+/** Automatic HTTPS has not succeeded yet: say why, and offer "Try now". */
+function CertificateTodo({ fallback, onRecheck }: { fallback: string | null; onRecheck: () => Promise<void> }) {
+  // When an attempt succeeds, move the checklist on without waiting for its next tick.
+  const { cert, busy, tryNow } = useCertificate({ live: true, onIssued: () => void onRecheck() });
+  return <CertificateProblem cert={cert} busy={busy} onTryNow={() => void tryNow()} fallback={fallback} />;
+}
+
+/** The last thing setup needs: an address. Creates it with postmaster@ and abuse@. */
+function FirstMailboxTodo({ onCreated, onRecheck }: { onCreated: (r: CreateMailboxResponse) => void; onRecheck: () => Promise<void> }) {
+  const { session } = useSession();
+  const domain = session.server.primaryDomain ?? "";
+  const [local, setLocal] = useState("hello");
+  const [name, setName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const v = local.trim().toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9._+-]{0,62}[a-z0-9])?$/.test(v)) {
+      setError("Use letters, digits, dots, dashes or underscores.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.createFirstMailbox({ local: v, displayName: name.trim() || undefined });
+      onCreated(r);
+      toast.success(`${r.mailbox.address} is ready.`);
+      await onRecheck();
+    } catch (err) {
+      setError(err instanceof ApiRequestError && err.field === "local" ? err.message : errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form onSubmit={onSubmit} noValidate className="space-y-3">
+      <p className="text-sm leading-relaxed text-foreground">
+        Create your first mailbox. <span className="font-mono text-[13px]">postmaster@</span> and <span className="font-mono text-[13px]">abuse@</span>, which
+        every mail domain needs, deliver to it too.
+      </p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="space-y-1.5">
+          <Label htmlFor="first-local">Address</Label>
+          <div className="flex items-center rounded-md border border-input bg-card focus-within:ring-1 focus-within:ring-ring">
+            <Input
+              id="first-local"
+              value={local}
+              onChange={(e) => setLocal(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+              className="border-0 bg-transparent font-mono shadow-none focus-visible:ring-0"
+              aria-invalid={!!error}
+              aria-describedby={error ? "first-local-err" : undefined}
+            />
+            <span className="shrink-0 pr-3 font-mono text-[13px] text-muted-foreground">@{domain}</span>
+          </div>
+          <FieldError id="first-local-err">{error}</FieldError>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="first-name">Display name (optional)</Label>
+          <Input id="first-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Front desk" />
+        </div>
+      </div>
+      <Button type="submit" size="sm" variant="torii" disabled={busy}>
+        {busy ? "Creating…" : "Create mailbox"}
+      </Button>
+    </form>
   );
 }
 

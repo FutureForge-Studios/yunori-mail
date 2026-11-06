@@ -1,8 +1,9 @@
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertTriangle, ArrowRight, CheckCircle2, XCircle } from "lucide-react";
 import { Card, KV, SectionLabel, Skeleton, StatCard } from "@/design/vendor/admin/ui";
 import { api } from "@/api/client";
+import type { CreateMailboxResponse } from "@/api/types";
 import { LoadError, usePageTitle } from "@/components/kit";
 import { CheckList, StatusBadge } from "@/components/status";
 import { fmtNumber } from "@/lib/format";
@@ -11,6 +12,7 @@ import { useSession } from "../session";
 import { SIGNAL_TARGET, VERDICT_META, useShell } from "../shell";
 import { navLocation } from "../nav";
 import { InstallChecklist } from "./install-checklist";
+import { SetupComplete } from "./setup-complete";
 
 const VERDICT_ICON = { ok: CheckCircle2, attention: AlertTriangle, degraded: XCircle, down: XCircle } as const;
 
@@ -23,8 +25,12 @@ export function OverviewPage() {
   const { session } = useSession();
   const { refreshHealth } = useShell();
   const { data, error, reload } = useApi("overview", api.overview);
+  // The end of onboarding stays on screen until dismissed, even after the checklist goes.
+  const [created, setCreated] = useState<CreateMailboxResponse | null>(null);
+  const [finished, setFinished] = useState(false);
 
   const onInstallComplete = useCallback(() => {
+    setFinished(true);
     void reload();
     refreshHealth();
   }, [reload, refreshHealth]);
@@ -85,7 +91,20 @@ export function OverviewPage() {
         </div>
       </header>
 
-      {data.setup && data.setup.steps.length > 0 && <InstallChecklist initial={data.setup} onComplete={onInstallComplete} />}
+      {(created || finished) && (
+        <SetupComplete
+          created={created}
+          finished={finished || !data.setup}
+          onDismiss={() => {
+            setCreated(null);
+            setFinished(false);
+          }}
+        />
+      )}
+
+      {data.setup && data.setup.steps.length > 0 && (
+        <InstallChecklist initial={data.setup} onComplete={onInstallComplete} onMailboxCreated={setCreated} />
+      )}
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <StatLink to="/console/domains" label="Domains" value={data.stats.domains} hint={server.primaryDomain ? `Primary: ${server.primaryDomain}` : undefined} />

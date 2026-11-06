@@ -26,7 +26,15 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Command {
     /// Install (or resume installing) Yunori Mail Server on this machine.
-    Install(InstallArgs),
+    Install(Box<InstallArgs>),
+    /// Check whether this server can run a mail server. Changes nothing.
+    Preflight {
+        /// Also check that this hostname (e.g. mail.example.com) points here.
+        #[arg(long)]
+        hostname: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Run the console, HTTPS edge and background jobs (started by systemd).
     Serve(ServeArgs),
     /// Check this server end to end and explain anything wrong.
@@ -36,7 +44,7 @@ pub enum Command {
     },
     /// Show install progress and the one-sentence status.
     Status,
-    /// Issue a new one-time token for creating the first console owner.
+    /// Print a new one-time link for creating the first console owner.
     SetupToken,
     /// Manage mail domains.
     #[command(subcommand)]
@@ -89,8 +97,9 @@ pub struct InstallArgs {
     #[arg(long, default_value = "hello")]
     first_mailbox: String,
     /// direct (this server delivers) or relay (an email provider delivers).
-    #[arg(long, value_enum, default_value_t = SendingArg::Direct)]
-    sending: SendingArg,
+    /// Asked when not given; the suggestion follows the outbound port-25 check.
+    #[arg(long, value_enum)]
+    sending: Option<SendingArg>,
     #[arg(long)]
     relay_provider: Option<String>,
     /// SMTP host; derived from --relay-region for Amazon SES.
@@ -121,6 +130,12 @@ pub struct InstallArgs {
     /// Continue without reverse DNS (direct sending will likely be rejected).
     #[arg(long)]
     skip_ptr: bool,
+    /// Never ask: take flags and defaults as they are.
+    #[arg(long, short = 'y')]
+    yes: bool,
+    /// ACME directory URL of another certificate authority (default: Let's Encrypt).
+    #[arg(long, env = "YUNORI_ACME_DIRECTORY")]
+    acme_directory: Option<String>,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -198,12 +213,20 @@ pub enum CertCmd {
 
 struct Term {
     color: bool,
+    step_started: Option<std::time::Instant>,
+    setup_url: Option<String>,
+    setup_note: Option<String>,
+    mailbox: Option<String>,
 }
 
 impl Term {
     fn new() -> Self {
         Self {
             color: std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none(),
+            step_started: None,
+            setup_url: None,
+            setup_note: None,
+            mailbox: None,
         }
     }
     fn paint(&self, code: &str, s: &str) -> String {
@@ -222,14 +245,40 @@ impl Term {
             Status::Unknown => self.paint("2", "  ?    "),
         }
     }
+    fn elapsed(&mut self) -> String {
+        match self.step_started.take().map(|t| t.elapsed().as_secs()) {
+            Some(s) if s >= 3 => self.paint("2", &format!("  ({})", fmt_duration(s))),
+            _ => String::new(),
+        }
+    }
+}
+
+fn fmt_duration(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs} s")
+    } else {
+        format!("{}:{:02}", secs / 60, secs % 60)
+    }
 }
 
 impl Ui for Term {
-    fn step(&mut self, _id: &str, title: &str) {
-        println!("\n{} {}", self.paint("2", "·"), self.paint("1", title));
+    fn step(&mut self, id: &str, title: &str) {
+        let n = crate::installer::state::STEPS
+            .iter()
+            .position(|(s, _)| *s == id)
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let total = crate::installer::state::STEPS.len();
+        self.step_started = Some(std::time::Instant::now());
+        println!(
+            "\n{} {}",
+            self.paint("2", &format!("[{n:>2}/{total}]")),
+            self.paint("1", title)
+        );
     }
     fn done(&mut self, _id: &str, detail: &str) {
-        println!("  {} {detail}", self.paint("32", "✓"));
+        let t = self.elapsed();
+        println!("  {} {detail}{t}", self.paint("32", "✓"));
     }
     fn waiting(&mut self, _id: &str, detail: &str) {
         println!("  {} {detail}", self.paint("33", "…"));
@@ -254,12 +303,40 @@ impl Ui for Term {
     fn records(&mut self, records: &[DnsRecord]) {
         print_records(self, records);
     }
+    fn setup_link(&mut self, url: &str, note: Option<&str>) {
+        println!(
+            "\n  {}\n    {}\n  {}",
+            self.paint(
+                "1",
+                "Continue in your browser: create the console owner (one-time link, valid 24 hours)"
+            ),
+            self.paint("36;1", url),
+            self.paint(
+                "2",
+                "Anyone with this link can claim the console until you do. Don't share it."
+            )
+        );
+        if let Some(n) = note {
+            println!("  {}", self.paint("33", n));
+        }
+        self.setup_url = Some(url.to_string());
+        self.setup_note = note.map(str::to_string);
+    }
+    fn mailbox(&mut self, address: &str) {
+        self.mailbox = Some(address.to_string());
+    }
 }
 
 fn print_checks(t: &Term, checks: &[Check]) {
+    let w = checks
+        .iter()
+        .map(|c| c.label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(20, 36);
     for c in checks {
         println!(
-            "  [{}] {:<28} {}",
+            "  [{}] {:<w$} {}",
             t.status_tag(c.status),
             c.label,
             c.detail
@@ -267,7 +344,7 @@ fn print_checks(t: &Term, checks: &[Check]) {
         if let Some(r) = &c.remedy
             && c.status != Status::Pass
         {
-            println!("            {:<28} {}", "", t.paint("2", &format!("→ {r}")));
+            println!("            {:<w$} {}", "", t.paint("2", &format!("→ {r}")));
         }
     }
 }
@@ -290,22 +367,58 @@ fn print_records(t: &Term, records: &[DnsRecord]) {
     }
 }
 
+fn interactive() -> bool {
+    std::io::stdin().is_terminal()
+}
+
+fn read_line() -> Result<String> {
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    if std::io::stdin().lock().read_line(&mut line)? == 0 {
+        bail!("input closed");
+    }
+    Ok(line.trim().to_string())
+}
+
 fn prompt(label: &str, default: Option<&str>) -> Result<String> {
-    if !std::io::stdin().is_terminal() {
+    if !interactive() {
         bail!("{label} is required (pass it as a flag when not running interactively)");
     }
     match default {
         Some(d) => print!("{label} [{d}]: "),
         None => print!("{label}: "),
     }
-    std::io::stdout().flush()?;
-    let mut line = String::new();
-    std::io::stdin().lock().read_line(&mut line)?;
-    let v = line.trim().to_string();
+    let v = read_line()?;
     Ok(if v.is_empty() {
         default.unwrap_or_default().to_string()
     } else {
         v
+    })
+}
+
+/// Ask until `check` accepts the answer (it returns the cleaned value or a hint).
+fn ask(
+    t: &Term,
+    label: &str,
+    default: Option<&str>,
+    check: impl Fn(&str) -> std::result::Result<String, String>,
+) -> Result<String> {
+    loop {
+        let raw = prompt(&format!("  {label}"), default)?;
+        match check(&raw) {
+            Ok(v) => return Ok(v),
+            Err(hint) => println!("    {}", t.paint("33", &hint)),
+        }
+    }
+}
+
+fn confirm(label: &str, default_yes: bool) -> Result<bool> {
+    let hint = if default_yes { "Y/n" } else { "y/N" };
+    let v = prompt(&format!("  {label} ({hint})"), None)?;
+    Ok(match v.to_ascii_lowercase().as_str() {
+        "" => default_yes,
+        "y" | "yes" => true,
+        _ => false,
     })
 }
 
@@ -324,7 +437,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
     }
     match cli.command {
-        Command::Install(args) => install(args).await,
+        Command::Install(args) => install(*args).await,
+        Command::Preflight { hostname, json } => preflight_cmd(hostname, json).await,
         Command::Serve(args) => serve(args).await,
         Command::Doctor { json } => doctor(json).await,
         Command::Status => status().await,
@@ -340,6 +454,84 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 }
 
+/// "Ready." / "Ready, with 2 warnings to review." / "Not ready: …"
+fn preflight_verdict(results: &[Check]) -> (bool, String) {
+    if crate::checks::has_blocking_failure(results) {
+        let failed: Vec<String> = results
+            .iter()
+            .filter(|c| crate::checks::is_blocking(c))
+            .map(|c| c.label.clone())
+            .collect();
+        return (
+            false,
+            format!("This server is not ready: fix {} first.", failed.join(", ")),
+        );
+    }
+    let warnings = results
+        .iter()
+        .filter(|c| matches!(c.status, Status::Warn | Status::Fail))
+        .count();
+    (
+        true,
+        if warnings == 0 {
+            "This server is ready.".into()
+        } else {
+            format!(
+                "This server is ready, with {warnings} warning{} to review.",
+                if warnings == 1 { "" } else { "s" }
+            )
+        },
+    )
+}
+
+async fn preflight_cmd(hostname: Option<String>, json: bool) -> Result<()> {
+    let paths = Paths::from_env();
+    let t = Term::new();
+    if !json {
+        println!("{}", t.paint("1", "Yunori Mail Server · preflight"));
+        println!(
+            "{}",
+            t.paint(
+                "2",
+                "Checks whether this machine can run a mail server. Nothing is changed.\n"
+            )
+        );
+        if !os::is_root() {
+            println!(
+                "{}",
+                t.paint(
+                    "33",
+                    "  Not running as root: port checks may be incomplete (try sudo).\n"
+                )
+            );
+        }
+    }
+    let hostname = hostname
+        .map(|h| {
+            crate::util::normalize_domain(&h)
+                .ok_or_else(|| anyhow!("'{h}' is not a valid hostname"))
+        })
+        .transpose()?;
+    let results = crate::checks::preflight(&paths, hostname.as_deref()).await;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&results)?);
+    } else {
+        print_checks(&t, &results);
+        let (ok, sentence) = preflight_verdict(&results);
+        println!(
+            "\n  {}",
+            t.paint(if ok { "32;1" } else { "31;1" }, &sentence)
+        );
+        if ok {
+            println!("  Next: sudo yunori-mail install");
+        }
+    }
+    if crate::checks::has_blocking_failure(&results) {
+        std::process::exit(2);
+    }
+    Ok(())
+}
+
 async fn install(args: InstallArgs) -> Result<()> {
     let paths = Paths::from_env();
     if paths.is_production() && !os::is_root() {
@@ -347,12 +539,16 @@ async fn install(args: InstallArgs) -> Result<()> {
     }
     let app = App::open(paths, false, false)?;
     let mut term = Term::new();
-    println!("{}", term.paint("1", "Yunori Mail Server"));
+    println!(
+        "{} {}",
+        term.paint("1", "Yunori Mail Server"),
+        term.paint("2", crate::app::VERSION)
+    );
     println!(
         "{}",
         term.paint(
             "2",
-            "Installs a real mail server on this machine. Every step can be resumed."
+            "Installs a real mail server on this machine. Every step can be resumed: if anything stops,\nfix it and run `sudo yunori-mail install --resume`."
         )
     );
 
@@ -365,110 +561,527 @@ async fn install(args: InstallArgs) -> Result<()> {
         );
         return update_in_place(&app).await;
     }
-    let inst = Installer {
-        app: app.clone(),
-        mode: Mode::Cli,
-        force: args.force,
-        skip_ptr: args.skip_ptr,
-    };
+    if let Some(dir) = &args.acme_directory {
+        crate::edge::acme::save_directory(&app.db, dir)?;
+    }
+    let mut inst = Installer::new(app.clone(), Mode::Cli);
+    inst.force = args.force;
+    inst.skip_ptr = args.skip_ptr;
     let has_saved = app.db.get_kv("install.inputs")?.is_some();
     let resume = has_saved && (args.resume || args.domain.is_none());
     if has_saved && !args.resume && args.domain.is_none() {
-        println!("Resuming the install that was started here before.");
+        println!("\nResuming the install that was started here before.");
     }
     if !resume {
-        let domain = match args.domain {
-            Some(d) => d,
-            None => prompt("Mail domain (e.g. example.com)", None)?,
-        };
-        let domain = crate::util::normalize_domain(&domain)
-            .ok_or_else(|| anyhow!("'{domain}' is not a valid domain"))?;
-        let hostname = match args.hostname {
-            Some(h) => h,
-            None => prompt("Mail server hostname", Some(&format!("mail.{domain}")))?,
-        };
-        let admin_email = match args.admin_email {
-            Some(e) => e,
-            None => prompt(
-                "Your email on another provider (certificates & alerts)",
-                None,
-            )?,
-        };
-        let sending = match args.sending {
-            SendingArg::Direct => SendingMode::Direct,
-            SendingArg::Relay => SendingMode::Relay,
-        };
-        let relay = if sending == SendingMode::Relay {
-            let provider = args
-                .relay_provider
-                .clone()
-                .unwrap_or_else(|| "custom".into());
-            let preset = crate::model::relay_provider(&provider);
-            let host = args.relay_host.clone().unwrap_or_default();
-            if host.is_empty()
-                && preset.is_none_or(|p| p.host.is_none() && p.host_template.is_none())
-            {
-                bail!("--relay-host is required for this provider");
+        let ask_questions = interactive() && !args.yes;
+        // Preflight first: nothing is asked, or installed, on a server that can't work.
+        println!("\n{}", term.paint("1", "Checking this server…"));
+        let results = crate::checks::preflight(&app.paths, None).await;
+        print_checks(&term, &results);
+        let (ok, sentence) = preflight_verdict(&results);
+        println!(
+            "\n  {}",
+            term.paint(if ok { "32;1" } else { "31;1" }, &sentence)
+        );
+        if !ok && !args.force {
+            println!(
+                "  Fix the problems marked above, then run the installer again (or pass --force to continue anyway)."
+            );
+            std::process::exit(2);
+        }
+        let port25_open = results
+            .iter()
+            .any(|c| c.id == "port25" && c.status == Status::Pass);
+        let ipv4 = results
+            .iter()
+            .find(|c| c.id == "public_ip")
+            .and_then(|c| c.detail.strip_prefix("IPv4 "))
+            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
+        inst.preflight_results = Some(results);
+
+        let inputs = gather_inputs(&args, &term, ask_questions, port25_open, ipv4.as_deref())?;
+        if ask_questions {
+            print_summary(&term, &inputs, ipv4.as_deref());
+            if !confirm("Install with these settings?", true)? {
+                println!("Nothing was installed. Run the installer again to start over.");
+                return Ok(());
             }
-            let username = args
-                .relay_user
-                .clone()
-                .or_else(|| preset.and_then(|p| p.username).map(str::to_string))
-                .ok_or_else(|| anyhow!("--relay-user is required"))?;
-            let password = match &args.relay_password_env {
-                Some(var) => std::env::var(var)
-                    .with_context(|| format!("environment variable {var} is not set"))?,
-                None => rpassword::prompt_password("Relay password: ")?,
-            };
-            Some(RelayInput {
-                provider,
-                host,
-                port: args.relay_port,
-                username,
-                region: args.relay_region.clone(),
-                password,
-            })
-        } else {
-            None
-        };
-        let inputs = InstallInputs {
-            domain,
-            hostname: hostname.trim().to_ascii_lowercase(),
-            admin_email: admin_email.trim().to_ascii_lowercase(),
-            first_mailbox: args.first_mailbox.trim().to_ascii_lowercase(),
-            sending,
-            relay,
-            client_origin: args.client_origin.trim_end_matches('/').to_string(),
-        };
+        }
         inst.save_inputs(&inputs)?;
     }
 
-    loop {
+    let outcome = loop {
         match inst.run(&mut term).await {
-            Ok(RunResult::Complete) => {
-                println!("\n{}", term.paint("1", "Done."));
-                return Ok(());
-            }
+            Ok(RunResult::Complete) => break Ok(None),
             Ok(RunResult::Waiting { step, .. }) => {
-                if args.no_wait || !std::io::stdin().is_terminal() {
-                    println!(
-                        "\nPaused at \"{step}\". Fix the item above, then run: yunori-mail install --resume"
-                    );
-                    return Ok(());
+                if args.no_wait || !interactive() {
+                    break Ok(Some(step));
                 }
-                println!("{}", term.paint("2", "  Checking again in 30 seconds (Ctrl-C to stop; resume later with --resume)."));
-                tokio::time::sleep(Duration::from_secs(30)).await;
+                let secs = wait_seconds(&app, &step);
+                if !countdown(&term, secs).await {
+                    break Ok(Some(step));
+                }
                 app.db
                     .set_step(&step, crate::installer::state::StepStatus::Pending, None)?;
             }
-            Err(e) => {
+            Err(e) => break Err(e),
+        }
+    };
+    final_summary(
+        &app,
+        &term,
+        outcome.as_ref().ok().cloned().flatten().as_deref(),
+        outcome.as_ref().err(),
+    );
+    if outcome.is_err() {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// How long to wait before re-checking a gate.
+fn wait_seconds(app: &App, step: &str) -> u64 {
+    match step {
+        "host_record" => 15,
+        "certificate" => {
+            let st = crate::edge::certs::load_state(app);
+            st.next_attempt
+                .as_deref()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .map(|t| (t.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds())
+                .unwrap_or(30)
+                .clamp(10, 600) as u64
+        }
+        "ptr" => 60,
+        _ => 30,
+    }
+}
+
+/// A one-line countdown. Returns false if the user pressed Ctrl-C.
+async fn countdown(t: &Term, secs: u64) -> bool {
+    let started = std::time::Instant::now();
+    let total = Duration::from_secs(secs);
+    let ctrl_c = tokio::signal::ctrl_c();
+    tokio::pin!(ctrl_c);
+    loop {
+        let left = total.saturating_sub(started.elapsed()).as_secs();
+        if left == 0 {
+            if t.color {
+                print!("\r\x1b[2K");
+            }
+            return true;
+        }
+        let line = format!(
+            "  Checking again in {} · Ctrl-C to pause (resume later with --resume)",
+            fmt_duration(left)
+        );
+        if t.color {
+            print!("\r\x1b[2K{}", t.paint("2", &line));
+            let _ = std::io::stdout().flush();
+        } else if left == secs {
+            println!("{line}");
+        }
+        tokio::select! {
+            _ = &mut ctrl_c => {
+                println!();
+                return false;
+            }
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    }
+}
+
+fn gather_inputs(
+    args: &InstallArgs,
+    t: &Term,
+    ask_questions: bool,
+    port25_open: bool,
+    ipv4: Option<&str>,
+) -> Result<InstallInputs> {
+    if ask_questions {
+        println!(
+            "\n{}",
+            t.paint("1", "A few questions (Enter accepts the [suggestion]):")
+        );
+    }
+    let domain = match &args.domain {
+        Some(d) => crate::util::normalize_domain(d)
+            .ok_or_else(|| anyhow!("'{d}' is not a valid domain"))?,
+        None => {
+            let d = ask(
+                t,
+                "Mail domain, the part after @ (e.g. example.com)",
+                None,
+                |v| {
+                    crate::util::normalize_domain(v).ok_or_else(|| {
+                        format!("'{v}' doesn't look like a domain. Try something like example.com.")
+                    })
+                },
+            )?;
+            if let Some(parent) = d.strip_prefix("mail.").filter(|p| p.contains('.'))
+                && confirm(
+                    &format!("Addresses would look like you@{d}. Use {parent} instead?"),
+                    true,
+                )?
+            {
+                parent.to_string()
+            } else {
+                d
+            }
+        }
+    };
+    let suggested_host = format!("mail.{domain}");
+    let hostname = match &args.hostname {
+        Some(h) => crate::util::normalize_domain(h)
+            .ok_or_else(|| anyhow!("'{h}' is not a valid hostname"))?,
+        None if ask_questions => ask(t, "Mail server hostname", Some(&suggested_host), |v| {
+            crate::util::normalize_domain(v)
+                .ok_or_else(|| format!("'{v}' is not a valid hostname."))
+        })?,
+        None => suggested_host,
+    };
+    let check_admin = |v: &str| {
+        let v = v.trim().to_ascii_lowercase();
+        if !crate::util::valid_email(&v) {
+            Err(format!("'{v}' is not an email address."))
+        } else if v.ends_with(&format!("@{domain}")) {
+            Err(format!(
+                "Use an address that does not depend on this server (not @{domain}): certificate and alert mail must reach you even if this server is down."
+            ))
+        } else {
+            Ok(v)
+        }
+    };
+    let admin_email = match &args.admin_email {
+        Some(e) => check_admin(e).map_err(|m| anyhow!(m))?,
+        None => ask(
+            t,
+            "Your email on another provider, for certificates and alerts",
+            None,
+            check_admin,
+        )?,
+    };
+    let first_mailbox = if ask_questions && args.first_mailbox == "hello" {
+        ask(
+            t,
+            &format!("First mailbox (…@{domain})"),
+            Some("hello"),
+            |v| {
+                let v = v.trim().to_ascii_lowercase();
+                if crate::util::valid_local_part(&v) {
+                    Ok(v)
+                } else {
+                    Err("Use letters, digits, dots, dashes or underscores.".into())
+                }
+            },
+        )?
+    } else {
+        args.first_mailbox.trim().to_ascii_lowercase()
+    };
+
+    let sending = match args.sending {
+        Some(SendingArg::Direct) => SendingMode::Direct,
+        Some(SendingArg::Relay) => SendingMode::Relay,
+        None if ask_questions => {
+            if port25_open {
                 println!(
-                    "\nThe install stopped: {e:#}\nFix the problem, then run: yunori-mail install --resume"
+                    "    This server can reach other mail servers on port 25, so it can deliver mail itself."
                 );
-                std::process::exit(1);
+            } else {
+                println!(
+                    "    {}",
+                    t.paint("33", "Outbound port 25 looks blocked here, so mail should go out through a relay provider (receiving works either way).")
+                );
+            }
+            let default = if port25_open { "1" } else { "2" };
+            let pick = ask(
+                t,
+                "Send mail 1) directly  2) through a relay provider",
+                Some(default),
+                |v| match v.trim() {
+                    "1" | "direct" => Ok("direct".into()),
+                    "2" | "relay" => Ok("relay".into()),
+                    _ => Err("Type 1 or 2.".into()),
+                },
+            )?;
+            if pick == "relay" {
+                SendingMode::Relay
+            } else {
+                SendingMode::Direct
+            }
+        }
+        None => SendingMode::Direct,
+    };
+
+    let relay = if sending == SendingMode::Relay {
+        Some(gather_relay(args, t, ask_questions)?)
+    } else {
+        None
+    };
+    let _ = ipv4;
+    Ok(InstallInputs {
+        domain,
+        hostname: hostname.trim().to_ascii_lowercase(),
+        admin_email,
+        first_mailbox,
+        sending,
+        relay,
+        client_origin: args.client_origin.trim_end_matches('/').to_string(),
+    })
+}
+
+fn gather_relay(args: &InstallArgs, t: &Term, ask_questions: bool) -> Result<RelayInput> {
+    use crate::model::{RELAY_PROVIDERS, relay_provider};
+    let provider = match &args.relay_provider {
+        Some(p) => p.clone(),
+        None if ask_questions => {
+            let list: Vec<String> = RELAY_PROVIDERS
+                .iter()
+                .enumerate()
+                .map(|(i, p)| format!("{}) {}", i + 1, p.label))
+                .collect();
+            println!("    Providers: {}", list.join("  "));
+            ask(t, "Relay provider", Some("1"), |v| {
+                let v = v.trim().to_ascii_lowercase();
+                v.parse::<usize>()
+                    .ok()
+                    .and_then(|i| RELAY_PROVIDERS.get(i.wrapping_sub(1)))
+                    .or_else(|| relay_provider(&v))
+                    .map(|p| p.key.to_string())
+                    .ok_or_else(|| "Pick a number from the list.".into())
+            })?
+        }
+        None => "custom".into(),
+    };
+    let preset =
+        relay_provider(&provider).ok_or_else(|| anyhow!("unknown relay provider '{provider}'"))?;
+    let region = match (&args.relay_region, preset.regions.is_empty()) {
+        (Some(r), _) => Some(r.clone()),
+        (None, false) if ask_questions => Some(ask(
+            t,
+            &format!("{} region", preset.label),
+            preset.default_region,
+            |v| {
+                let v = v.trim().to_ascii_lowercase();
+                if preset.regions.contains(&v.as_str()) {
+                    Ok(v)
+                } else {
+                    Err(format!("One of: {}", preset.regions.join(", ")))
+                }
+            },
+        )?),
+        (None, false) => preset.default_region.map(str::to_string),
+        (None, true) => None,
+    };
+    let host = match &args.relay_host {
+        Some(h) => h.clone(),
+        None if preset.host.is_none() && preset.host_template.is_none() => {
+            if !ask_questions {
+                bail!("--relay-host is required for this provider");
+            }
+            ask(t, "SMTP host", None, |v| {
+                crate::util::normalize_domain(v)
+                    .ok_or_else(|| "Enter a host name like smtp.example.net.".into())
+            })?
+        }
+        None => String::new(),
+    };
+    let username = match (&args.relay_user, preset.username) {
+        (Some(u), _) => u.clone(),
+        (None, Some(fixed)) => fixed.to_string(),
+        (None, None) if ask_questions => ask(t, "SMTP username", None, |v| {
+            if v.trim().is_empty() {
+                Err("The provider gives you a username.".into())
+            } else {
+                Ok(v.trim().to_string())
+            }
+        })?,
+        (None, None) => bail!("--relay-user is required"),
+    };
+    let password = match &args.relay_password_env {
+        Some(var) => {
+            std::env::var(var).with_context(|| format!("environment variable {var} is not set"))?
+        }
+        None if interactive() => {
+            rpassword::prompt_password(format!("  {} (hidden): ", preset.secret_label))?
+        }
+        None => bail!("pass the relay password with --relay-password-env VAR"),
+    };
+    Ok(RelayInput {
+        provider,
+        host,
+        port: args.relay_port,
+        username,
+        region,
+        password,
+    })
+}
+
+fn print_summary(t: &Term, i: &InstallInputs, ipv4: Option<&str>) {
+    let row = |k: &str, v: String| println!("    {:<16} {v}", t.paint("2", k));
+    println!("\n  {}", t.paint("1", "Summary"));
+    row("Domain", i.domain.clone());
+    row(
+        "Mail hostname",
+        match ipv4 {
+            Some(ip) => format!("{} → {ip}", i.hostname),
+            None => i.hostname.clone(),
+        },
+    );
+    row("Alerts go to", i.admin_email.clone());
+    row("First mailbox", format!("{}@{}", i.first_mailbox, i.domain));
+    row(
+        "Sending",
+        match (&i.sending, &i.relay) {
+            (SendingMode::Relay, Some(r)) => format!(
+                "through {}",
+                crate::model::relay_provider(&r.provider)
+                    .map(|p| p.label)
+                    .unwrap_or("a relay")
+            ),
+            _ => "directly from this server (needs reverse DNS)".into(),
+        },
+    );
+    row(
+        "Certificate",
+        format!(
+            "{}, automatic",
+            crate::edge::acme::ca_name(
+                &crate::edge::acme::env_directory()
+                    .unwrap_or_else(|| crate::edge::acme::LE_PRODUCTION.into())
+            )
+        ),
+    );
+    println!();
+}
+
+/// What the person gets, and what is left — printed when the run ends or pauses.
+fn final_summary(app: &App, t: &Term, paused_at: Option<&str>, error: Option<&anyhow::Error>) {
+    let Some(cfg) = app.config() else {
+        if let Some(e) = error {
+            println!(
+                "\nThe install stopped: {e:#}\nFix the problem, then run: sudo yunori-mail install --resume"
+            );
+        }
+        return;
+    };
+    let rule = t.paint("2", &"─".repeat(64));
+    println!("\n{rule}");
+    let edge_up = matches!(
+        app.db.step_status("edge_tls"),
+        Ok(crate::installer::state::StepStatus::Done)
+    );
+    let paused_title = paused_at.and_then(|id| {
+        crate::installer::state::STEPS
+            .iter()
+            .find(|(s, _)| *s == id)
+            .map(|(_, t)| *t)
+    });
+    let headline = match (error, paused_title) {
+        (Some(_), _) => t.paint("31;1", "The install stopped."),
+        (None, Some(_)) if edge_up => t.paint(
+            "33;1",
+            "Paused. The server finishes the remaining steps by itself once you have done the one below.",
+        ),
+        (None, Some(title)) => t.paint("33;1", &format!("Paused at “{title}”.")),
+        (None, None) => t.paint("32;1", "Yunori Mail Server is ready."),
+    };
+    println!("  {headline}");
+    if let Some(e) = error {
+        println!("  {e:#}");
+        println!("  Fix the problem, then run: sudo yunori-mail install --resume");
+    }
+    let row = |k: &str, v: &str| println!("  {:<14} {v}", t.paint("2", k));
+    if edge_up {
+        println!();
+        row("Console", &format!("https://{}/console", cfg.hostname));
+        if let Some(url) = &t.setup_url {
+            row("Finish setup", url);
+        } else if app.db.admin_count_active().unwrap_or(0) == 0 {
+            row(
+                "Finish setup",
+                "run `sudo yunori-mail setup-token` for a new link",
+            );
+        }
+        row(
+            "Mailbox portal",
+            &format!("https://{}/account", cfg.hostname),
+        );
+    }
+    let mailbox = t.mailbox.clone().or_else(|| {
+        app.db
+            .get_json::<InstallInputs>("install.inputs")
+            .ok()
+            .flatten()
+            .filter(|_| {
+                matches!(
+                    app.db.step_status("first_mailbox"),
+                    Ok(crate::installer::state::StepStatus::Done)
+                )
+            })
+            .map(|i| format!("{}@{}", i.first_mailbox, i.domain))
+    });
+    if let Some(m) = &mailbox {
+        row("Mailbox", m);
+        row(
+            "Mail apps",
+            &format!(
+                "IMAP {h}:993 (TLS) · SMTP {h}:465 (TLS) or 587 (STARTTLS)",
+                h = cfg.hostname
+            ),
+        );
+        row(
+            "Yunori",
+            &format!("{}/welcome?connect={m}", cfg.client_origin),
+        );
+    }
+    if let Ok(st) = crate::installer::state::load(&app.db) {
+        use crate::installer::state::StepStatus as S;
+        let now: Vec<_> = st
+            .steps
+            .iter()
+            .filter(|s| matches!(s.status, S::Waiting | S::Failed))
+            .collect();
+        let later = st
+            .steps
+            .iter()
+            .filter(|s| matches!(s.status, S::Pending | S::Running))
+            .count();
+        if !now.is_empty() && error.is_none() {
+            println!("\n  {}", t.paint("1", "Your turn"));
+            for s in &now {
+                match &s.detail {
+                    Some(d) if !d.is_empty() => println!("    · {}: {d}", s.title),
+                    _ => println!("    · {}", s.title),
+                }
+            }
+            if later > 0 {
+                println!(
+                    "    {}",
+                    t.paint(
+                        "2",
+                        &format!(
+                            "{later} more step{} follow{} after that.",
+                            if later == 1 { "" } else { "s" },
+                            if later == 1 { "s" } else { "" }
+                        )
+                    )
+                );
+            }
+            if edge_up {
+                println!(
+                    "  {}",
+                    t.paint("2", "The console shows the same list and re-checks every minute; or run: sudo yunori-mail install --resume")
+                );
+            } else {
+                println!(
+                    "  {}",
+                    t.paint("2", "Then run: sudo yunori-mail install --resume")
+                );
             }
         }
     }
+    println!("{rule}");
 }
 
 pub async fn serve(args: ServeArgs) -> Result<()> {
@@ -497,7 +1110,7 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
     if args.dev && app.db.admin_count_active()? == 0 {
         let token = app.db.issue_setup_token()?;
         println!(
-            "Development setup token: {token}\nOpen http://{}/console/setup",
+            "Development setup token: {token}\nOpen http://{}/console/setup#token={token}",
             args.listen
         );
     }
@@ -598,31 +1211,7 @@ async fn doctor(json: bool) -> Result<()> {
         checks.push(host.port25);
         checks.push(host.ptr);
         checks.extend(host.blocklists);
-        let cert = crate::edge::tls::disk_certificate_info(&app.paths);
-        checks.push(match cert {
-            None => Check::new(
-                "tls",
-                "Certificate",
-                Status::Fail,
-                "No certificate on disk.",
-            ),
-            Some(c) if c.self_signed => Check::new(
-                "tls",
-                "Certificate",
-                Status::Warn,
-                "Self-signed (ACME has not succeeded yet).",
-            ),
-            Some(c) => Check::new(
-                "tls",
-                "Certificate",
-                if c.days_left < 14 {
-                    Status::Warn
-                } else {
-                    Status::Pass
-                },
-                format!("{} — {} days left", c.hostnames.join(", "), c.days_left),
-            ),
-        });
+        checks.push(crate::edge::certs::check(&app));
         let (served, detail) = crate::edge::tls::verify_served(&app.paths, &cfg.hostname).await;
         checks.push(Check::new(
             "tls_served",
@@ -689,7 +1278,8 @@ fn setup_token() -> Result<()> {
         .map(|c| c.hostname)
         .unwrap_or_else(|| "this-server".into());
     println!(
-        "Open https://{host}/console/setup and enter this token (valid 24 hours):\n\n  {token}\n"
+        "Open this one-time link to create the console owner (valid 24 hours; any earlier link stops working):\n\n  {}\n\nOr open https://{host}/console/setup and paste the token: {token}\n",
+        crate::installer::setup_link(&host, &token)
     );
     Ok(())
 }
@@ -900,42 +1490,87 @@ async fn alias_cmd(c: AliasCmd) -> Result<()> {
 }
 
 async fn cert_cmd(c: CertCmd) -> Result<()> {
+    use crate::edge::certs;
     let app = open_app(false, false)?;
+    let t = Term::new();
     match c {
-        CertCmd::Status => match crate::edge::tls::disk_certificate_info(&app.paths) {
-            None => println!("No certificate yet."),
-            Some(i) => println!(
-                "{} — issuer {}, expires {} ({} days){}",
-                i.hostnames.join(", "),
-                i.issuer.unwrap_or_default(),
-                i.not_after.unwrap_or_default(),
-                i.days_left,
-                if i.self_signed {
-                    " — self-signed"
-                } else {
-                    ""
+        CertCmd::Status => {
+            let s = certs::status(&app);
+            let row = |k: &str, v: &str| println!("  {:<14} {v}", t.paint("2", k));
+            match s.state {
+                "missing" => row("Certificate", "none yet"),
+                _ => {
+                    row("Covers", &s.hostnames.join(", "));
+                    row("Issuer", s.issuer.as_deref().unwrap_or("—"));
+                    row(
+                        "Expires",
+                        &format!(
+                            "{} ({} days){}",
+                            s.not_after.as_deref().unwrap_or("—"),
+                            s.days_left.unwrap_or(0),
+                            match s.state {
+                                "self_signed" => " — temporary self-signed",
+                                "test" => " — test certificate",
+                                "expired" => " — EXPIRED",
+                                _ => "",
+                            }
+                        ),
+                    );
                 }
-            ),
-        },
+            }
+            row("Authority", &format!("{} (automatic renewal)", s.authority));
+            if let Some(r) = &s.renews_at {
+                row("Renews from", r);
+            }
+            if let Some(p) = &s.problem {
+                row("Last attempt", &p.sentence());
+                if let Some(d) = &p.detail {
+                    row("CA said", d);
+                }
+            }
+            if let Some(n) = &s.next_attempt {
+                row("Next attempt", &crate::util::when(n));
+            }
+        }
         CertCmd::Renew => {
-            let cfg = app.config().ok_or_else(|| anyhow!("not installed"))?;
-            let domains: Vec<String> = app
-                .engine()?
-                .list_domains()
-                .await?
-                .into_iter()
-                .map(|d| d.name)
-                .collect();
-            let names = crate::edge::acme::wanted_names(
-                &cfg.hostname,
-                &domains,
-                cfg.public_ipv4.as_deref(),
-            )
-            .await;
-            crate::edge::acme::issue(&app.paths, &app.db, &names, &cfg.admin_email).await?;
-            crate::installer::fix_permissions(&app.paths);
-            crate::jobs::push_certificate(&app).await;
-            println!("Renewed for {}.", names.join(", "));
+            if app.config().is_none() {
+                bail!("not installed");
+            }
+            println!("Requesting a certificate…");
+            match certs::ensure(&app, true).await {
+                certs::Outcome::Issued(names) => println!("Issued for {}.", names.join(", ")),
+                certs::Outcome::Current => println!(
+                    "The current certificate is valid and covers every name; nothing to do."
+                ),
+                certs::Outcome::Busy => {
+                    println!("A certificate is being requested right now; check again in a minute.")
+                }
+                certs::Outcome::Failed {
+                    problem,
+                    next_attempt,
+                }
+                | certs::Outcome::Later {
+                    problem: Some(problem),
+                    next_attempt,
+                } => {
+                    println!("{}", problem.sentence());
+                    if let Some(d) = &problem.detail {
+                        println!("The CA said: {d}");
+                    }
+                    println!(
+                        "Yunori tries again by itself {}.",
+                        crate::util::when(&next_attempt)
+                    );
+                    std::process::exit(1);
+                }
+                certs::Outcome::Later {
+                    problem: None,
+                    next_attempt,
+                } => {
+                    println!("Next attempt {}.", crate::util::when(&next_attempt));
+                }
+                certs::Outcome::NotConfigured => bail!("not installed"),
+            }
         }
     }
     Ok(())

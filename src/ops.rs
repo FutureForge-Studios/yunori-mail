@@ -20,6 +20,59 @@ pub struct DomainDns {
     pub zone_file: String,
 }
 
+/// The install's first mailbox on the primary domain, with `postmaster@` and
+/// `abuse@` delivering to it (RFC 5321/2142 addresses every domain needs).
+/// Used by the terminal installer and by the console's onboarding checklist.
+pub async fn create_first_mailbox(
+    app: &App,
+    local: &str,
+    display_name: Option<&str>,
+    password: &str,
+    actor: &str,
+) -> Result<crate::engine::EAccount> {
+    let cfg = app
+        .config()
+        .ok_or_else(|| anyhow::anyhow!("the server is not configured yet"))?;
+    let local = local.trim().to_ascii_lowercase();
+    if !crate::util::valid_local_part(&local) {
+        anyhow::bail!("'{local}' is not a valid mailbox name");
+    }
+    let engine = app.engine()?;
+    let domain = engine
+        .list_domains()
+        .await?
+        .into_iter()
+        .find(|d| d.name == cfg.primary_domain)
+        .ok_or_else(|| anyhow::anyhow!("the primary domain is missing from the engine"))?;
+    let accounts = engine.list_accounts().await?;
+    let acct = engine
+        .create_account(&local, &domain.id, display_name, None, password)
+        .await?;
+    for alias in ["postmaster", "abuse"] {
+        let taken = alias == local
+            || accounts.iter().any(|a| {
+                a.domain_id == domain.id
+                    && (a.local == alias || a.aliases.iter().any(|al| al.local == alias))
+            });
+        if !taken {
+            let _ = engine.add_alias(&acct.id, alias, &domain.id).await;
+        }
+    }
+    app.db.audit(
+        actor,
+        "mailbox.create",
+        Some(&acct.address),
+        Some("first mailbox; postmaster+abuse aliases"),
+    )?;
+    // Read it back so the aliases just added are part of the answer.
+    Ok(engine
+        .list_accounts()
+        .await?
+        .into_iter()
+        .find(|a| a.id == acct.id)
+        .unwrap_or(acct))
+}
+
 pub fn dmarc_policy(app: &App, domain: &str) -> DmarcPolicy {
     match app
         .db

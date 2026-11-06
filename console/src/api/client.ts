@@ -11,6 +11,8 @@ import type {
   DeliverabilityResponse,
   Domain,
   DomainDnsResponse,
+  CertificateInfo,
+  FirstMailboxRequest,
   InstallState,
   LoginRequest,
   Mailbox,
@@ -169,6 +171,10 @@ export const api = {
 
   overview: () => request<OverviewResponse>("GET", "/overview"),
   install: () => request<InstallState>("GET", "/install"),
+  createFirstMailbox: (body: FirstMailboxRequest) => request<CreateMailboxResponse>("POST", "/install/first-mailbox", body),
+  certificate: () => request<CertificateInfo>("GET", "/certificate"),
+  /** "Try now": starts an attempt in the background; poll certificate() while inProgress. */
+  renewCertificate: () => request<CertificateInfo>("POST", "/certificate/renew"),
 
   domains: () => request<Domain[]>("GET", "/domains"),
   createDomain: (body: CreateDomainRequest) => request<Domain>("POST", "/domains", body),

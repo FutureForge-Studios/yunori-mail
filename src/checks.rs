@@ -294,6 +294,8 @@ pub fn check_existing_mta() -> Check {
         .filter(|svc| {
             Command::new("systemctl")
                 .args(["is-active", "--quiet", svc])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
                 .status()
                 .map(|s| s.success())
                 .unwrap_or(false)
@@ -600,11 +602,14 @@ pub async fn preflight(paths: &Paths, hostname: Option<&str>) -> Vec<Check> {
     out
 }
 
-pub fn has_blocking_failure(checks: &[Check]) -> bool {
+/// A failed check that makes installing pointless (the rest are warnings to act on).
+pub fn is_blocking(c: &Check) -> bool {
     const BLOCKING: &[&str] = &["os", "systemd", "cpu", "memory", "disk", "mta", "public_ip"];
-    checks.iter().any(|c| {
-        c.status == Status::Fail && (BLOCKING.contains(&c.id.as_str()) || c.id.starts_with("port:"))
-    })
+    c.status == Status::Fail && (BLOCKING.contains(&c.id.as_str()) || c.id.starts_with("port:"))
+}
+
+pub fn has_blocking_failure(checks: &[Check]) -> bool {
+    checks.iter().any(is_blocking)
 }
 
 #[cfg(test)]

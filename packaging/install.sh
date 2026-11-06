@@ -6,13 +6,17 @@
 # Unattended (every answer as a flag; see `yunori-mail install --help`):
 #   curl -fsSL …/install.sh | sudo sh -s -- --domain example.com --admin-email you@gmail.com
 #
+# Check a server first, installing nothing but the binary:
+#   curl -fsSL …/install.sh | sudo sh -s -- preflight
+#
 # Run it again at any time: a paused install resumes, a finished one is updated in place.
 #
 # What it does, and nothing else:
 #   1. checks this is 64-bit Linux with systemd, and that you are root;
 #   2. downloads ONE yunori-mail release for your CPU (a single static binary);
 #   3. verifies its SHA-256 (and its minisign signature when a key is pinned and minisign is installed);
-#   4. installs it as /usr/local/bin/yunori-mail and runs `yunori-mail install` with your arguments.
+#   4. installs it as /usr/local/bin/yunori-mail and runs `yunori-mail install` with your arguments
+#      (or `yunori-mail preflight` when the first argument is `preflight`).
 # It never pipes further remote code into a shell. Read it before running it.
 #
 # Environment overrides:
@@ -153,6 +157,13 @@ main() {
   say ""
   # `exec` skips the EXIT trap, so clean up the download now.
   if [ -n "${TMP:-}" ]; then rm -rf "$TMP"; fi
+  case "${1:-}" in
+    preflight | check)
+      # Report whether this server can run a mail server; change nothing else.
+      shift
+      exec "$BIN" preflight "$@"
+      ;;
+  esac
   export YUNORI_BINARY_REPLACED="$REPLACED"
   # When piped (curl … | sh), stdin is this script: answer the questions on the terminal instead.
   if [ ! -t 0 ] && (exec </dev/tty) 2>/dev/null; then

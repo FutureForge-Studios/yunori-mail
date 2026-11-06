@@ -17,6 +17,9 @@ BIN="${BIN:-/usr/local/bin/yunori-mail}"
 
 step() { printf '\n== %s\n' "$*"; }
 
+step "preflight (read-only)"
+"$BIN" preflight --hostname "mail.$E2E_DOMAIN" || echo "(preflight reported problems — see above)"
+
 step "install (stops at the DNS gate on a fresh domain; that is expected)"
 "$BIN" install --domain "$E2E_DOMAIN" --admin-email "$E2E_ADMIN" --first-mailbox e2e --no-wait || true
 "$BIN" status
@@ -47,8 +50,13 @@ code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/.well-known/jma
 code=$(curl -sk -o /dev/null -w '%{http_code}' https://127.0.0.1/admin)
 [ "$code" = "404" ] || { echo "Stalwart admin exposed ($code)"; exit 1; }
 
-step "certificate + doctor"
+step "automatic HTTPS: a trusted certificate, served on 443 and by the engine"
 "$BIN" certificate status
+"$BIN" certificate status | grep -q "Let's Encrypt" || { echo "no Let's Encrypt certificate"; exit 1; }
+echo | openssl s_client -connect 127.0.0.1:443 -servername "mail.$E2E_DOMAIN" 2>/dev/null | grep -q "Let's Encrypt" \
+  || { echo "443 does not serve the Let's Encrypt certificate"; exit 1; }
+
+step "doctor"
 "$BIN" doctor || echo "(doctor reported problems — expected until DNS/PTR are published)"
 
 step "encrypted backup"

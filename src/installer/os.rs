@@ -234,6 +234,8 @@ pub fn systemctl(args: &[&str]) -> Result<String> {
 pub fn is_active(unit: &str) -> bool {
     Command::new("systemctl")
         .args(["is-active", "--quiet", unit])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .map(|s| s.success())
         .unwrap_or(false)

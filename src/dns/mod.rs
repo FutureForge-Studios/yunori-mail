@@ -36,6 +36,8 @@ pub trait DnsLookup: Send + Sync {
     async fn cname(&self, name: &str) -> LookupResult<String>;
     async fn srv(&self, name: &str) -> LookupResult<Srv>;
     async fn ptr(&self, ip: IpAddr) -> LookupResult<String>;
+    /// CAA records as `flags tag "value"` (RFC 8659 presentation format).
+    async fn caa(&self, name: &str) -> LookupResult<String>;
 }
 
 pub fn norm_host(s: &str) -> String {
@@ -176,6 +178,18 @@ impl DnsLookup for Resolver {
             Err(e) => empty_or_err(e),
         }
     }
+    async fn caa(&self, name: &str) -> LookupResult<String> {
+        match self.inner.lookup(fqdn(name), RecordType::CAA).await {
+            Ok(r) => Ok(r
+                .record_iter()
+                .filter_map(|rec| match rec.data() {
+                    Some(RData::CAA(c)) => Some(c.to_string()),
+                    _ => None,
+                })
+                .collect()),
+            Err(e) => empty_or_err(e),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -193,6 +207,7 @@ pub mod fake {
         pub cname: HashMap<String, Vec<String>>,
         pub srv: HashMap<String, Vec<Srv>>,
         pub ptr: HashMap<String, Vec<String>>,
+        pub caa: HashMap<String, Vec<String>>,
         pub failing: Vec<String>,
     }
 
@@ -225,6 +240,9 @@ pub mod fake {
         }
         async fn ptr(&self, ip: IpAddr) -> LookupResult<String> {
             get(&self.ptr, &self.failing, &ip.to_string())
+        }
+        async fn caa(&self, n: &str) -> LookupResult<String> {
+            get(&self.caa, &self.failing, n)
         }
     }
 }
