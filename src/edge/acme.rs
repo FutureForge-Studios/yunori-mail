@@ -158,16 +158,23 @@ impl std::fmt::Display for CertProblem {
     }
 }
 
-/// An issuance that did not produce a certificate.
+/// An issuance that did not produce a certificate. The problem is boxed: it
+/// travels in `Err` on the cold path, and keeps `Result`s small.
 #[derive(Debug, Clone)]
 pub struct Failure {
-    pub problem: CertProblem,
+    pub problem: Box<CertProblem>,
     /// Names whose validation failed (empty when the whole order failed).
     pub failed_names: Vec<String>,
 }
 
 impl From<CertProblem> for Failure {
     fn from(problem: CertProblem) -> Self {
+        Box::new(problem).into()
+    }
+}
+
+impl From<Box<CertProblem>> for Failure {
+    fn from(problem: Box<CertProblem>) -> Self {
         Self {
             problem,
             failed_names: vec![],
@@ -320,7 +327,7 @@ fn account_key(directory: &str) -> String {
     }
 }
 
-async fn account(db: &Db, directory: &str, contact: &str) -> Result<Account, CertProblem> {
+async fn account(db: &Db, directory: &str, contact: &str) -> Result<Account, Box<CertProblem>> {
     let ca = ca_name(directory);
     let key = account_key(directory);
     if let Ok(Some(json)) = db.get_secret(&key)
@@ -328,7 +335,7 @@ async fn account(db: &Db, directory: &str, contact: &str) -> Result<Account, Cer
     {
         return Account::from_credentials(creds)
             .await
-            .map_err(|e| from_acme_error(e, &ca, directory));
+            .map_err(|e| Box::new(from_acme_error(e, &ca, directory)));
     }
     let contact_uri = format!("mailto:{contact}");
     let contacts: Vec<&str> = if crate::util::valid_email(contact) {
@@ -346,7 +353,7 @@ async fn account(db: &Db, directory: &str, contact: &str) -> Result<Account, Cer
         None,
     )
     .await
-    .map_err(|e| from_acme_error(e, &ca, directory))?;
+    .map_err(|e| Box::new(from_acme_error(e, &ca, directory)))?;
     if let Ok(json) = serde_json::to_string(&creds) {
         let _ = db.put_secret(&key, &json);
     }
@@ -405,12 +412,12 @@ pub async fn order(
                 AuthorizationStatus::Pending => {}
                 other => {
                     return Err(Failure {
-                        problem: CertProblem::new(
+                        problem: Box::new(CertProblem::new(
                             ProblemKind::Other,
                             Some(name),
                             format!("{ca} reports the authorization for {name} as {other:?}."),
                             "Yunori will start a fresh order on the next attempt.",
-                        ),
+                        )),
                         failed_names: vec![name.clone()],
                     });
                 }
@@ -552,7 +559,7 @@ async fn invalid_order(order: &mut instant_acme::Order, ca: &str) -> Failure {
         None => classify(None, None, None, ca),
     });
     Failure {
-        problem,
+        problem: Box::new(problem),
         failed_names: failed,
     }
 }

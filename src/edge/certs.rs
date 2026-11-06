@@ -222,10 +222,10 @@ pub async fn precheck(
     ipv6: Option<&str>,
     dns: &dyn DnsLookup,
     caa_identity: Option<&str>,
-) -> Result<(), CertProblem> {
+) -> Result<(), Box<CertProblem>> {
     match dns.a(name).await {
         Ok(ips) if ips.is_empty() => {
-            return Err(CertProblem::new(
+            return Err(Box::new(CertProblem::new(
                 ProblemKind::DnsMissing,
                 Some(name),
                 format!("{name} has no A record on public DNS yet."),
@@ -235,23 +235,23 @@ pub async fn precheck(
                         "At your DNS provider, add an A record for {name} pointing at this server."
                     ),
                 },
-            ));
+            )));
         }
         Ok(ips) => {
             if let Some(ip) = ipv4
                 && !ips.iter().any(|a| a == ip)
             {
                 if ips.iter().any(|a| is_cloudflare(a)) {
-                    return Err(CertProblem::new(
+                    return Err(Box::new(CertProblem::new(
                         ProblemKind::CloudflareProxy,
                         Some(name),
                         format!("{name} is proxied by Cloudflare (the orange cloud)."),
                         format!(
                             "In Cloudflare's DNS settings, set {name} to \"DNS only\" (grey cloud): mail needs a direct connection to {ip}."
                         ),
-                    ));
+                    )));
                 }
-                return Err(CertProblem::new(
+                return Err(Box::new(CertProblem::new(
                     ProblemKind::DnsElsewhere,
                     Some(name),
                     format!(
@@ -259,7 +259,7 @@ pub async fn precheck(
                         ips.join(", ")
                     ),
                     format!("Change the A record of {name} to {ip}."),
-                ));
+                )));
             }
         }
         Err(_) => {} // The CA will say what it sees.
@@ -268,7 +268,7 @@ pub async fn precheck(
         && !v6s.is_empty()
         && ipv6.is_none_or(|mine| !v6s.iter().any(|a| a == mine))
     {
-        return Err(CertProblem::new(
+        return Err(Box::new(CertProblem::new(
             ProblemKind::Ipv6Elsewhere,
             Some(name),
             format!(
@@ -280,19 +280,19 @@ pub async fn precheck(
                 Some(v) => format!("Certificate authorities try IPv6 first: change that AAAA record to {v}, or delete it."),
                 None => "Certificate authorities try IPv6 first: delete that AAAA record (this server has no IPv6 address).".into(),
             },
-        ));
+        )));
     }
     if let Some(id) = caa_identity
         && let Some(blocking) = caa_blocks(name, id, dns).await
     {
-        return Err(CertProblem::new(
+        return Err(Box::new(CertProblem::new(
             ProblemKind::Caa,
             Some(name),
             format!("The CAA records on {blocking} do not allow {id} to issue certificates."),
             format!(
                 "At your DNS provider, add  {blocking}  CAA  0 issue \"{id}\"  next to the existing CAA records."
             ),
-        ));
+        )));
     }
     Ok(())
 }
@@ -337,7 +337,7 @@ pub async fn caa_blocks(name: &str, identity: &str, dns: &dyn DnsLookup) -> Opti
 /// Is this server's own port-80 listener serving challenge files for `name`?
 /// (Local only: it cannot see a cloud firewall, but it catches a stopped edge
 /// or another web server holding port 80.)
-pub async fn self_test(paths: &Paths, name: &str, port: u16) -> Result<(), CertProblem> {
+pub async fn self_test(paths: &Paths, name: &str, port: u16) -> Result<(), Box<CertProblem>> {
     let dir = paths.acme_challenges_dir();
     let _ = std::fs::create_dir_all(&dir);
     let token = format!("yunori-self-test-{}", crate::util::random_token(18));
@@ -382,13 +382,13 @@ pub async fn self_test(paths: &Paths, name: &str, port: u16) -> Result<(), CertP
     outcome
 }
 
-fn edge_problem(name: &str, what: &str) -> CertProblem {
-    CertProblem::new(
+fn edge_problem(name: &str, what: &str) -> Box<CertProblem> {
+    Box::new(CertProblem::new(
         ProblemKind::EdgeDown,
         Some(name),
         format!("The certificate check for {name} cannot work: {what}."),
         "Make sure yunori-mail owns port 80 (`systemctl status yunori-mail`, `ss -ltnp 'sport = :80'`).",
-    )
+    ))
 }
 
 // ── issuing ──────────────────────────────────────────────────────────────
@@ -550,7 +550,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
         .await
         {
             Ok(()) => names.push(n.clone()),
-            Err(p) if n == &cfg.hostname => return record_failure(app, st, p, &plan.names, now),
+            Err(p) if n == &cfg.hostname => return record_failure(app, st, *p, &plan.names, now),
             Err(p) => {
                 exclude(&mut st, n, now);
                 let _ = app.db.install_log(
@@ -569,7 +569,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
     if let Some(port) = deps.self_test_port
         && let Err(p) = self_test(&app.paths, &cfg.hostname, port).await
     {
-        return record_failure(app, st, p, &names, now);
+        return record_failure(app, st, *p, &names, now);
     }
 
     // 2. After a failure, rehearse on staging so production's limits stay untouched.
@@ -583,7 +583,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
                     }
                     continue;
                 }
-                return record_failure(app, st, f.problem, &names, now);
+                return record_failure(app, st, *f.problem, &names, now);
             }
         }
         match deps.issuer.issue(&directory, &names).await {
@@ -633,7 +633,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
                     }
                     continue;
                 }
-                return record_failure(app, st, f.problem, &names, now);
+                return record_failure(app, st, *f.problem, &names, now);
             }
         }
     }
@@ -1125,12 +1125,12 @@ mod tests {
 
     fn unreachable_failure(name: &str) -> Failure {
         Failure {
-            problem: acme::classify(
+            problem: Box::new(acme::classify(
                 Some("urn:ietf:params:acme:error:connection"),
                 Some("Timeout during connect (likely firewall problem)"),
                 Some(name),
                 "Let's Encrypt",
-            ),
+            )),
             failed_names: vec![name.to_string()],
         }
     }
