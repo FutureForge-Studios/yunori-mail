@@ -10,6 +10,7 @@ name: release
 #   install.sh                                              the one-line installer, pinned to this version
 #   SHA256SUMS
 # so this always installs the newest release:
+#   curl -fsSL https://yunori.email/server/install.sh | sudo sh      (yunori.email redirects to these release files)
 #   curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh | sudo sh
 
 on:

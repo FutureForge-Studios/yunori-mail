@@ -20,6 +20,7 @@ mod ops;
 mod paths;
 mod relay;
 mod store;
+mod updates;
 mod util;
 
 use clap::Parser;

@@ -1,6 +1,6 @@
 //! Background jobs inside `serve`: DNS re-checks, host deliverability checks,
-//! certificate renewal + push into the engine, served-certificate probe, and
-//! session cleanup. Each job logs and carries on — never takes the edge down.
+//! certificate renewal + push into the engine, served-certificate probe, the
+//! daily update check, and session cleanup. Each job logs and carries on — never takes the edge down.
 
 use crate::app::App;
 use crate::ops;
@@ -84,6 +84,15 @@ pub fn spawn_all(app: Arc<App>) {
         loop {
             refresh_all_dns(&a).await;
             tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        // Daily: is there a newer release on yunori.email? Only noted for the console.
+        tokio::time::sleep(Duration::from_secs(90)).await;
+        loop {
+            crate::updates::check(&a).await;
+            tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
         }
     });
     let a = app.clone();

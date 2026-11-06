@@ -287,7 +287,7 @@ yunori-mail/
 
 | Phase | Entry point | Who it is for |
 |---|---|---|
-| P1 | **Built.** `curl -fsSL https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh \| sudo sh` on the VPS (short alias `get.yunori.email/mail` → that URL) → verifies and installs the static `yunori-mail` binary → runs `yunori-mail install` (guided terminal wizard; every answer also a flag after `sh -s --`). Re-running it resumes a paused install or updates a finished one | Anyone with SSH to a fresh VPS |
+| P1 | **Built.** `curl -fsSL https://yunori.email/server/install.sh \| sudo sh` on the VPS (yunori.email serves the GitHub release; the release URL works too) → verifies and installs the static `yunori-mail` binary → runs `yunori-mail install` (guided terminal wizard; every answer also a flag after `sh -s --`). Re-running it resumes a paused install or updates a finished one | Anyone with SSH to a fresh VPS |
 | P2 | `.deb` / `.rpm` packages + apt/dnf repo; cloud-init snippet to paste into the provider's "user data" box | Repeatable installs |
 | P4 | **Install from Yunori Desktop**: the desktop app connects over SSH and runs the same script, streaming progress in Yunori's UI; marketplace one-click images (Hetzner, Vultr) | Non-terminal users |
 
@@ -816,6 +816,14 @@ built:
    - `?connect=` opens the mailbox step prefilled, and survives sign-in and sign-up;
    - the Yunori preset is detected from the autoconfig marker;
    - the account page link is kept only when it is https on the mail host.
+
+6. **Installer and updates on yunori.email** (2026-11-06).
+   - The one-liner is `curl -fsSL https://yunori.email/server/install.sh | sudo sh`.
+   - yunori.email serves `install.sh`, `latest.json` and `v<version>/<file>` from this repository's releases
+     (tori `server/mail-server-feed.ts`).
+   - The installer resolves "latest" and downloads there first, falling back to GitHub.
+   - `src/updates.rs` checks `latest.json` daily, and the System page shows it with "Check now".
+   - `sudo yunori-mail update` runs the hosted installer, which updates a finished install in place.
 
 Next from the same scan, not built yet:
 - DNS automation through provider APIs (hand Stalwart the token; keep the public-resolver gate);

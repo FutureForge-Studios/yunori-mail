@@ -20,6 +20,7 @@ cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test
 cargo build --release                                        # target/release/yunori-mail (~9 MB, console embedded)
 yunori-mail serve --dev --mock-engine                        # http://127.0.0.1:8787/console, no root, in-memory engine (prints a setup link)
 yunori-mail preflight                                        # read-only server check (what the wizard runs first)
+yunori-mail update --check                                   # newest release on yunori.email/server/latest.json
 YUNORI_LIVE_ACME=1 cargo test live_acme -- --ignored         # ACME conversation against Let's Encrypt staging
 YUNORI_STALWART_BIN=/path/to/stalwart cargo test -- --ignored live_   # end-to-end against a real Stalwart
 ```
@@ -39,6 +40,7 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 | `src/cli.rs` | Terminal wizard (preflight first, re-asks bad answers, summary card) and day-two commands |
 | `src/edge/` | rustls, automatic HTTPS (`certs.rs`: when/why/backoff/staging rehearsal; `acme.rs`: the CA), allowlisted JMAP/DAV proxy, autoconfig (mail + DAV), Apple profiles (`mobileconfig.rs`), embedded console |
 | `src/api/` | Console + `/account` portal REST API |
+| `src/updates.rs` | Daily check against `yunori.email/server/latest.json`; `yunori-mail update` runs the hosted installer |
 | `src/store/` | SQLite, AES-256-GCM vault, hash-chained audit log, mailbox invites |
 | `console/` | React 19 + Vite + Tailwind SPA in the yunori.email design |
 
