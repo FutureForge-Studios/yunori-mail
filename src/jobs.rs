@@ -1,6 +1,7 @@
 //! Background jobs inside `serve`: DNS re-checks, host deliverability checks,
 //! certificate renewal + push into the engine, served-certificate probe, the
-//! daily update check, and session cleanup. Each job logs and carries on — never takes the edge down.
+//! daily update check, proactive alerts (`alerts`), and session cleanup.
+//! Each job logs and carries on — never takes the edge down.
 
 use crate::app::App;
 use crate::ops;
@@ -95,6 +96,8 @@ pub fn spawn_all(app: Arc<App>) {
             tokio::time::sleep(Duration::from_secs(24 * 3600)).await;
         }
     });
+    // Proactive alerts: evaluate every 10 minutes, notify on changes.
+    tokio::spawn(crate::alerts::run_forever(app.clone()));
     let a = app.clone();
     tokio::spawn(async move {
         loop {

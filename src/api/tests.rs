@@ -1072,3 +1072,5 @@ async fn mailboxes_export_and_import_as_csv() {
 }
 
 mod dns_provider;
+// Alerts (settings, test send, check now): src/api/tests/alerts_tests.rs
+mod alerts_tests;

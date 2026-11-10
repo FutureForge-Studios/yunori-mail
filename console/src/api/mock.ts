@@ -51,6 +51,7 @@ import type {
   UpdateStatus,
   VerdictLevel,
 } from "./types";
+import { routeAlerts, seedAlerts, type MockAlerts } from "./mock-alerts";
 
 export type Scenario = "setup" | "signedout" | "certificate" | "installing" | "healthy" | "degraded";
 
@@ -149,6 +150,8 @@ interface DB {
   rules?: Record<string, MailRules>;
   /** Connected DNS providers by domain id (the real server seals the token; the mock keeps none). */
   dnsProviders?: Record<string, MockDnsProvider>;
+  /** Alert settings, firing alerts and history (./mock-alerts.ts). */
+  alerts?: MockAlerts;
   seq: number;
 }
 
@@ -860,6 +863,7 @@ function overview(db: DB): OverviewResponse {
     stats: { domains: db.domains.length, mailboxes: db.mailboxes.length, aliases: db.aliases.length, queued: db.queue.total },
     sendingMode: db.sending.mode,
     signals: signals(db),
+    alerts: (db.alerts ??= seedAlerts(db.scenario)).active,
     setup: db.install ? { steps: db.install.steps, logs: db.install.logs } : null,
   };
 }
@@ -1238,6 +1242,12 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
   requireAdmin(db);
 
   if (is("GET", "/overview")) return [200, overview(db)];
+  if (seg[0] === "alerts") {
+    const r = routeAlerts((db.alerts ??= seedAlerts(db.scenario)), method, path, body, fail, (action, target, detail) =>
+      audit(db, action, target, detail ?? null),
+    );
+    if (r) return r;
+  }
   if (is("POST", "/updates/check")) return [200, { ...updateStatus(), checkedAt: iso() }];
   if (is("GET", "/install")) {
     advanceInstall(db);

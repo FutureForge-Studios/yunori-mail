@@ -149,5 +149,13 @@ Live-tested facts (2026-11-10):
   (`# yunori-rules v1 <base64 json>`), so the portal reads back what the engine runs and Yunori stores nothing.
   Verified live: `vacation :days 1` replies once per sender per day with `Auto-Submitted: auto-replied`;
   `redirect :copy` keeps a copy, plain `redirect` does not.
+- **Alert email** (`src/alerts/`) is submitted to `127.0.0.1:465` (implicit TLS, `AUTH PLAIN`) as a dedicated
+  `yunori-alerts@<primary domain>` mailbox whose random password is sealed in the vault; the engine admin is never
+  used for mail. Verified live: the message is queued and delivered (the From must be the authenticated address).
+  A wrong password gets `535 5.7.8 Authentication credentials invalid.`; Yunori then gives the sender a new password
+  and retries once. The default `MtaInboundThrottle` allows **5 connections per second per IP**, so a sixth
+  connection from loopback (Yunori's certificate probes count) is closed before the greeting, as a TLS EOF without
+  `close_notify`. The client treats a close before the greeting as throttling: it waits 1.2 s and retries, up to
+  three times.
 - JMAP over WebSocket (`/jmap/ws`) is not proxied through the edge (the HTTP proxy cannot carry an upgrade); clients
   use EventSource push, which works.

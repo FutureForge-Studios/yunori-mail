@@ -11,6 +11,7 @@ import { useApi } from "@/lib/use-api";
 import { useSession } from "../session";
 import { SIGNAL_TARGET, VERDICT_META, useShell } from "../shell";
 import { navLocation } from "../nav";
+import { AlertList } from "../alert-list";
 import { InstallChecklist } from "./install-checklist";
 import { SetupComplete } from "./setup-complete";
 
@@ -117,6 +118,18 @@ export function OverviewPage() {
 
       {data.setup && data.setup.steps.length > 0 && (
         <InstallChecklist initial={data.setup} onComplete={onInstallComplete} onMailboxCreated={setCreated} />
+      )}
+
+      {data.alerts?.length > 0 && (
+        <Card className="mb-4">
+          <div className="flex items-baseline justify-between gap-3">
+            <SectionLabel>Alerts</SectionLabel>
+            <Link to="/console/alerts" className="rounded-sm text-[11px] text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+              Alert settings and history
+            </Link>
+          </div>
+          <AlertList alerts={data.alerts} compact />
+        </Card>
       )}
 
       {setupMode && (

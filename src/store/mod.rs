@@ -88,6 +88,19 @@ CREATE TABLE IF NOT EXISTS invites (
 );
 CREATE INDEX IF NOT EXISTS invites_account ON invites (account_id);
 "#,
+    // Alert history (src/alerts): what was sent, when, and how delivery went.
+    r#"
+CREATE TABLE IF NOT EXISTS alert_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL,
+  alert_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  title TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  delivery TEXT NOT NULL
+);
+"#,
 ];
 
 #[derive(Clone)]

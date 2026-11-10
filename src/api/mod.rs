@@ -5,6 +5,7 @@
 //! of SameSite=Strict cookies). Errors are `{ "error": { code, message, field? } }`.
 
 pub(crate) mod admin;
+mod alerts;
 mod dns_provider;
 mod portal;
 mod session;
@@ -17,7 +18,7 @@ use axum::extract::{FromRef, FromRequestParts, Request};
 use axum::http::{HeaderMap, Method, StatusCode, header, request::Parts};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, patch, post};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 use serde_json::json;
 use std::sync::Arc;
@@ -275,6 +276,10 @@ pub fn router(app: AppState) -> Router {
         .route("/updates/check", post(admin::update_check))
         .route("/audit", get(admin::audit))
         .route("/admins", get(admin::admins))
+        .route("/alerts", get(alerts::get_alerts))
+        .route("/alerts/settings", put(alerts::put_settings))
+        .route("/alerts/test", post(alerts::test_alert))
+        .route("/alerts/check", post(alerts::check_now))
         // portal
         .route("/portal/login", post(portal::login))
         .route("/portal/logout", post(portal::logout))

@@ -4,6 +4,7 @@
 //! HTTPS edge and the embedded console. The mail engine is Stalwart, run as a
 //! separate pinned process and driven through its JMAP management API.
 
+mod alerts;
 mod api;
 mod app;
 mod auth;

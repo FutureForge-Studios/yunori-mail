@@ -17,6 +17,7 @@ const SendingPage = lazy(() => import("./console/pages/sending"));
 const DeliverabilityPage = lazy(() => import("./console/pages/deliverability"));
 const SecurityPage = lazy(() => import("./console/pages/security"));
 const SystemPage = lazy(() => import("./console/pages/system"));
+const AlertsPage = lazy(() => import("./console/pages/alerts"));
 const PortalApp = lazy(() => import("./portal/portal-app"));
 
 /**
@@ -54,6 +55,7 @@ export const router = createBrowserRouter([
           { path: "deliverability", element: <DeliverabilityPage /> },
           { path: "security", element: <SecurityPage /> },
           { path: "system", element: <SystemPage /> },
+          { path: "alerts", element: <AlertsPage /> },
           { path: "*", element: <NotFound inShell /> },
         ],
       },

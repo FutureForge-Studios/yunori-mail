@@ -44,6 +44,7 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 | `src/cli.rs` | Terminal wizard (preflight first, re-asks bad answers, summary card) and day-two commands |
 | `src/edge/` | rustls, automatic HTTPS (`certs.rs`: when/why/backoff/staging rehearsal; `acme.rs`: the CA), allowlisted JMAP/DAV proxy, autoconfig (mail + DAV), Apple profiles (`mobileconfig.rs`), embedded console |
 | `src/api/` | Console + `/account` portal REST API |
+| `src/alerts/` | Proactive alerts: conditions + de-dup state machine (`mod.rs`), email/webhook/ntfy channels, minimal SMTP submission client |
 | `src/updates.rs` | Daily check against `yunori.email/server/latest.json`; `yunori-mail update` runs the hosted installer |
 | `src/store/` | SQLite, AES-256-GCM vault, hash-chained audit log, mailbox invites |
 | `console/` | React 19 + Vite + Tailwind SPA in the yunori.email design |

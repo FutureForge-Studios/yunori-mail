@@ -228,6 +228,7 @@ pub async fn overview(State(app): State<AppState>, _a: AdminAuth) -> ApiResult<J
         "stats": stats,
         "sendingMode": mode,
         "signals": signals,
+        "alerts": crate::alerts::current(&app),
         "setup": if install_complete { Value::Null } else { serde_json::to_value(&install).unwrap_or(Value::Null) },
     })))
 }

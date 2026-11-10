@@ -1,5 +1,6 @@
 import {
   AtSign,
+  Bell,
   Gauge,
   Globe,
   Inbox,
@@ -54,6 +55,7 @@ export const NAV: NavGroup[] = [
     items: [
       { to: "/console/security", label: "Security", icon: ShieldCheck, keywords: ["audit", "admins", "2fa", "totp", "ledger"] },
       { to: "/console/system", label: "System", icon: ServerCog, keywords: ["services", "versions", "certificate", "preflight", "disk", "memory"] },
+      { to: "/console/alerts", label: "Alerts", icon: Bell, keywords: ["notifications", "email", "webhook", "ntfy", "monitoring", "warnings"] },
     ],
   },
 ];

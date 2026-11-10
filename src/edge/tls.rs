@@ -243,6 +243,18 @@ async fn starttls_smtp(stream: &mut TcpStream) -> Result<()> {
     Ok(())
 }
 
+/// TLS to the engine's own listeners on loopback (alert email submission):
+/// the certificate is not verified, because the connection never leaves the
+/// host and the engine may still serve a self-signed certificate.
+pub fn loopback_connector() -> Result<tokio_rustls::TlsConnector> {
+    let config = rustls::ClientConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()?
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(AcceptAny))
+        .with_no_client_auth();
+    Ok(tokio_rustls::TlsConnector::from(Arc::new(config)))
+}
+
 /// SHA-256 of the leaf certificate a local port presents.
 pub async fn served_fingerprint(port: u16, sni: &str, starttls: bool) -> Result<String> {
     let config = rustls::ClientConfig::builder_with_provider(provider())

@@ -1,5 +1,6 @@
 import type {
   AdminUser,
+  AlertsResponse,
   Alias,
   AppleProfileRequest,
   AppleProfileResponse,
@@ -42,6 +43,8 @@ import type {
   SetupResponse,
   SetupTotpRequest,
   SystemResponse,
+  TestAlertResponse,
+  UpdateAlertSettingsRequest,
   UpdateDomainRequest,
   UpdateMailboxRequest,
   UpdateSendingRequest,
@@ -256,6 +259,12 @@ export const api = {
   preflight: () => request<PreflightResponse>("GET", "/preflight"),
   audit: () => request<AuditResponse>("GET", "/audit"),
   admins: () => request<AdminUser[]>("GET", "/admins"),
+
+  alerts: () => request<AlertsResponse>("GET", "/alerts"),
+  updateAlertSettings: (body: UpdateAlertSettingsRequest) => request<AlertsResponse>("PUT", "/alerts/settings", body),
+  sendTestAlert: () => request<TestAlertResponse>("POST", "/alerts/test"),
+  /** Evaluate now instead of waiting for the next 10-minute check. */
+  checkAlerts: () => request<AlertsResponse>("POST", "/alerts/check"),
 };
 
 // ── Self-service portal ─────────────────────────────────────────────────────

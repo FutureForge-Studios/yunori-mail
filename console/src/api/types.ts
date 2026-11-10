@@ -112,6 +112,8 @@ export interface OverviewResponse {
   sendingMode: "direct" | "relay";
   /** Key signals (DNS, PTR, TLS, port 25, blocklists, engine). */
   signals: Check[];
+  /** Alerts firing right now, worst first (see GET /alerts). */
+  alerts: ActiveAlert[];
   /** Present until setup is complete. */
   setup: InstallState | null;
 }
@@ -718,3 +720,88 @@ export interface CreateAppPasswordResponse {
 // POST /setup/totp and POST /login → SessionResponse; PUT /sending → SendingResponse;
 // GET /admins → AdminUser[]; GET /domains/:id → Domain; Domain.aliasCount;
 // throttled login/setup/portal endpoints → 429 { code: "rate_limited" }.
+
+// ── Alerts (GET /alerts, PUT /alerts/settings, POST /alerts/test, POST /alerts/check) ──
+// Evaluated every 10 minutes on the server. One message when a problem starts,
+// one when it gets worse, one when it ends, at most a daily reminder between.
+
+export type AlertSeverity = "warning" | "critical";
+
+/** A problem that is happening now. Ids are stable: "engine", "certificate.expiry",
+ *  "certificate.renewal", "queue", "blocklist", "dns:<domain>", "disk", "backup". */
+export interface ActiveAlert {
+  id: string;
+  severity: AlertSeverity;
+  title: string;
+  /** One sentence: what is wrong and what it means. */
+  summary: string;
+  /** One sentence: what to do. */
+  remedy: string;
+  since: string; // RFC 3339
+  lastNotified: string;
+  notifiedSeverity: AlertSeverity;
+  clearTicks: number;
+}
+
+export type AlertEventKind = "firing" | "worse" | "reminder" | "resolved" | "test";
+
+export interface AlertDelivery {
+  channel: "email" | "webhook" | "ntfy";
+  ok: boolean;
+  /** Plain words: "sent to owner@…", "delivered (HTTP 200)", "the receiver answered HTTP 404". */
+  detail: string;
+}
+
+export interface AlertHistoryEntry {
+  id: number;
+  at: string;
+  alertId: string;
+  kind: AlertEventKind;
+  severity: AlertSeverity;
+  title: string;
+  summary: string;
+  /** Empty when no channel was on (the alert was shown in the console only). */
+  deliveries: AlertDelivery[];
+}
+
+export type WebhookKind = "json" | "ntfy";
+
+export interface AlertSettings {
+  emailEnabled: boolean;
+  /** Where email alerts go (the install's admin address unless changed). */
+  recipient: string | null;
+  recipientIsDefault: boolean;
+  defaultRecipient: string | null;
+  /** The mailbox alerts are sent from (managed by Yunori), e.g. yunori-alerts@example.com. */
+  sender: string | null;
+  /** The URL and token are write-only: only the host and has* flags come back. */
+  webhook: { enabled: boolean; kind: WebhookKind; host: string | null; hasUrl: boolean; hasToken: boolean };
+}
+
+export interface AlertsResponse {
+  active: ActiveAlert[];
+  /** Newest first, at most 100. */
+  history: AlertHistoryEntry[];
+  evaluatedAt: string | null;
+  settings: AlertSettings;
+}
+
+/** PUT /alerts/settings → AlertsResponse. */
+export interface UpdateAlertSettingsRequest {
+  emailEnabled: boolean;
+  /** null or "" = the install's admin address. Must be outside this server. */
+  recipient: string | null;
+  webhook: {
+    enabled: boolean;
+    kind: WebhookKind;
+    /** Omit to keep the saved URL; "" removes it. A new URL drops the saved token unless one is sent. */
+    url?: string;
+    /** Omit to keep the saved token; "" removes it. Sent as `Authorization: Bearer`. */
+    token?: string;
+  };
+}
+
+/** POST /alerts/test → one test message through every channel that is on (409 when none is). */
+export interface TestAlertResponse {
+  deliveries: AlertDelivery[];
+}

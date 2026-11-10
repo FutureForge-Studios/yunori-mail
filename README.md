@@ -55,6 +55,16 @@ curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
 - **Bulk mailboxes from CSV**: export every mailbox, or import `address[,display_name[,quota_mb]]` from the
   console or `yunori-mail mailbox import` — checked row by row first (dry run), each new person gets an invite
   link (or a generated password, shown once).
+- **Proactive alerts.** Every 10 minutes Yunori checks for a certificate close to expiry or failing to renew, a mail
+  engine that stopped responding, outgoing mail stuck for more than 6 hours, the server's IP on a blocklist, a DNS
+  record that used to pass and now fails on public resolvers, a disk over 90% full, and backups older than 7 days.
+  - Each alert says what is wrong and what to do, in one sentence each.
+  - You get one message when a problem starts, one when it gets worse, one when it ends, and at most a daily
+    reminder in between.
+  - Alerts go by email to your external address (sent from a `yunori-alerts@` mailbox Yunori manages, with its
+    password sealed in the vault), to an ntfy topic, or to a JSON webhook. The webhook URL and token are
+    write-only.
+  - Firing alerts show on the Overview; the Alerts page has the settings, a test button and the history.
 - **Scriptable CLI**: `--json` on `domain|mailbox|alias list`, `doctor` and `preflight`; `install --dry-run`
   shows exactly what would be downloaded, created and changed, then runs the read-only preflight.
 - **A self-service portal** at `/account` for every mailbox: password, app passwords, all the settings, and

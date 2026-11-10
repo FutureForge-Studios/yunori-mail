@@ -458,6 +458,9 @@ async fn live_engine_end_to_end() {
         .expect("update relay (idempotent)");
     engine.set_relay(None).await.expect("disable relay");
 
+    step("7b. alert email: Yunori's sender mailbox submits on :465, ana reads it over JMAP");
+    live_alert_email(&engine).await;
+
     step("8. cleanup: delete account and second domain");
     engine
         .delete_account(&acct.id)
@@ -494,4 +497,122 @@ async fn live_engine_end_to_end() {
         );
         std::mem::forget(_normal);
     }
+}
+
+/// The alerts email channel end to end (`crate::alerts`): the sender mailbox
+/// is created with a vault-sealed password, the message is submitted over
+/// implicit TLS with AUTH, the engine delivers it, and the recipient finds it.
+async fn live_alert_email(engine: &StalwartEngine) {
+    use crate::alerts::{Condition, Kind, Notice, Severity, channels, smtp};
+    use crate::engine::jmap::{Auth, Call, JmapClient, get_list, ids_ref};
+    use serde_json::{Value, json};
+
+    let db = crate::store::Db::open_memory().unwrap();
+    let (sender, pw) = channels::ensure_sender(&db, engine, DOMAIN, false)
+        .await
+        .expect("alerts sender mailbox");
+    assert_eq!(sender, format!("yunori-alerts@{DOMAIN}"));
+    let notice = Notice {
+        kind: Kind::Firing,
+        condition: Condition {
+            id: "live".into(),
+            severity: Severity::Warning,
+            title: "Live alert check".into(),
+            summary: "The mail disk is 94% full (6.0 GB free).".into(),
+            remedy: "Free space or grow the disk.".into(),
+        },
+        since: chrono::Utc::now(),
+    };
+    let target = smtp::Target {
+        host: "127.0.0.1",
+        port: channels::SUBMISSION_PORT,
+        name: HOST,
+    };
+    channels::submit(&target, &sender, &pw, "ana@live.test", &notice)
+        .await
+        .expect("the engine accepts the alert for delivery");
+    // A wrong password is an authentication error (what triggers the reset-and-retry).
+    let wrong = channels::submit(
+        &target,
+        &sender,
+        "not-the-password",
+        "ana@live.test",
+        &notice,
+    )
+    .await
+    .expect_err("wrong password refused");
+    eprintln!("wrong password: {wrong}");
+    assert!(matches!(wrong, smtp::SmtpError::Auth(_)), "{wrong}");
+
+    let jmap = JmapClient::new(&format!("http://127.0.0.1:{HTTP_PORT}"));
+    let auth = Auth::basic("ana@live.test", "Third-Strong-Pass-77!");
+    let session = jmap.session(&auth).await.expect("ana's JMAP session");
+    let account = session["primaryAccounts"]["urn:ietf:params:jmap:mail"]
+        .as_str()
+        .expect("mail account")
+        .to_string();
+    let using = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"];
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let email: Value = loop {
+        let r = jmap
+            .call_using(
+                &auth,
+                &using,
+                vec![
+                    Call::new(
+                        "Email/query",
+                        json!({ "accountId": account, "filter": { "subject": "Live alert check" } }),
+                    ),
+                    Call::new(
+                        "Email/get",
+                        json!({
+                            "accountId": account,
+                            "#ids": ids_ref(0, "Email/query"),
+                            "properties": ["subject", "from", "headers", "bodyValues", "textBody"],
+                            "fetchTextBodyValues": true,
+                        }),
+                    ),
+                ],
+            )
+            .await
+            .expect("Email/query");
+        if let Some(e) = get_list(&r[1]).into_iter().next() {
+            break e;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the alert never reached ana's mailbox"
+        );
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    };
+    eprintln!("delivered alert: {}", email["subject"]);
+    assert_eq!(email["subject"], format!("[{HOST}] Live alert check"));
+    assert_eq!(email["from"][0]["email"], sender.as_str());
+    assert_eq!(email["from"][0]["name"], channels::SENDER_NAME);
+    let headers = email["headers"].as_array().cloned().unwrap_or_default();
+    assert!(
+        headers.iter().any(|h| h["name"] == "Auto-Submitted"
+            && h["value"].as_str().unwrap_or("").trim() == "auto-generated"),
+        "{headers:?}"
+    );
+    let part = email["textBody"][0]["partId"].as_str().unwrap();
+    let text = email["bodyValues"][part]["value"].as_str().unwrap();
+    assert!(
+        text.contains("The mail disk is 94% full")
+            && text.contains("What to do: Free space or grow the disk."),
+        "{text}"
+    );
+    // The sender is an ordinary mailbox Yunori manages; tidy it up for the next steps.
+    let acct = engine
+        .list_accounts()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|a| a.address == sender)
+        .unwrap();
+    engine
+        .delete_account(&acct.id)
+        .await
+        .expect("delete sender");
+    eprintln!("alert email delivered and read back over JMAP");
 }
