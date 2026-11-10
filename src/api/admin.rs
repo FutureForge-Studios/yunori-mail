@@ -637,7 +637,11 @@ pub async fn create_mailbox(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty());
-    let quota = req.quota_mb.filter(|q| *q > 0).map(|mb| mb * 1024 * 1024);
+    let quota = req
+        .quota_mb
+        .filter(|q| *q > 0)
+        .map(quota_bytes)
+        .transpose()?;
     let acct = e
         .create_account(&local, &domain.id, display, quota, &password)
         .await?;
@@ -723,13 +727,23 @@ pub async fn update_mailbox(
     let display = req
         .display_name
         .map(|d| d.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
-    let quota = req
-        .quota_mb
-        .map(|q| q.filter(|v| *v > 0).map(|mb| mb * 1024 * 1024));
+    let quota = match req.quota_mb {
+        None => None,
+        Some(q) => Some(q.filter(|v| *v > 0).map(quota_bytes).transpose()?),
+    };
     let acct = e.update_account(&id, display, quota).await?;
     app.db
         .audit(&a.admin.email, "mailbox.update", Some(&acct.address), None)?;
     Ok(Json(mailbox_out(&acct, &e.list_domains().await?)))
+}
+
+/// A mailbox quota in MB as bytes; at most 16 TiB, so it can never overflow.
+fn quota_bytes(mb: u64) -> ApiResult<u64> {
+    const MAX_MB: u64 = 16 * 1024 * 1024;
+    if mb > MAX_MB {
+        return Err(ApiError::bad_request("A quota can be at most 16 TB.").field("quotaMb"));
+    }
+    Ok(mb * 1024 * 1024)
 }
 
 #[derive(Deserialize)]
@@ -757,6 +771,11 @@ pub async fn reset_password(
         .into_iter()
         .find(|x| x.id == id)
         .ok_or_else(|| ApiError::not_found("That mailbox"))?;
+    if acct.is_admin {
+        return Err(ApiError::conflict(
+            "This is the mail engine's administrator account; Yunori holds its password and changing it here would disconnect the console.",
+        ));
+    }
     e.set_password(&id, &password).await?;
     // A password handed over directly supersedes an outstanding invite.
     app.db.revoke_invites(&id)?;
@@ -1036,8 +1055,23 @@ pub async fn put_sending(
             let previous = ops::relay_settings(&app);
             let settings = crate::relay::build_settings(&draft, previous.as_ref(), &domains)
                 .map_err(|f| ApiError::bad_request(f.message).field(f.field))?;
+            // The saved password only ever goes back to the server and account
+            // it was entered for: a changed destination needs it typed again,
+            // so the write-only secret cannot be redirected to another host.
+            let same_destination = previous.as_ref().is_some_and(|p| {
+                p.provider == settings.provider
+                    && p.host.eq_ignore_ascii_case(&settings.host)
+                    && p.port == settings.port
+                    && p.username == settings.username
+            });
             let password = match r.password.filter(|p| !p.is_empty()) {
                 Some(p) => p,
+                None if !same_destination => {
+                    return Err(ApiError::bad_request(
+                        "The relay server or account changed: enter its password again.",
+                    )
+                    .field("password"));
+                }
                 None => app
                     .db
                     .get_secret("relay.password")?

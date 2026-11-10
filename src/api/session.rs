@@ -155,7 +155,11 @@ pub async fn setup_totp(
         .db
         .get_secret(&format!("totp:{}", admin.id))?
         .ok_or_else(ApiError::unauthorized)?;
-    if !auth::check_totp(&secret, &admin.email, &req.code) {
+    let fresh = match auth::totp_step(&secret, &admin.email, &req.code) {
+        Some(step) => app.db.accept_totp_step(&admin.id, step)?,
+        None => false,
+    };
+    if !fresh {
         return Err(ApiError::new(
             StatusCode::UNAUTHORIZED,
             "invalid_code",
@@ -190,8 +194,14 @@ pub async fn login(
 ) -> ApiResult<Response> {
     let email = req.email.trim().to_ascii_lowercase();
     let ip = super::client_ip(&headers);
-    if app.throttled(&format!("login:{email}"), 8, Duration::from_secs(900))
-        || app.throttled(&format!("login-ip:{ip}"), 30, Duration::from_secs(900))
+    // Per address *from this IP*, so a stranger cannot lock the owner out by
+    // failing on purpose; the per-address ceiling still bounds a distributed
+    // guess. The IP is checked first and over-long input never becomes a key.
+    let window = Duration::from_secs(900);
+    if email.len() > 254
+        || app.throttled(&format!("login-ip:{ip}"), 30, window)
+        || app.throttled(&format!("login:{email}|{ip}"), 8, window)
+        || app.throttled(&format!("login:{email}"), 200, window)
     {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
@@ -217,7 +227,11 @@ pub async fn login(
         .db
         .get_secret(&format!("totp:{}", admin.id))?
         .ok_or_else(invalid)?;
-    if !auth::check_totp(&secret, &admin.email, &req.totp) {
+    let fresh = match auth::totp_step(&secret, &admin.email, &req.totp) {
+        Some(step) => app.db.accept_totp_step(&admin.id, step)?,
+        None => false,
+    };
+    if !fresh {
         return Err(invalid());
     }
     let token = app.db.create_session("admin", &admin.id, SESSION_HOURS)?;

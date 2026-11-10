@@ -2,7 +2,8 @@
 //!
 //! Holds the installer state machine, console admins + sessions, sealed secrets,
 //! check caches and the audit ledger. Mail data never lives here — that is
-//! Stalwart's store. Losing this file is recoverable (`yunori-mail adopt`).
+//! Stalwart's store. Back it up (`yunori-mail backup`); rebuilding it from a running
+//! engine (`adopt`) is planned, not built.
 
 pub mod audit;
 pub mod invites;

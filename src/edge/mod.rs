@@ -285,17 +285,81 @@ pub async fn serve(app: AppState, opts: EdgeOptions) -> anyhow::Result<()> {
     });
 
     let http_app = app.clone();
+    let shutdown = axum_server::Handle::new();
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
     let http = tokio::spawn(async move {
-        let l = tokio::net::TcpListener::bind("[::]:80").await?;
-        axum::serve(l, http_router(http_app)).await?;
+        let l = tokio::net::TcpListener::from_std(listen(80)?)?;
+        axum::serve(l, http_router(http_app))
+            .with_graceful_shutdown(async move {
+                let _ = stop_rx.wait_for(|stopped| *stopped).await;
+            })
+            .await?;
         Ok::<_, anyhow::Error>(())
     });
-    let https = axum_server::bind_rustls("[::]:443".parse()?, rustls_cfg)
+    let https = axum_server::from_tcp_rustls(listen(443)?, rustls_cfg)
+        .handle(shutdown.clone())
         .serve(router(app).into_make_service_with_connect_info::<SocketAddr>());
     tracing::info!("edge listening on :80 and :443");
+    let stop = shutdown.clone();
+    tokio::spawn(async move {
+        terminated().await;
+        tracing::info!("stopping: finishing requests in flight (up to 10 s)");
+        let _ = stop_tx.send(true);
+        stop.graceful_shutdown(Some(std::time::Duration::from_secs(10)));
+    });
     tokio::select! {
         r = https => r?,
         r = http => r??,
     }
     Ok(())
+}
+
+/// SIGTERM (systemd stop/restart) or Ctrl-C.
+async fn terminated() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(_) => std::future::pending::<()>().await,
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! { _ = ctrl_c => {}, _ = term => {} }
+}
+
+/// A listening socket on every address: dual-stack `[::]` with IPV6_V6ONLY
+/// off (whatever `net.ipv6.bindv6only` says), or `0.0.0.0` on a kernel booted
+/// without IPv6.
+fn listen(port: u16) -> anyhow::Result<std::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    let open = |v6: bool| -> std::io::Result<Socket> {
+        let (domain, addr): (Domain, SocketAddr) = if v6 {
+            (Domain::IPV6, (std::net::Ipv6Addr::UNSPECIFIED, port).into())
+        } else {
+            (Domain::IPV4, (std::net::Ipv4Addr::UNSPECIFIED, port).into())
+        };
+        let s = Socket::new(domain, Type::STREAM, Some(Protocol::TCP))?;
+        if v6 {
+            s.set_only_v6(false)?;
+        }
+        s.set_reuse_address(true)?;
+        s.set_nonblocking(true)?;
+        s.bind(&addr.into())?;
+        s.listen(1024)?;
+        Ok(s)
+    };
+    let s = match open(true) {
+        Ok(s) => s,
+        Err(e6) => {
+            tracing::warn!("IPv6 is not available ({e6}); listening on IPv4 only for port {port}");
+            open(false).map_err(|e| anyhow::anyhow!("cannot listen on port {port}: {e}"))?
+        }
+    };
+    Ok(s.into())
 }

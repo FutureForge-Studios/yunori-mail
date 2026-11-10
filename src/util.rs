@@ -114,6 +114,11 @@ pub fn when(rfc3339: &str) -> String {
     }
 }
 
+/// Constant-time comparison of two byte strings (length is not secret).
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

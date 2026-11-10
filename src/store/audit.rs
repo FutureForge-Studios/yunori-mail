@@ -40,7 +40,11 @@ impl Db {
         detail: Option<&str>,
     ) -> Result<()> {
         let conn = self.conn();
-        let tx = conn.unchecked_transaction()?;
+        // IMMEDIATE: take the write lock before reading the chain head, so the
+        // CLI and the service appending at once wait for each other (busy
+        // timeout) instead of failing with a stale snapshot.
+        let tx =
+            rusqlite::Transaction::new_unchecked(&conn, rusqlite::TransactionBehavior::Immediate)?;
         let prev: String = tx
             .query_row("SELECT hash FROM audit ORDER BY id DESC LIMIT 1", [], |r| {
                 r.get(0)

@@ -197,14 +197,30 @@ Restart=on-failure
 RestartSec=3
 User=yunori
 Group=yunori
+TimeoutStopSec=15
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+UMask=0027
 ReadWritePaths={state}
 ReadOnlyPaths={etc}
-Environment=RUST_LOG=info
 
 [Install]
 WantedBy=multi-user.target
@@ -432,6 +448,41 @@ fn ports_text() -> String {
 /// A Stalwart process started by the installer for bootstrap/recovery mode.
 pub struct EngineChild {
     child: std::process::Child,
+    guard: Option<LoopbackOnly>,
+}
+
+/// While the engine runs in bootstrap/recovery mode its management listener
+/// binds every interface over plain HTTP. Only root on this machine talks to
+/// it, so a transient nftables table drops that port from anywhere but
+/// loopback until the engine is stopped. Best effort: without `nft` (or as
+/// non-root, in tests) the window stays short and the password random.
+struct LoopbackOnly;
+
+const BOOT_TABLE: &str = "yunori_bootstrap";
+
+impl LoopbackOnly {
+    fn install(port: u16) -> Option<Self> {
+        if !is_root() || run("nft", &["--version"]).is_err() {
+            return None;
+        }
+        let _ = run("nft", &["delete", "table", "inet", BOOT_TABLE]);
+        let rules = format!(
+            "table inet {BOOT_TABLE} {{ chain input {{ type filter hook input priority -10; policy accept; iifname != \"lo\" tcp dport {port} drop; }} }}"
+        );
+        match run("nft", &[&rules]) {
+            Ok(_) => Some(Self),
+            Err(e) => {
+                tracing::warn!("could not restrict the bootstrap listener to loopback: {e:#}");
+                None
+            }
+        }
+    }
+}
+
+impl Drop for LoopbackOnly {
+    fn drop(&mut self) {
+        let _ = run("nft", &["delete", "table", "inet", BOOT_TABLE]);
+    }
 }
 
 impl EngineChild {
@@ -458,8 +509,9 @@ impl EngineChild {
             let gid: u32 = run("id", &["-g", "stalwart"])?.trim().parse()?;
             cmd.uid(uid).gid(gid);
         }
+        let guard = LoopbackOnly::install(port);
         let child = cmd.spawn().context("starting the engine")?;
-        Ok(Self { child })
+        Ok(Self { child, guard })
     }
 
     pub fn stop(mut self) -> Result<()> {
@@ -475,6 +527,7 @@ impl EngineChild {
             .kill()
             .map_err(|e| anyhow!("could not stop the engine: {e}"))?;
         let _ = self.child.wait();
+        self.guard.take();
         Ok(())
     }
 }
@@ -501,6 +554,12 @@ mod tests {
         assert!(s.contains("LimitNOFILE=65536"));
         let y = yunori_unit(&p);
         assert!(y.contains("ExecStart=/usr/local/bin/yunori-mail serve"));
+        assert!(y.contains("CapabilityBoundingSet=CAP_NET_BIND_SERVICE"));
+        assert!(y.contains("MemoryDenyWriteExecute=true"));
+        assert!(
+            !y.contains("RUST_LOG"),
+            "the binary picks its own quiet default"
+        );
         assert!(y.contains("User=yunori"));
     }
 

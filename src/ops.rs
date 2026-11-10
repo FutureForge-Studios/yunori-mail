@@ -189,8 +189,14 @@ pub async fn host_checks(app: &App, fresh: bool) -> HostChecks {
         });
     let (ptr, blocklists, provider) = match cfg
         .as_ref()
-        .and_then(|c| c.public_ipv4.clone().map(|ip| (c, ip)))
-    {
+        // IPv6-only servers are checked on their IPv6 address, like the
+        // installer's reverse-DNS gate.
+        .and_then(|c| {
+            c.public_ipv4
+                .clone()
+                .or_else(|| c.public_ipv6.clone())
+                .map(|ip| (c, ip))
+        }) {
         Some((c, ip)) => {
             let public = Resolver::public();
             let relayed = c.sending_mode == SendingMode::Relay;

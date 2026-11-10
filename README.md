@@ -82,7 +82,7 @@ curl -fsSL https://yunori.email/server/install.sh \
 # Read it first, or pin a version
 curl -fsSLO https://yunori.email/server/install.sh
 less install.sh
-sudo YUNORI_VERSION=0.1.0 sh install.sh
+sudo YUNORI_VERSION=0.2.0 sh install.sh
 
 # The binary is already here: run the installer directly
 sudo yunori-mail install
@@ -256,7 +256,10 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check
 - `YUNORI_ACME_STAGING=1` uses Let's Encrypt staging; `YUNORI_ACME_DIRECTORY=<url>` uses another ACME CA.
 - `YUNORI_LIVE_ACME=1 cargo test live_acme -- --ignored` talks to Let's Encrypt staging (account + a refused order;
   no validation) to check the ACME conversation and how CA errors are explained.
-- `e2e/vps-smoke.sh` exercises the real engine on a throwaway VPS.
+- `e2e/vps-smoke.sh` exercises the real engine on a throwaway VPS (including Let's Encrypt).
+- `e2e/vps-e2e.py` drives an installed server end to end: console, SMTP/IMAP/JMAP mail flow, relay and spoofing
+  refusals, the hidden admin surface, portal, invites, device profiles, backup → restore.
+- [`docs/BENCHMARK.md`](docs/BENCHMARK.md): measured side by side with Openship Mail and BillionMail.
 
 Source layout:
 

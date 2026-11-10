@@ -25,8 +25,9 @@ fn creds_from(app: &AppState, headers: &HeaderMap) -> ApiResult<UserCreds> {
     let key = sha256_hex(token.as_bytes());
     let mut sessions = app.portal_sessions.lock().unwrap();
     sessions.retain(|_, s| s.expires > Instant::now());
-    let s = sessions.get_mut(&key).ok_or_else(ApiError::unauthorized)?;
-    s.expires = Instant::now() + PORTAL_TTL; // sliding
+    let s = sessions.get(&key).ok_or_else(ApiError::unauthorized)?;
+    // Not sliding: the user's password is held for at most PORTAL_TTL after
+    // sign-in, however often the session is used (the cookie expires then too).
     Ok(UserCreds {
         email: s.email.clone(),
         password: s.password.clone(),
@@ -53,8 +54,14 @@ pub async fn login(
 ) -> ApiResult<Response> {
     let email = req.email.trim().to_ascii_lowercase();
     let ip = super::client_ip(&headers);
-    if app.throttled(&format!("portal:{email}"), 8, Duration::from_secs(900))
-        || app.throttled(&format!("portal-ip:{ip}"), 40, Duration::from_secs(900))
+    // Per address *from this IP*, so a stranger cannot lock the owner out by
+    // failing on purpose; the per-address ceiling still bounds a distributed
+    // guess. The IP is checked first and over-long input never becomes a key.
+    let window = Duration::from_secs(900);
+    if email.len() > 254
+        || app.throttled(&format!("portal-ip:{ip}"), 40, window)
+        || app.throttled(&format!("portal:{email}|{ip}"), 8, window)
+        || app.throttled(&format!("portal:{email}"), 200, window)
     {
         return Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,

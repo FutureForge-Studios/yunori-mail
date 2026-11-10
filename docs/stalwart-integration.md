@@ -33,7 +33,8 @@ YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_engine -- --ignored --noca
 ## Modes
 
 - **Bootstrap mode** = `config.json` does not exist. Stalwart opens a plain-HTTP management listener on
-  `[::]:$STALWART_RECOVERY_MODE_PORT` (all interfaces → the installer firewalls it and keeps the window short),
+  `[::]:$STALWART_RECOVERY_MODE_PORT` (all interfaces → while it runs the installer adds a transient nftables table,
+  `inet yunori_bootstrap`, that drops the port except on loopback, and keeps the window short),
   uses an ephemeral store, and only the `x:Bootstrap` object is accessible. If `STALWART_RECOVERY_ADMIN` is
   unset it prints a temporary admin password to stderr — **we always pin it** so nothing secret hits logs.
 - **Recovery mode** = `STALWART_RECOVERY_MODE=1` with a real store: management API only, no mail listeners.
@@ -106,3 +107,16 @@ IMAP 993 + SMTP 465/587. Yunori's edge therefore answers `/mail/config-v1.1.xml`
 
 `stalwart --export <dir>` / `--import <dir>` exist in 1.0.3 (whole-store logical export). Yunori's backup job
 stops Stalwart, exports, restarts, then encrypts + uploads; consistency without downtime is a P2 follow-up.
+
+Live-tested facts (2026-11-10):
+- Both run as the `stalwart` user, which cannot enter `/var/lib/yunori-mail` (root:yunori 2770). Export and import go
+  through `/var/lib/yunori-mail-engine-io/<job>` (stalwart, 0700), removed afterwards.
+- `--import` refuses a store that already holds data ("Cannot import: the target database already contains data in
+  the key ranges being imported"). `yunori-mail restore` moves the live store to `<data>.pre-restore-<stamp>`,
+  imports into an empty one, puts the old one back if anything fails, and restarts both services either way.
+- `--import` restores every message but not the full-text index: IMAP SEARCH and JMAP filters find nothing until a
+  reindex. Reindexing is **not** an `x:Action`; it is a task: `x:Task/set` create
+  `{"@type": "StoreMaintenance", "maintenanceType": "reindexAccounts"}` (value camelCase; `"ReindexAccounts"` is
+  rejected). Stalwart fans it out into per-account `AccountMaintenance`/`reindex` tasks due a few minutes apart.
+- JMAP over WebSocket (`/jmap/ws`) is not proxied through the edge (the HTTP proxy cannot carry an upgrade); clients
+  use EventSource push, which works.

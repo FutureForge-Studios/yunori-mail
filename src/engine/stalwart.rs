@@ -533,6 +533,20 @@ impl Engine for StalwartEngine {
             .map(|_| ())
     }
 
+    async fn reindex_accounts(&self) -> EngineResult<()> {
+        // A store-maintenance task, not an `x:Action` (verified on 1.0.3).
+        let r = self
+            .admin_call(vec![Call::new(
+                "x:Task/set",
+                json!({ "create": { "a": {
+                    "@type": "StoreMaintenance",
+                    "maintenanceType": "reindexAccounts",
+                } } }),
+            )])
+            .await?;
+        set_outcome(&r[0], SetOp::Create, "a").map(|_| ())
+    }
+
     async fn install_certificate(&self, cert_pem: &str, key_pem: &str) -> EngineResult<()> {
         let r = self
             .admin_call(vec![Call::new(

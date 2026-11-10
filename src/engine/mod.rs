@@ -156,6 +156,9 @@ pub trait Engine: Send + Sync {
     // operations
     async fn queue(&self) -> EngineResult<Vec<EQueued>>;
     async fn reload_settings(&self) -> EngineResult<()>;
+    /// Rebuild every account's search index (needed after `--import`, which
+    /// restores messages but not the full-text index). Runs in the background.
+    async fn reindex_accounts(&self) -> EngineResult<()>;
     async fn install_certificate(&self, cert_pem: &str, key_pem: &str) -> EngineResult<()>;
     async fn set_relay(&self, relay: Option<&RelayConfig>) -> EngineResult<()>;
 

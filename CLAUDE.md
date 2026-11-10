@@ -23,6 +23,7 @@ yunori-mail preflight                                        # read-only server 
 yunori-mail update --check                                   # newest release on yunori.email/server/latest.json
 YUNORI_LIVE_ACME=1 cargo test live_acme -- --ignored         # ACME conversation against Let's Encrypt staging
 YUNORI_STALWART_BIN=/path/to/stalwart cargo test -- --ignored live_   # end-to-end against a real Stalwart
+sudo python3 e2e/vps-e2e.py                                  # on an installed throwaway server: full client-side e2e
 ```
 
 Console checks: `npm --prefix console run typecheck`, `npm --prefix console run lint`. Design drift:
@@ -46,7 +47,9 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 
 ## Invariants (don't regress)
 
-- **Stalwart is never patched or re-hosted.** Its admin UI is never exposed (`/admin` → 404 through the edge).
+- **Stalwart is never patched or re-hosted.** Its admin UI is never exposed (`/admin` → 404 through the edge). The
+  proxy allowlist judges the path as the engine will see it (percent-decoded, dot segments refused, re-checked after URL
+  parsing); `e2e/vps-e2e.py` probes encoded `..` variants.
 - **Secrets are write-only.** Relay credentials, engine admin, backup keys: sealed in the vault, API responses carry
   `hasPassword`/`hasSecret` only.
 - **DNS and PTR are verified against public resolvers**, never self-attested. New records join

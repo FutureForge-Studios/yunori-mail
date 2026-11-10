@@ -96,6 +96,31 @@ impl MockEngine {
         format!("{prefix}{}", s.seq)
     }
 
+    /// Add the engine's own administrator, as a real bootstrap creates it.
+    #[cfg(test)]
+    pub fn add_engine_admin(&self) -> String {
+        let mut s = self.state.lock().unwrap();
+        let domain = s.domains[0].name.clone();
+        let domain_id = s.domains[0].id.clone();
+        let id = "u-admin".to_string();
+        s.accounts.push((
+            EAccount {
+                id: id.clone(),
+                local: "admin".into(),
+                domain_id,
+                address: format!("admin@{domain}"),
+                display_name: None,
+                is_admin: true,
+                quota_bytes: None,
+                used_bytes: None,
+                aliases: vec![],
+                created_at: None,
+            },
+            "engine-admin-secret".into(),
+        ));
+        id
+    }
+
     #[cfg(test)]
     pub fn relay(&self) -> Option<RelayConfig> {
         self.state.lock().unwrap().relay.clone()
@@ -378,6 +403,10 @@ impl Engine for MockEngine {
     }
 
     async fn reload_settings(&self) -> EngineResult<()> {
+        Ok(())
+    }
+
+    async fn reindex_accounts(&self) -> EngineResult<()> {
         Ok(())
     }
 

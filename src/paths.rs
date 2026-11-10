@@ -51,6 +51,12 @@ impl Paths {
     pub fn acme_challenges_dir(&self) -> PathBuf {
         self.state_dir().join("acme-challenges")
     }
+    /// Where the engine writes an export / reads an import: owned by the
+    /// `stalwart` user (0700), outside Yunori's own state directory, which the
+    /// engine cannot enter. Exists only while a backup or restore runs.
+    pub fn engine_io_dir(&self) -> PathBuf {
+        self.at("var/lib/yunori-mail-engine-io")
+    }
     pub fn backups_dir(&self) -> PathBuf {
         self.state_dir().join("backups")
     }

@@ -764,3 +764,146 @@ async fn apple_profile_is_made_per_device_and_served_once() {
     let p = super::take_profile(&app, &token).unwrap();
     assert!(!p.body.contains("caldav"));
 }
+
+#[tokio::test]
+async fn a_totp_code_is_accepted_only_once() {
+    let (mut c, app) = Client::new();
+    let token = app.db.issue_setup_token().unwrap();
+    let email = "owner@elsewhere.example";
+    let pw = "a-long-passphrase-1";
+    let (_, b) = c
+        .post(
+            "/setup",
+            json!({"token": token, "email": email, "password": pw}),
+        )
+        .await;
+    let secret = b["totpSecret"].as_str().unwrap().to_string();
+    let code = crate::auth::totp_for(&secret, email)
+        .unwrap()
+        .generate_current()
+        .unwrap();
+    let (s, _) = c.post("/setup/totp", json!({"code": code})).await;
+    assert_eq!(s, StatusCode::OK);
+    let mut other = Client::with(app.clone()).0;
+    let (s, b) = other
+        .post(
+            "/login",
+            json!({"email": email, "password": pw, "totp": code}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "replayed code accepted: {b}");
+}
+
+#[tokio::test]
+async fn failed_logins_from_elsewhere_do_not_lock_the_owner_out() {
+    let (mut c, app) = Client::new();
+    c.sign_in(&app).await;
+    // Every request in these tests comes from the same "unknown" client IP, so
+    // emulate an attacker by filling the per-address-per-IP bucket of another IP.
+    for _ in 0..20 {
+        app.throttled(
+            "login:owner@elsewhere.example|203.0.113.7",
+            8,
+            std::time::Duration::from_secs(900),
+        );
+    }
+    let mut owner = Client::with(app.clone()).0;
+    let (s, b) = owner
+        .post(
+            "/login",
+            json!({"email": "owner@elsewhere.example", "password": "wrong-password-xx", "totp": "000000"}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{b}");
+}
+
+#[tokio::test]
+async fn huge_login_emails_never_become_throttle_keys() {
+    let (mut c, app) = Client::new();
+    let email = format!("{}@x.test", "a".repeat(100_000));
+    for _ in 0..3 {
+        let (s, _) = c
+            .post(
+                "/login",
+                json!({"email": email, "password": "x", "totp": "1"}),
+            )
+            .await;
+        assert_eq!(s, StatusCode::TOO_MANY_REQUESTS);
+    }
+    assert!(app.throttle.lock().unwrap().keys().all(|k| k.len() <= 200));
+}
+
+#[tokio::test]
+async fn the_engine_admin_password_is_never_reset_from_the_console() {
+    let (mut c, app) = Client::new();
+    c.sign_in(&app).await;
+    let id = app.mock().unwrap().add_engine_admin();
+    let id = id.as_str();
+    let (s, _) = c
+        .post(&format!("/mailboxes/{id}/password"), json!({}))
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn quotas_cannot_overflow() {
+    let (mut c, app) = Client::new();
+    c.sign_in(&app).await;
+    let (_, domains) = c.get("/domains").await;
+    let did = domains[0]["id"].as_str().unwrap().to_string();
+    let (s, b) = c
+        .post(
+            "/mailboxes",
+            json!({"local": "big", "domainId": did, "quotaMb": 1u64 << 50}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    assert_eq!(b["error"]["field"], "quotaMb");
+}
+
+#[tokio::test]
+async fn a_saved_relay_password_never_follows_a_new_host() {
+    let (mut c, app) = Client::new();
+    c.sign_in(&app).await;
+    let relay = |host: &str, password: Option<&str>| {
+        let mut r = json!({"provider": "custom", "host": host, "port": 587, "username": "u"});
+        if let Some(p) = password {
+            r["password"] = json!(p);
+        }
+        json!({"mode": "relay", "relay": r})
+    };
+    let (s, b) = c
+        .send(
+            "PUT",
+            "/sending",
+            Some(relay("smtp.relay.example", Some("relay-secret"))),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    // Same destination: the saved password is kept.
+    let (s, b) = c
+        .send(
+            "PUT",
+            "/sending",
+            Some(relay("smtp.relay.example", None)),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    // Another host: it must be typed again.
+    let (s, b) = c
+        .send(
+            "PUT",
+            "/sending",
+            Some(relay("attacker.example", None)),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{b}");
+    assert_eq!(b["error"]["field"], "password");
+    assert_eq!(
+        app.mock().unwrap().relay().unwrap().host,
+        "smtp.relay.example"
+    );
+}

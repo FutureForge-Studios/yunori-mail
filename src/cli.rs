@@ -1406,7 +1406,7 @@ async fn mailbox_cmd(c: MailboxCmd) -> Result<()> {
                     &local,
                     &d.id,
                     name.as_deref(),
-                    quota_mb.map(|m| m * 1024 * 1024),
+                    quota_mb.map(|m| m.min(16 * 1024 * 1024) * 1024 * 1024),
                     &pw,
                 )
                 .await?;
@@ -1421,6 +1421,12 @@ async fn mailbox_cmd(c: MailboxCmd) -> Result<()> {
                 .into_iter()
                 .find(|a| a.address == address.trim().to_ascii_lowercase())
                 .ok_or_else(|| anyhow!("no such mailbox"))?;
+            if a.is_admin {
+                bail!(
+                    "{} is the mail engine's administrator; Yunori holds its password, so it is not changed here",
+                    a.address
+                );
+            }
             let pw = crate::util::generate_password(20);
             e.set_password(&a.id, &pw).await?;
             app.db
@@ -1627,8 +1633,10 @@ async fn backup(out: Option<std::path::PathBuf>) -> Result<()> {
     };
     let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string();
     let work = p.backups_dir().join(format!("work-{stamp}"));
-    std::fs::create_dir_all(work.join("engine"))?;
-    os::chown_r("stalwart", &work.join("engine"))?;
+    std::fs::create_dir_all(&work)?;
+    // The engine runs as `stalwart` and cannot enter Yunori's state directory
+    // (root:yunori 2770), so it exports into a directory of its own.
+    let io = engine_io_dir(&p, &format!("export-{stamp}"))?;
     println!("Stopping the engine for a consistent export…");
     os::systemctl(&["stop", "stalwart"])?;
     let export = os::run(
@@ -1639,11 +1647,17 @@ async fn backup(out: Option<std::path::PathBuf>) -> Result<()> {
             "--",
             &p.stalwart_bin().to_string_lossy(),
             &format!("--config={}", p.stalwart_config().display()),
-            &format!("--export={}", work.join("engine").display()),
+            &format!("--export={}", io.join("engine").display()),
         ],
     );
     os::systemctl(&["start", "stalwart"])?;
-    export.context("engine export failed")?;
+    if let Err(e) = export {
+        let _ = std::fs::remove_dir_all(&io);
+        let _ = std::fs::remove_dir_all(&work);
+        return Err(e.context("engine export failed"));
+    }
+    move_dir(&io.join("engine"), &work.join("engine"))?;
+    let _ = std::fs::remove_dir_all(&io);
     {
         let conn = app.db.conn();
         conn.execute(
@@ -1717,28 +1731,115 @@ async fn restore(file: std::path::PathBuf, yes: bool) -> Result<()> {
     )?;
     let _ = os::systemctl(&["stop", "yunori-mail"]);
     os::systemctl(&["stop", "stalwart"])?;
-    os::chown_r("stalwart", &work.join("engine"))?;
-    os::run(
-        "runuser",
-        &[
-            "-u",
-            "stalwart",
-            "--",
-            &p.stalwart_bin().to_string_lossy(),
-            &format!("--config={}", p.stalwart_config().display()),
-            &format!("--import={}", work.join("engine").display()),
-        ],
-    )
-    .context("engine import failed")?;
-    std::fs::copy(work.join("yunori.db"), p.db())?;
-    std::fs::copy(work.join("master.key"), p.master_key())?;
-    crate::installer::fix_permissions(&p);
-    os::systemctl(&["start", "stalwart"])?;
+    let result = restore_stopped(&p, &work);
+    // Whatever happened, the server comes back up: restored, or as it was.
+    let started = os::systemctl(&["start", "stalwart"]);
     let _ = os::systemctl(&["start", "yunori-mail"]);
     let _ = std::fs::remove_dir_all(&work);
+    result?;
+    started?;
+    // `--import` brings back every message but not the search index: until it
+    // is rebuilt, IMAP SEARCH and JMAP queries find nothing (seen live).
+    println!("Rebuilding the search index in the background…");
+    let mut reindexed = false;
+    for _ in 0..30 {
+        if let Ok(app) = open_app(false, false) {
+            if let Ok(e) = app.engine() {
+                if e.reindex_accounts().await.is_ok() {
+                    reindexed = true;
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    }
+    if !reindexed {
+        println!(
+            "  The engine did not answer; search may miss restored mail until it is reindexed."
+        );
+    }
     println!(
         "Restored. Point MX, A and reverse DNS at this server if it is a new machine, then run: yunori-mail doctor"
     );
+    Ok(())
+}
+
+/// The restore itself, with both services stopped. Stalwart imports only into
+/// an empty store, so the current one is moved aside first and put back if
+/// anything fails; it is deleted only once the import has succeeded.
+fn restore_stopped(p: &Paths, work: &std::path::Path) -> Result<()> {
+    let io = engine_io_dir(p, "import")?;
+    move_dir(&work.join("engine"), &io.join("engine"))?;
+    os::chown_r("stalwart", &io)?;
+    let data = p.stalwart_data();
+    let stamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let aside = data.with_file_name(format!(
+        "{}.pre-restore-{stamp}",
+        data.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    if data.exists() {
+        std::fs::rename(&data, &aside).context("moving the current mail store aside")?;
+    }
+    let attempt = (|| -> Result<()> {
+        std::fs::create_dir_all(&data)?;
+        crate::store::vault::set_mode(&data, 0o770);
+        os::chown_r("stalwart", &data)?;
+        os::run(
+            "runuser",
+            &[
+                "-u",
+                "stalwart",
+                "--",
+                &p.stalwart_bin().to_string_lossy(),
+                &format!("--config={}", p.stalwart_config().display()),
+                &format!("--import={}", io.join("engine").display()),
+            ],
+        )
+        .context("engine import failed")?;
+        std::fs::copy(work.join("yunori.db"), p.db())?;
+        std::fs::copy(work.join("master.key"), p.master_key())?;
+        Ok(())
+    })();
+    let _ = std::fs::remove_dir_all(&io);
+    match attempt {
+        Ok(()) => {
+            crate::installer::fix_permissions(p);
+            let _ = std::fs::remove_dir_all(&aside);
+            Ok(())
+        }
+        Err(e) => {
+            if aside.exists() {
+                let _ = std::fs::remove_dir_all(&data);
+                std::fs::rename(&aside, &data).context("putting the previous mail store back")?;
+            }
+            Err(e.context("nothing was changed: the previous mail store is back in place"))
+        }
+    }
+}
+
+/// A fresh, private directory the engine (user `stalwart`) can write to.
+fn engine_io_dir(p: &Paths, name: &str) -> Result<std::path::PathBuf> {
+    let root = p.engine_io_dir();
+    std::fs::create_dir_all(&root)?;
+    crate::store::vault::set_mode(&root, 0o700);
+    os::chown_r("stalwart", &root)?;
+    let dir = root.join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir)?;
+    os::chown_r("stalwart", &dir)?;
+    Ok(dir)
+}
+
+/// Rename, or copy then delete when the two are on different filesystems.
+fn move_dir(from: &std::path::Path, to: &std::path::Path) -> Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    os::run(
+        "cp",
+        &["-a", &from.to_string_lossy(), &to.to_string_lossy()],
+    )?;
+    std::fs::remove_dir_all(from)?;
     Ok(())
 }
 

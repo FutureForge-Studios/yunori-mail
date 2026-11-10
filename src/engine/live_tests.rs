@@ -343,6 +343,10 @@ async fn live_engine_end_to_end() {
     let q = engine.queue().await.expect("queue");
     eprintln!("queued messages: {}", q.len());
     engine.reload_settings().await.expect("reload settings");
+    engine
+        .reindex_accounts()
+        .await
+        .expect("reindex accounts (used after a restore)");
     let fp_of = |pem: &str| {
         crate::edge::tls::parse_certs(pem)
             .unwrap()

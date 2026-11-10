@@ -836,6 +836,23 @@ Next from the same scan, not built yet:
 
 ---
 
+
+### End-to-end on real VMs, against Openship and BillionMail (2026-11-10)
+
+Three identical InstaBox VMs; Yunori 0.2.0 installed through the one-line script from a release-shaped mirror, and
+the two competitors installed per their READMEs. Full comparison: [`docs/BENCHMARK.md`](BENCHMARK.md).
+
+- `e2e/vps-e2e.py` (new) drives the installed server through the doors clients use: console setup + TOTP, CSRF,
+  mailboxes/aliases/DNS/audit, 587/465 submission → IMAP with DKIM, inbound on 25, no open relay, no spoofing, JMAP,
+  DAV discovery, autoconfig, the admin surface (eleven encoded-path variants), portal, app passwords, invites, Apple
+  profiles, backup → restore. Final run: see BENCHMARK.md.
+- Found and fixed: an encoded-dot-segment bypass of the edge allowlist that reached Stalwart's web admin (critical);
+  backup unable to run and restore unable to succeed on a real install; unbounded throttle table; owner lockout; TOTP
+  replay; console could reset the engine admin; relay password followed a changed host; IPv6-only bind; open bootstrap
+  listener; non-resumable interrupted first run; sliding portal sessions; audit write races; quota overflow; no
+  graceful shutdown; light unit hardening; and the public install script still on v0.1.0 (no `preflight`).
+- §3 correction (Openship 0.9.11): the mail DB roles now have distinct passwords. The rest of §3 still holds.
+
 ## 15. Sources
 
 - Openship: <https://github.com/oblien/openship> (read-only code review of `main`, 2026-11). DeepWiki: <https://deepwiki.com/oblien/openship/10-email-server>.

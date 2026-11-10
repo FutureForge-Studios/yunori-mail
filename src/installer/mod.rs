@@ -441,6 +441,32 @@ impl Installer {
         let inputs = self.inputs()?;
         let base = format!("http://127.0.0.1:{BOOTSTRAP_PORT}");
 
+        // A first run interrupted after the engine wrote its config but before
+        // its administrator was sealed (lost response, Ctrl-C) can never be
+        // driven: nobody knows that password. Nothing but the bootstrap lives
+        // in the engine yet (it was never configured), so start it over.
+        let configured = self
+            .app
+            .db
+            .get_kv("engine.configured")?
+            .is_some_and(|v| v == "true");
+        if p.stalwart_config().exists()
+            && !configured
+            && self.app.db.get_secret("engine.admin")?.is_none()
+        {
+            self.log(
+                "warn",
+                "bootstrap_engine",
+                "The engine's first run did not finish; starting it again",
+            );
+            std::fs::remove_file(p.stalwart_config())?;
+            if p.stalwart_data().exists() {
+                std::fs::remove_dir_all(p.stalwart_data())?;
+                std::fs::create_dir_all(p.stalwart_data())?;
+                os::chown_r("stalwart", &p.stalwart_data())?;
+            }
+        }
+
         if !p.stalwart_config().exists() {
             let recovery_pw = crate::util::generate_password(32);
             let admin = format!("admin:{recovery_pw}");

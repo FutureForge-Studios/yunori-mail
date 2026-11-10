@@ -73,6 +73,40 @@ pub fn new_totp_secret() -> String {
     Secret::Raw(bytes).to_encoded().to_string()
 }
 
+/// The 30-second time step a code belongs to (current, previous or next), if
+/// it matches. Callers record the step so a code is accepted only once.
+pub fn totp_step(secret_b32: &str, account: &str, code: &str) -> Option<u64> {
+    let code: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
+    if code.len() != 6 {
+        return None;
+    }
+    let totp = totp_for(secret_b32, account).ok()?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let step = now / 30;
+    [step.saturating_sub(1), step, step + 1]
+        .into_iter()
+        .find(|s| crate::util::ct_eq(totp.generate(s * 30).as_bytes(), code.as_bytes()))
+}
+
+impl Db {
+    /// Accept a TOTP time step for an admin only if it is newer than the last
+    /// one accepted: a code (seen over a shoulder or by a phishing proxy)
+    /// cannot be replayed within its validity window.
+    pub fn accept_totp_step(&self, admin_id: &str, step: u64) -> Result<bool> {
+        let key = format!("totp-step:{admin_id}");
+        let last: Option<u64> = self.get_json(&key)?;
+        if last.is_some_and(|l| step <= l) {
+            return Ok(false);
+        }
+        self.set_json(&key, &step)?;
+        Ok(true)
+    }
+}
+
+#[cfg(test)]
 pub fn check_totp(secret_b32: &str, account: &str, code: &str) -> bool {
     let code: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
     code.len() == 6

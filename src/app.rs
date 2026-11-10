@@ -167,9 +167,28 @@ impl App {
     }
 
     /// Sliding-window throttle: true if the key exceeded `max` hits in `window`.
+    ///
+    /// Keys come partly from request bodies, so the table is bounded: long keys
+    /// are cut, stale keys are swept, and once the table is full new keys are
+    /// refused (throttled) rather than allowed to grow memory without limit.
     pub fn throttled(&self, key: &str, max: usize, window: std::time::Duration) -> bool {
+        const MAX_KEY: usize = 200;
+        const SWEEP_AT: usize = 4096;
+        const CAP: usize = 65_536;
+        const STALE: std::time::Duration = std::time::Duration::from_secs(3600);
+        let mut cut = key.len().min(MAX_KEY);
+        while !key.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        let key = &key[..cut];
         let mut t = self.throttle.lock().unwrap();
         let now = Instant::now();
+        if t.len() >= SWEEP_AT && !t.contains_key(key) {
+            t.retain(|_, hits| hits.last().is_some_and(|h| now.duration_since(*h) < STALE));
+            if t.len() >= CAP {
+                return true;
+            }
+        }
         let hits = t.entry(key.to_string()).or_default();
         hits.retain(|h| now.duration_since(*h) < window);
         if hits.len() >= max {

@@ -21,11 +21,63 @@ const ALLOWED_PREFIXES: &[&str] = &[
     "/auth/",
 ];
 
+/// Whether a request path may reach the engine. The path is checked as the
+/// engine will see it: a percent-encoded dot segment (`%2e%2e`, `.%2E`) or an
+/// encoded separator (`%2f`, `%5c`) would otherwise be resolved *after* this
+/// check (by the URL parser or by the engine) and escape the allowlist into
+/// Stalwart's web admin and management API.
 pub fn is_proxied(path: &str) -> bool {
-    !path.contains("..")
+    path.starts_with('/')
+        && segments_are_plain(path)
         && ALLOWED_PREFIXES
             .iter()
             .any(|p| path == p.trim_end_matches('/') || path.starts_with(p))
+}
+
+/// Every segment, decoded as many times as anything downstream might decode
+/// it, is a plain name: not `.`/`..`, and without `/`, `\` or control bytes.
+fn segments_are_plain(path: &str) -> bool {
+    if path.contains('\\') {
+        return false;
+    }
+    path.split('/').all(|seg| {
+        let mut cur = seg.as_bytes().to_vec();
+        for _ in 0..4 {
+            let next = percent_decode(&cur);
+            if next.contains(&b'/')
+                || next.contains(&b'\\')
+                || next.iter().any(|b| *b < 0x20 || *b == 0x7f)
+            {
+                return false;
+            }
+            if next == b"." || next == b".." {
+                return false;
+            }
+            if next == cur {
+                break;
+            }
+            cur = next;
+        }
+        true
+    })
+}
+
+fn percent_decode(s: &[u8]) -> Vec<u8> {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < s.len() {
+        if s[i] == b'%' && i + 2 < s.len() {
+            if let (Some(h), Some(l)) = (hex(s[i + 1]), hex(s[i + 2])) {
+                out.push(h << 4 | l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(s[i]);
+        i += 1;
+    }
+    out
 }
 
 const HOP_BY_HOP: &[&str] = &[
@@ -88,7 +140,13 @@ pub async fn forward(
         .map(|p| p.as_str())
         .unwrap_or("/")
         .to_string();
-    let url = format!("{}{}", engine_url.trim_end_matches('/'), path_q);
+    // Parse once, re-check the path the URL parser normalised, and send that
+    // same URL: what is checked is exactly what the engine receives.
+    let url = match reqwest::Url::parse(&format!("{}{}", engine_url.trim_end_matches('/'), path_q))
+    {
+        Ok(u) if is_proxied(u.path()) => u,
+        _ => return not_found(),
+    };
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes())
         .unwrap_or(reqwest::Method::GET);
     let mut headers = HeaderMap::new();
@@ -105,7 +163,7 @@ pub async fn forward(
     }
     let body = reqwest::Body::wrap_stream(req.into_body().into_data_stream());
     let upstream = client()
-        .request(method, &url)
+        .request(method, url)
         .headers(headers)
         .body(body)
         .send()
@@ -124,6 +182,12 @@ pub async fn forward(
             bad_gateway()
         }
     }
+}
+
+fn not_found() -> Response<Body> {
+    let mut r = Response::new(Body::from("Not found"));
+    *r.status_mut() = StatusCode::NOT_FOUND;
+    r
 }
 
 fn bad_gateway() -> Response<Body> {
@@ -150,6 +214,38 @@ mod tests {
         assert!(!is_proxied("/login"));
         assert!(!is_proxied("/dav/../admin"));
         assert!(!is_proxied("/api/schema"));
+    }
+
+    #[test]
+    fn encoded_traversal_never_passes() {
+        for p in [
+            "/dav/%2e%2e/admin",
+            "/dav/.%2E/login",
+            "/dav/%2E./login",
+            "/dav/%2e/admin",
+            "/jmap/%2e%2e/api/settings",
+            "/.well-known/jmap/%2e%2e/%2e%2e/admin",
+            "/dav/%252e%252e/admin",
+            "/dav/a%2fb",
+            "/dav/a%2F..%2Fadmin",
+            "/dav/a%5c..%5cadmin",
+            "/dav/a\\..\\admin",
+            "/dav/%00",
+            "/dav/./x",
+        ] {
+            assert!(!is_proxied(p), "{p} must not be proxied");
+        }
+        assert!(is_proxied("/dav/cal/ana%40example.com/default"));
+        assert!(is_proxied("/jmap/download/a/b/name%20with%20space.pdf"));
+        assert!(is_proxied("/dav/card/x/file%25.vcf"));
+    }
+
+    #[test]
+    fn decoder() {
+        assert_eq!(percent_decode(b"%2e%2E"), b"..");
+        assert_eq!(percent_decode(b"a%"), b"a%");
+        assert_eq!(percent_decode(b"a%2"), b"a%2");
+        assert_eq!(percent_decode(b"%zz"), b"%zz");
     }
 
     #[test]
