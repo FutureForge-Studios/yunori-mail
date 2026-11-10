@@ -616,3 +616,64 @@ async fn live_alert_email(engine: &StalwartEngine) {
         .expect("delete sender");
     eprintln!("alert email delivered and read back over JMAP");
 }
+
+/// A real engine in normal mode for other live tests (same ports, so run
+/// live tests one at a time): bootstrap → recovery → normal, as above.
+pub(crate) struct LiveEngine {
+    pub engine: StalwartEngine,
+    pub admin_user: String,
+    pub admin_secret: String,
+    _process: Guard,
+}
+
+pub(crate) const LIVE_HOST: &str = HOST;
+pub(crate) const LIVE_DOMAIN: &str = DOMAIN;
+pub(crate) const LIVE_HTTP_PORT: u16 = HTTP_PORT;
+
+/// `None` when `YUNORI_STALWART_BIN` is not set.
+pub(crate) async fn boot_live_engine() -> Option<LiveEngine> {
+    let paths = root()?;
+    let recovery_pw = "live-recovery-0123456789abcdef";
+    let prov = StalwartProvisioner::new(
+        &format!("http://127.0.0.1:{BOOT_PORT}"),
+        "admin",
+        recovery_pw,
+    );
+    let child =
+        EngineChild::spawn(&paths, &format!("admin:{recovery_pw}"), BOOT_PORT, false).unwrap();
+    prov.wait_ready(Duration::from_secs(60))
+        .await
+        .expect("bootstrap listener");
+    let boot = prov
+        .bootstrap(
+            HOST,
+            DOMAIN,
+            &format!("{}/", paths.stalwart_data().display()),
+            &format!("{}/", paths.stalwart_logs().display()),
+        )
+        .await
+        .expect("x:Bootstrap/set");
+    child.stop().unwrap();
+    let child =
+        EngineChild::spawn(&paths, &format!("admin:{recovery_pw}"), BOOT_PORT, true).unwrap();
+    prov.wait_ready(Duration::from_secs(60))
+        .await
+        .expect("recovery listener");
+    prov.configure(HOST, HTTP_PORT)
+        .await
+        .expect("configure listeners");
+    child.stop().unwrap();
+    let process = Guard(Some(spawn_normal(&paths)));
+    let engine = StalwartEngine::new(
+        &format!("http://127.0.0.1:{HTTP_PORT}"),
+        &boot.admin_user,
+        &boot.admin_secret,
+    );
+    wait_reachable(&engine).await;
+    Some(LiveEngine {
+        engine,
+        admin_user: boot.admin_user.clone(),
+        admin_secret: boot.admin_secret.to_string(),
+        _process: process,
+    })
+}

@@ -902,6 +902,10 @@ impl Engine for StalwartEngine {
             .await?;
         set_outcome(&r[0], SetOp::Destroy, id).map(|_| ())
     }
+
+    fn user_mail(&self, creds: &UserCreds) -> std::sync::Arc<dyn super::mail::UserMail> {
+        std::sync::Arc::new(super::mail::JmapUserMail::new(self.client.clone(), creds))
+    }
 }
 
 const SIEVE_USING: [&str; 2] = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:sieve"];

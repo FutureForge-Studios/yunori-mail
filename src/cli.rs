@@ -251,6 +251,9 @@ pub enum MailboxCmd {
     },
     /// Set a new generated password.
     Passwd { address: String },
+    /// Copy mail from another IMAP server (Gmail, Microsoft 365, …) into a
+    /// mailbox here. Resumable: running it again copies only what is new.
+    Migrate(crate::migrate::cli::MigrateArgs),
     Remove {
         address: String,
         #[arg(long)]
@@ -1714,6 +1717,9 @@ fn split_address(address: &str) -> Result<(String, String)> {
 
 async fn mailbox_cmd(c: MailboxCmd) -> Result<()> {
     let app = open_app(false, false)?;
+    if let MailboxCmd::Migrate(args) = c {
+        return crate::migrate::cli::run(&app, args).await;
+    }
     let e = app.engine()?;
     match c {
         MailboxCmd::List { json } => {
@@ -1905,6 +1911,7 @@ async fn mailbox_cmd(c: MailboxCmd) -> Result<()> {
                 .audit("cli", "mailbox.delete", Some(&a.address), None)?;
             println!("Deleted {}.", a.address);
         }
+        MailboxCmd::Migrate(_) => unreachable!("handled above"),
     }
     Ok(())
 }

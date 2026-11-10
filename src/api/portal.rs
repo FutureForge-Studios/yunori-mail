@@ -20,7 +20,7 @@ const PORTAL_TTL: Duration = Duration::from_secs(30 * 60);
 /// How long a device-profile download link works (once).
 const PROFILE_TTL: Duration = Duration::from_secs(10 * 60);
 
-fn creds_from(app: &AppState, headers: &HeaderMap) -> ApiResult<UserCreds> {
+pub(super) fn creds_from(app: &AppState, headers: &HeaderMap) -> ApiResult<UserCreds> {
     let token = cookie(headers, PORTAL_COOKIE).ok_or_else(ApiError::unauthorized)?;
     let key = sha256_hex(token.as_bytes());
     let mut sessions = app.portal_sessions.lock().unwrap();
@@ -34,7 +34,7 @@ fn creds_from(app: &AppState, headers: &HeaderMap) -> ApiResult<UserCreds> {
     })
 }
 
-fn map_user_err(e: EngineError) -> ApiError {
+pub(super) fn map_user_err(e: EngineError) -> ApiError {
     match e {
         EngineError::Unauthorized => ApiError::unauthorized(),
         other => other.into(),

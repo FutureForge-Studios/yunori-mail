@@ -157,5 +157,23 @@ Live-tested facts (2026-11-10):
   connection from loopback (Yunori's certificate probes count) is closed before the greeting, as a TLS EOF without
   `close_notify`. The client treats a close before the greeting as throttling: it waits 1.2 s and retries, up to
   three times.
+- **Mail import ("Move your mail here")** writes as the user with standard JMAP Mail
+  (`urn:ietf:params:jmap:mail`): upload the raw message to `/jmap/upload/<accountId>/` (`message/rfc822`), then
+  `Email/import` with `mailboxIds`, `keywords` (`$seen`, `$flagged`, `$answered`, `$draft`, …) and `receivedAt`;
+  IMAP then shows the same flags and INTERNALDATE (verified by `src/migrate/live_tests.rs`, which uses the engine
+  as both the old server over IMAP and the new mailbox). JMAP was chosen over IMAP APPEND to the local engine: it
+  needs no TLS hop to our own listener, and it is the API Yunori already speaks. Facts: the session's
+  `maxSizeUpload` is 50 000 000 bytes; a new account's mailboxes are Inbox, Drafts, `Sent Items`,
+  `Deleted Items` and `Junk Mail` (roles inbox/drafts/sent/trash/junk; there is **no Archive** until one is
+  created); IMAP LIST carries SPECIAL-USE attributes; `Mailbox/set` creates **unsubscribed** mailboxes unless
+  `isSubscribed: true` is sent (IMAP apps listing subscriptions would not show them); the engine adds a
+  `$hasnoattachment` keyword of its own.
+- **Acting for a user as the administrator**: signing in as `<user>%<admin>` with the admin's *password* gives a
+  session that is the user's (`username` and `primaryAccounts` are the user's). App passwords cannot be used this
+  way ("App passwords cannot be used for impersonation"). `yunori-mail mailbox migrate` uses it, so an
+  administrator does not need each person's password.
+- An app password can revoke itself (`x:AppPassword/set destroy` authenticated with that same app password). The
+  portal's import job runs on a temporary app password made with the user's credentials and destroys it when the
+  job ends, so it never holds the user's real password past the portal's 30-minute window.
 - JMAP over WebSocket (`/jmap/ws`) is not proxied through the edge (the HTTP proxy cannot carry an upgrade); clients
   use EventSource push, which works.

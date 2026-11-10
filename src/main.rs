@@ -18,6 +18,7 @@ mod edge;
 mod engine;
 mod installer;
 mod jobs;
+mod migrate;
 mod model;
 mod ops;
 mod paths;

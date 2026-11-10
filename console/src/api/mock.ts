@@ -52,6 +52,7 @@ import type {
   VerdictLevel,
 } from "./types";
 import { routeAlerts, seedAlerts, type MockAlerts } from "./mock-alerts";
+import { migrateRoute, type MockMigration } from "./mock-migrate";
 
 export type Scenario = "setup" | "signedout" | "certificate" | "installing" | "healthy" | "degraded";
 
@@ -152,6 +153,8 @@ interface DB {
   dnsProviders?: Record<string, MockDnsProvider>;
   /** Alert settings, firing alerts and history (./mock-alerts.ts). */
   alerts?: MockAlerts;
+  /** "Move your mail here" imports per mailbox address (./mock-migrate.ts). */
+  migrations?: Record<string, MockMigration>;
   seq: number;
 }
 
@@ -1229,6 +1232,7 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
       db.rules = { ...db.rules, [address]: rules };
       return [200, rules];
     }
+    if (seg[1] === "migrate") return migrateRoute((db.migrations ??= {}), address, method, path, body, fail);
     if (method === "DELETE" && seg[1] === "app-passwords" && seg[2]) {
       const list = db.appPasswords[address] ?? [];
       if (!list.some((a) => a.id === seg[2])) fail(404, "not_found", "That app password no longer exists.");

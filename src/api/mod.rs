@@ -7,6 +7,7 @@
 pub(crate) mod admin;
 mod alerts;
 mod dns_provider;
+mod migrate;
 mod portal;
 mod session;
 
@@ -297,6 +298,9 @@ pub fn router(app: AppState) -> Router {
         .route("/portal/invite", post(portal::invite_check))
         .route("/portal/invite/accept", post(portal::invite_accept))
         .route("/portal/devices/apple", post(portal::apple_profile))
+        .route("/portal/migrate", get(migrate::status).post(migrate::start))
+        .route("/portal/migrate/test", post(migrate::test))
+        .route("/portal/migrate/cancel", post(migrate::cancel))
         .fallback(|| async { ApiError::not_found("This endpoint") })
         .layer(middleware::from_fn(csrf_guard))
         .with_state(app)

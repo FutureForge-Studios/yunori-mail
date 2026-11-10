@@ -31,6 +31,9 @@ import type {
   LoginRequest,
   Mailbox,
   MailRules,
+  MigrateSource,
+  MigrateStatusResponse,
+  MigrateTestResponse,
   OverviewResponse,
   PortalLoginRequest,
   PortalMe,
@@ -286,4 +289,8 @@ export const portalApi = {
   appleProfile: (body: AppleProfileRequest) => request<AppleProfileResponse>("POST", "/portal/devices/apple", body),
   rules: () => request<MailRules>("GET", "/portal/rules"),
   saveRules: (body: MailRules) => request<MailRules>("PUT", "/portal/rules", body),
+  migrateStatus: () => request<MigrateStatusResponse>("GET", "/portal/migrate"),
+  migrateTest: (body: MigrateSource) => request<MigrateTestResponse>("POST", "/portal/migrate/test", body),
+  migrateStart: (body: MigrateSource) => request<MigrateStatusResponse>("POST", "/portal/migrate", body),
+  migrateCancel: () => request<void>("POST", "/portal/migrate/cancel"),
 };

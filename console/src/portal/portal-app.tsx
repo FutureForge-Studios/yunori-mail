@@ -22,6 +22,7 @@ import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { NotFound } from "@/pages/not-found";
 import { ConnectDevices } from "./devices";
+import { MoveMail } from "./migrate";
 import { MailRulesCard } from "./rules";
 import { PortalWelcome } from "./welcome";
 
@@ -209,6 +210,13 @@ function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void
           <ConnectDevices me={me} onChange={onChange} />
         </Section>
       </div>
+
+      <Section
+        title="Move your mail here"
+        blurb="Bring your mail over from Gmail, Microsoft 365 or another provider — folders, read and starred marks, and dates included."
+      >
+        <MoveMail address={me.address} />
+      </Section>
 
       <Section title="Storage">
         <Meter value={p} label="Mailbox storage" valueText={storageText} />

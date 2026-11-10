@@ -15,11 +15,14 @@ struct State {
     app_passwords: Vec<(String, EAppPassword)>, // (owner address, pw)
     sieve: std::collections::HashMap<(String, String), String>, // (owner, name) → script
     cert_installed: bool,
+    /// (owner, app password id, secret): app passwords sign in, as on Stalwart.
+    app_secrets: Vec<(String, String, String)>,
 }
 
 pub struct MockEngine {
     state: Mutex<State>,
     hostname: String,
+    mail: super::mail::MemoryMail,
 }
 
 impl MockEngine {
@@ -27,6 +30,7 @@ impl MockEngine {
         Self {
             state: Mutex::new(State::default()),
             hostname: hostname.to_string(),
+            mail: super::mail::MemoryMail::new(),
         }
     }
 
@@ -120,6 +124,12 @@ impl MockEngine {
             "engine-admin-secret".into(),
         ));
         id
+    }
+
+    /// Every user's imported mail (tests inspect it).
+    #[cfg(test)]
+    pub fn mail(&self) -> &super::mail::MemoryMail {
+        &self.mail
     }
 
     #[cfg(test)]
@@ -429,7 +439,10 @@ impl Engine for MockEngine {
         let ok = s
             .accounts
             .iter()
-            .any(|(a, pw)| a.address == creds.email && *pw == *creds.password);
+            .any(|(a, pw)| a.address == creds.email && *pw == *creds.password)
+            || s.app_secrets
+                .iter()
+                .any(|(o, _, secret)| *o == creds.email && *secret == *creds.password);
         if ok {
             Ok(())
         } else {
@@ -479,7 +492,10 @@ impl Engine for MockEngine {
             created_at: Some(chrono::Utc::now().to_rfc3339()),
         };
         s.app_passwords.push((creds.email.clone(), p.clone()));
-        Ok((p, crate::util::generate_password(24)))
+        let secret = crate::util::generate_password(24);
+        s.app_secrets
+            .push((creds.email.clone(), p.id.clone(), secret.clone()));
+        Ok((p, secret))
     }
 
     async fn user_delete_app_password(&self, creds: &UserCreds, id: &str) -> EngineResult<()> {
@@ -488,6 +504,8 @@ impl Engine for MockEngine {
         let before = s.app_passwords.len();
         s.app_passwords
             .retain(|(o, p)| !(o == &creds.email && p.id == id));
+        s.app_secrets
+            .retain(|(o, pid, _)| !(o == &creds.email && pid == id));
         if s.app_passwords.len() == before {
             Err(EngineError::NotFound)
         } else {
@@ -525,5 +543,9 @@ impl Engine for MockEngine {
             }
         }
         Ok(())
+    }
+
+    fn user_mail(&self, creds: &UserCreds) -> std::sync::Arc<dyn super::mail::UserMail> {
+        self.mail.for_user(&creds.email)
     }
 }

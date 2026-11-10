@@ -5,7 +5,8 @@
 
 pub mod jmap;
 #[cfg(test)]
-mod live_tests;
+pub(crate) mod live_tests;
+pub mod mail;
 pub mod mock;
 pub mod stalwart;
 
@@ -186,6 +187,8 @@ pub trait Engine: Send + Sync {
         name: &str,
         script: Option<&str>,
     ) -> EngineResult<()>;
+    /// The user's own mail store (JMAP Mail as the user), for importing mail.
+    fn user_mail(&self, creds: &UserCreds) -> std::sync::Arc<dyn mail::UserMail>;
 }
 
 /// Resolve an account's alias list into full addresses given the domain list.

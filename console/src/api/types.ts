@@ -705,6 +705,65 @@ export interface MailRules {
   forwarding: ForwardingRule;
 }
 
+// ── Move your mail here (/portal/migrate*) ──
+/** POST /portal/migrate/test MigrateSource → MigrateTestResponse (signs in to the old server, lists folders).
+ *  400 field: host | port | username | password ; 422 { code: "source_failed" } (could not connect or sign in);
+ *  429 rate_limited. Only port 993 (SSL/TLS) or 143 (STARTTLS); hosts must be on the public internet. */
+export interface MigrateSource {
+  host: string;
+  port: number;
+  username: string;
+  /** The old server's (app) password. Held in memory only, for the test or the import. */
+  password: string;
+  /** POST /portal/migrate only: MigrateFolder ids to copy; absent = the default selection. 400 field: folders */
+  folders?: string[];
+}
+export type MigrateTarget = { kind: "role"; role: "inbox" | "sent" | "drafts" | "trash" | "junk" | "archive" } | { kind: "path"; underInbox: boolean; parts: string[] };
+export interface MigrateFolder {
+  /** The folder's name as the old server spells it — what `folders` names. */
+  id: string;
+  name: string;
+  messages: number;
+  target: MigrateTarget;
+  /** Where it lands here, for people: "Sent", "Inbox / Receipts", "Projects / 2024". */
+  destination: string;
+  /** Selected by default (Gmail's All Mail, Important and Starred are not). */
+  selected: boolean;
+  /** Why it isn't selected by default. */
+  note: string | null;
+}
+export interface MigrateTestResponse {
+  folders: MigrateFolder[];
+}
+export type MigrationState = "running" | "done" | "failed" | "cancelled" | "interrupted";
+export interface MigrationJob {
+  state: MigrationState;
+  dryRun: boolean;
+  /** "me@gmail.com on imap.gmail.com" */
+  source: string;
+  startedAt: string;
+  finishedAt: string | null;
+  currentFolder: string | null;
+  foldersDone: number;
+  foldersTotal: number;
+  messagesTotal: number;
+  messagesCopied: number;
+  /** Already here from an earlier run (nothing is copied twice). */
+  messagesSkipped: number;
+  messagesFailed: number;
+  bytesCopied: number;
+  /** At most 50. */
+  errors: { folder: string | null; message: string }[];
+  /** One sentence once finished. */
+  summary: string | null;
+}
+/** GET /portal/migrate → {job} (the running import, else the last one, else null);
+ *  POST /portal/migrate MigrateSource → 202 {job} (409 conflict when one is running);
+ *  POST /portal/migrate/cancel → 204 (409 when none is running). */
+export interface MigrateStatusResponse {
+  job: MigrationJob | null;
+}
+
 /** POST /portal/password {current, next} → 204 */
 export interface PortalPasswordRequest {
   current: string;

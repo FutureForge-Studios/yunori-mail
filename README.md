@@ -52,6 +52,15 @@ curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
   as one Sieve script (installed as the user, compiled by the engine before it is saved): an auto-reply with
   optional first/last day, sent at most once a day per sender and marked `Auto-Submitted`; forwarding with or
   without a local copy.
+- **Move your mail here**: in the portal, people bring their old mailbox over from Gmail, Microsoft 365, iCloud,
+  Fastmail, Yahoo or any IMAP server — test the connection, pick folders (Gmail's All Mail/Important/Starred are
+  left out by default), then the server copies in the background with live progress. Inbox, Sent, Drafts, Trash,
+  Junk and Archive land in their special mailboxes, other folders keep their nesting, and read/starred/answered/
+  draft marks and original dates come along. It is read-only on the old server, verified TLS only (993, or 143 with
+  STARTTLS) to public addresses, and resumable: running it again copies only what is new (tracked by folder,
+  UIDVALIDITY and UID, plus Message-ID). The old password and the user's own credentials stay in memory; the job
+  writes as the user through a temporary app password it revokes when done. Admins can do the same in bulk with
+  `yunori-mail mailbox migrate`.
 - **Bulk mailboxes from CSV**: export every mailbox, or import `address[,display_name[,quota_mb]]` from the
   console or `yunori-mail mailbox import` — checked row by row first (dry run), each new person gets an invite
   link (or a generated password, shown once).
@@ -245,6 +254,8 @@ yunori-mail domain dns example.org --publish             # write missing/wrong r
 yunori-mail domain dns example.org --disconnect          # forget the token (records stay)
 yunori-mail mailbox add ana@example.com --name "Ana" --quota-mb 5120
 yunori-mail alias add sales@example.com ana@example.com
+OLD_PW=… yunori-mail mailbox migrate ana@example.com --from-host imap.gmail.com --from-user ana@gmail.com \
+    --password-env OLD_PW [--folders INBOX,Receipts] [--dry-run]   # copy an old mailbox in (resumable)
 yunori-mail certificate status          # automatic HTTPS: state, last attempt, next retry
 sudo yunori-mail certificate renew       # ask the CA now
 sudo yunori-mail setup-token             # a new one-time console setup link
@@ -281,6 +292,8 @@ cargo test                                                       # unit + API in
 cargo test -- --ignored                                          # live DNS tests (needs real outbound DNS)
 YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_engine -- --ignored --nocapture --test-threads=1
                                                                  # end-to-end against a REAL Stalwart (binds :25/465/587/993/4190)
+YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_migrate -- --ignored --nocapture --test-threads=1
+                                                                 # mail import: the real engine as both old server (IMAP) and new mailbox
 YUNORI_ENGINE_ADMIN=user:pass cargo run -- serve --dev --engine-url http://127.0.0.1:18180   # console against a local Stalwart
 cargo clippy --all-targets -- -D warnings && cargo fmt --check
 ```
@@ -305,6 +318,7 @@ Source layout:
 | `src/installer/` | Step machine + OS operations |
 | `src/edge/` | TLS, automatic HTTPS (`certs.rs` decides when, checks first, retries, explains; `acme.rs` talks to the CA), proxy, autoconfig, embedded console |
 | `src/api/` | Console + portal REST API |
+| `src/migrate/` | Mail import: small IMAP client (`imap.rs`), folder plan, resumable copier, bookkeeping (`store.rs`), CLI |
 | `src/store/` | SQLite, vault, audit |
 | `console/` | React SPA in the yunori.email design: tokens synced from the live site (`scripts/sync-yunori-design.mjs`), self-hosted Geist/Fraunces, primitives vendored from the Yunori client (`scripts/sync-design.mjs`) |
 
