@@ -9,6 +9,7 @@ import { DataTable, LoadError, Page, usePageTitle, type Column } from "@/compone
 import { StatusBadge } from "@/components/status";
 import { fmtDate, fmtDateTime, fmtNumber, timeAgo } from "@/lib/format";
 import { useApi } from "@/lib/use-api";
+import { IpAccessSection } from "../ip-access";
 import { useSession } from "../session";
 import { roleLabel } from "../shell";
 
@@ -71,7 +72,7 @@ export default function SecurityPage() {
   ];
 
   return (
-    <Page title="Security" blurb="Who can administer this server, and everything they've done. Secrets and mail contents are never recorded.">
+    <Page title="Security" blurb="Who can administer this server, addresses blocked for failed sign-ins, and everything admins have done. Secrets and mail contents are never recorded.">
       <div className="grid gap-4 lg:grid-cols-3">
         <Card className="lg:col-span-2">
           <SectionLabel>Administrators</SectionLabel>
@@ -123,6 +124,8 @@ export default function SecurityPage() {
           )}
         </Card>
       </div>
+
+      <IpAccessSection />
 
       <div className="mb-3 mt-8 flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">Audit ledger</h2>

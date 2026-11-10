@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { Check as CheckIcon, KeyRound, Lock, Network, ShieldX, HelpCircle, type LucideIcon } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Card, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
@@ -71,6 +72,10 @@ function QueueCard({ queue }: { queue: QueueSummary }) {
           <span className="text-foreground/90">{fmtNumber(queue.total)}</span> queued ·{" "}
           <span className="text-foreground/90">{fmtNumber(queue.deferred)}</span> deferred
           {queue.deferred > 0 && " — retried automatically"}
+          {" · "}
+          <Link to="/console/queue" className="text-foreground/90 underline underline-offset-2 hover:text-foreground">
+            Open the queue
+          </Link>
         </p>
       </div>
       {queue.groups.length > 0 ? (

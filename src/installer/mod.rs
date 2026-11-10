@@ -557,6 +557,15 @@ impl Installer {
                 .unwrap_or_else(|| os::ENGINE.version.to_string()),
         );
         self.app.save_config(&cfg)?;
+        // Ban addresses after repeated failed sign-ins (Stalwart's own default
+        // is far looser and its bans never expire). Idempotent.
+        if crate::ipaccess::ensure_auth_ban_policy(&self.app).await? {
+            self.log(
+                "info",
+                "bootstrap_engine",
+                "Addresses with 20 failed sign-ins in an hour are blocked for a day",
+            );
+        }
 
         if inputs.sending == SendingMode::Relay
             && let Some(r) = &inputs.relay

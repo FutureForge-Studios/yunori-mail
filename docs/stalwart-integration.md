@@ -93,8 +93,10 @@ POP3 is off by default. The edge proxies JMAP/DAV/well-known paths to `127.0.0.1
 | `x:SystemSettings` | `defaultHostname`, `defaultDomainId`, `services` (per-protocol `hostname`/`cleartext`), `proxyTrustedNetworks`, `providerInfo` |
 | `x:Http` (singleton) | `clientIpSource`, `forwardedHops` (edge → Stalwart trust) |
 | `x:Certificate` | `certificate` / `privateKey` as `{"@type":"Text","value":…}`; `SystemSettings.defaultCertificateId` — how Yunori pushes its ACME certificate in |
-| `x:Action` (create-only) | `ReloadSettings`, `ReloadTlsCertificates`, `TroubleshootDmarc`, `ClassifySpam`, `PauseMtaQueue`, `ResumeMtaQueue` |
-| `x:QueuedMessage` | Queue health (`recipients` map with per-recipient status) |
+| `x:Action` (create-only) | `ReloadSettings`, `ReloadTlsCertificates`, `ReloadBlockedIps`, `TroubleshootDmarc`, `ClassifySpam`, `PauseMtaQueue`, `ResumeMtaQueue` (also `ReloadLookupStores`, `UpdateApps`, `InvalidateCaches`, `InvalidateNegativeCaches`) |
+| `x:QueuedMessage` | Queue health and the queue manager (below) |
+| `x:BlockedIp` / `x:AllowedIp` | Blocked addresses and the allowlist (below) |
+| `x:Security` (singleton) | Automatic IP banning thresholds (below) |
 | `x:MtaRoute` (`Relay` variant) | Relay / smarthost mode (P2) |
 
 ## DNS management (`x:DnsServer`, `Domain.dnsManagement`) — not used
@@ -177,3 +179,55 @@ Live-tested facts (2026-11-10):
   job ends, so it never holds the user's real password past the portal's 30-minute window.
 - JMAP over WebSocket (`/jmap/ws`) is not proxied through the edge (the HTTP proxy cannot carry an upgrade); clients
   use EventSource push, which works.
+
+## Outgoing queue (verified live, 2026-11-10)
+
+`src/engine/stalwart_ops.rs`, live test `live_engine_queue_and_login_abuse` (`src/engine/live_queue_tests.rs`).
+
+- `x:QueuedMessage/query` + `/get`. Properties: `returnPath` (envelope sender, `""` for bounces), `recipients`,
+  `nextRetry`, `nextNotify`, `createdAt`, `size`, `priority`, `envId`, `flags` (set: `authenticated`, `dsn`, …),
+  `receivedFromIp`, `receivedViaPort`, `blobId`. Yunori never requests `blobId` (envelope and status only).
+- `recipients` is a **map keyed by address** of `x:QueuedRecipient`: `retryCount`, `retryDue`, `notifyCount`,
+  `notifyDue`, `queueName` (`remote`, …), `flags` (`dsnSent`, `spamPayload`), `orcpt`, `expires` (either
+  `{"@type": "Ttl", "expiresAt"}` or `{"@type": "Attempts", "expiresAttempts"}`; default TTL is 3 days) and
+  `status`: `{"@type": "Scheduled" | "Completed" | "TemporaryFailure" | "PermanentFailure", errorType,
+  errorMessage, errorCommand, responseCode, responseEnhanced, responseMessage, responseHostname}`.
+  `errorType` ∈ `dnsError`, `unexpectedResponse`, `connectionError`, `tlsError`, `daneError`, `mtaStsError`,
+  `rateLimited`, `concurrencyLimited`, `io`, `encryptionError`.
+- What real failures look like: a relay on a closed port → `TemporaryFailure`, `connectionError`,
+  `"I/O error: Connection refused (os error 111)"`, `responseHostname` = the relay host. A domain without MX
+  (`x@nowhere.invalid`) → `PermanentFailure`, `dnsError`, `"no MX record found."`, a DSN to the sender at once; the
+  message stays queued while another recipient is pending. No network → `dnsError` `"…Network is unreachable"`.
+- **Retry now** = `x:QueuedMessage/set` update `{"nextRetry": "2000-01-01T00:00:00Z"}` (what Stalwart's own web
+  admin sends). The attempt follows within a second or two (`retryCount` +1, new `retryDue`). An unknown id →
+  `notUpdated` `notFound`.
+- **Cancel** = `x:QueuedMessage/set` destroy. The message is gone; no DSN is sent. Unknown id → `notFound`.
+- **Pause/resume** = `x:Action` `PauseMtaQueue` / `ResumeMtaQueue`. While paused, a retry-now only moves
+  `nextRetry`; no attempt is made. The state is **in memory only and not readable**: an engine restart resumes
+  the queue. Yunori records the pause (`kv queue.paused`) and re-applies it every minute (`jobs.rs`).
+
+## Blocked and allowed IPs, automatic banning (verified live, 2026-11-10)
+
+- `x:Security` (singleton) holds the banning rules, each a rate `{count, period}` (period in ms) plus a ban
+  duration (ms, `null` = permanent): `authBanRate`/`authBanPeriod` (failed sign-ins), `abuseBanRate`/`…Period`
+  (relaying or failed `RCPT TO`), `loiterBanRate`/`…Period`, `scanBanRate`/`…Period` with `scanBanPaths` (HTTP
+  globs such as `*.php*`, `*/wp-*`). **1.0.3 defaults:** auth 100/day, abuse 35/day, loiter 150/day, scan 30/day,
+  every ban permanent. Changes apply after `x:Action ReloadSettings`.
+- **Yunori sets auth to 20 failures per hour → blocked for 1 day** (`ipaccess::YUNORI_AUTH_BAN`): at install
+  (`bootstrap_engine`) and, for existing servers, on the first start of the service after an upgrade (`jobs.rs`).
+  It is applied only when the engine still has the stock value (or none), and only once (`kv
+  engine.auth_ban_policy = v1`), so a policy chosen by hand is kept. The other three rules keep Stalwart's defaults.
+- Failed IMAP `LOGIN`, SMTP `AUTH` (465) and JMAP/HTTP Basic sign-ins all count. After the threshold the address
+  gets an `x:BlockedIp` `{address, reason: "authFailure", createdAt, expiresAt}` and new connections are dropped
+  during the TLS handshake (HTTP: 403). Over HTTP the address is the one in `X-Forwarded-For` (the edge's real
+  client), so a guessing client is banned, not the edge.
+- **127.0.0.1 is never banned** (it can fail forever), but the rest of 127/8 is: 127.0.0.2 and 127.0.0.3 were
+  banned in the live test. That is how the test produces "non-loopback" sources locally. Yunori's own engine
+  calls come from 127.0.0.1 and are therefore safe from bans.
+- `reason` ∈ `authFailure`, `rcptToFailure`, `loitering`, `portScanning`, `manual`, `other`.
+- **Unblock** = `x:BlockedIp/set` destroy **then `x:Action ReloadBlockedIps`**: without the reload the ban stays in
+  force. `ReloadSettings` alone does not lift it.
+- **Allowlist** = `x:AllowedIp/set` create `{address, reason?}` (`address` is an IP or CIDR; anything else →
+  `invalidPatch` "Failed to parse IpAddrOrMask"). It takes effect after **`ReloadSettings`** (`ReloadBlockedIps`
+  alone does not reload it); removal likewise. An allowlisted address can fail sign-ins without ever being banned.
+  Yunori refuses networks broader than /8 (IPv4) or /16 (IPv6) and canonicalises (`10.0.0.7/24` → `10.0.0.0/24`).

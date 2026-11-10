@@ -107,6 +107,29 @@ pub fn spawn_all(app: Arc<App>) {
     });
     let a = app.clone();
     tokio::spawn(async move {
+        // Every minute: keep a paused queue paused across engine restarts, and
+        // (until it has worked once) apply the sign-in ban policy — the upgrade
+        // path for servers installed before Yunori set it.
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        let mut policy_done = false;
+        loop {
+            crate::mailqueue::reassert_pause(&a).await;
+            if !policy_done {
+                match crate::ipaccess::ensure_auth_ban_policy(&a).await {
+                    Ok(changed) => {
+                        policy_done = true;
+                        if changed {
+                            tracing::info!("sign-in ban policy set on the engine");
+                        }
+                    }
+                    Err(e) => tracing::debug!("sign-in ban policy not applied yet: {e:#}"),
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(20)).await;
         let mut ticks: u64 = 0;
         loop {

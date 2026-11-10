@@ -17,16 +17,16 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
-const BOOT_PORT: u16 = 18181;
-const HTTP_PORT: u16 = 18180;
-const HOST: &str = "mail.live.test";
-const DOMAIN: &str = "live.test";
+pub(super) const BOOT_PORT: u16 = 18181;
+pub(super) const HTTP_PORT: u16 = 18180;
+pub(super) const HOST: &str = "mail.live.test";
+pub(super) const DOMAIN: &str = "live.test";
 
-fn step(msg: &str) {
+pub(super) fn step(msg: &str) {
     eprintln!("\n── {msg}");
 }
 
-fn root() -> Option<Paths> {
+pub(super) fn root() -> Option<Paths> {
     let bin = std::env::var("YUNORI_STALWART_BIN").ok()?;
     let dir = std::env::var("YUNORI_LIVE_DIR")
         .map(std::path::PathBuf::from)
@@ -48,7 +48,7 @@ fn root() -> Option<Paths> {
     Some(paths)
 }
 
-fn spawn_normal(paths: &Paths) -> Child {
+pub(super) fn spawn_normal(paths: &Paths) -> Child {
     let log = std::fs::File::create(paths.stalwart_logs().join("normal.stdout")).unwrap();
     Command::new(paths.stalwart_bin())
         .arg(format!("--config={}", paths.stalwart_config().display()))
@@ -61,7 +61,7 @@ fn spawn_normal(paths: &Paths) -> Child {
         .expect("start engine in normal mode")
 }
 
-async fn wait_reachable(engine: &StalwartEngine) {
+pub(super) async fn wait_reachable(engine: &StalwartEngine) {
     let deadline = Instant::now() + Duration::from_secs(90);
     while !engine.info().await.reachable {
         assert!(
@@ -72,7 +72,7 @@ async fn wait_reachable(engine: &StalwartEngine) {
     }
 }
 
-struct Guard(Option<Child>);
+pub(super) struct Guard(pub(super) Option<Child>);
 impl Drop for Guard {
     fn drop(&mut self) {
         if let Some(c) = self.0.as_mut() {

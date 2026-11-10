@@ -10,6 +10,7 @@
  *   ?mock=setup | signedout | certificate | installing | healthy | degraded
  * (or the dev panel, bottom-left) reseed the data.
  */
+import { queueRoute } from "./mock-queue";
 import type {
   AdminUser,
   Alias,
@@ -1568,6 +1569,9 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
   if (is("GET", "/preflight")) return [200, preflight(db)];
   if (is("GET", "/audit")) return [200, { entries: db.audit, chainOk: true }];
   if (is("GET", "/admins")) return [200, db.admins];
+
+  const queued = queueRoute(db.scenario, method, path, body, (a, t, d) => audit(db, a, t, d ?? null), fail);
+  if (queued) return queued;
 
   fail(404, "not_found", `No mock for ${method} ${path}`);
   return [500];

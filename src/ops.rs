@@ -493,6 +493,7 @@ mod tests {
                     error_type: Some("connectionError".into()),
                     response: None,
                     retry_count: 2,
+                    ..Default::default()
                 },
                 EQueuedRecipient {
                     address: "b@x".into(),
@@ -500,6 +501,7 @@ mod tests {
                     error_type: Some("connectionError".into()),
                     response: None,
                     retry_count: 1,
+                    ..Default::default()
                 },
                 EQueuedRecipient {
                     address: "c@x".into(),
@@ -507,8 +509,10 @@ mod tests {
                     error_type: None,
                     response: None,
                     retry_count: 0,
+                    ..Default::default()
                 },
             ],
+            ..Default::default()
         }];
         let s = summarize_queue(&q, false);
         assert_eq!(s.deferred, 2);

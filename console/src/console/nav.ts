@@ -4,6 +4,7 @@ import {
   Gauge,
   Globe,
   Inbox,
+  ListOrdered,
   MailCheck,
   Send,
   ServerCog,
@@ -47,13 +48,14 @@ export const NAV: NavGroup[] = [
     label: "Delivery",
     items: [
       { to: "/console/sending", label: "Sending", icon: Send, keywords: ["relay", "smarthost", "port 25", "direct", "ses", "postmark"] },
-      { to: "/console/deliverability", label: "Deliverability", icon: MailCheck, keywords: ["queue", "blocklist", "ptr", "dmarc", "spam"] },
+      { to: "/console/deliverability", label: "Deliverability", icon: MailCheck, keywords: ["blocklist", "ptr", "dmarc", "spam"] },
+      { to: "/console/queue", label: "Queue", icon: ListOrdered, keywords: ["outgoing", "deferred", "stuck", "retry", "pause", "bounce"] },
     ],
   },
   {
     label: "Server",
     items: [
-      { to: "/console/security", label: "Security", icon: ShieldCheck, keywords: ["audit", "admins", "2fa", "totp", "ledger"] },
+      { to: "/console/security", label: "Security", icon: ShieldCheck, keywords: ["audit", "admins", "2fa", "totp", "ledger", "blocked", "ban", "ip", "allowlist", "brute force"] },
       { to: "/console/system", label: "System", icon: ServerCog, keywords: ["services", "versions", "certificate", "preflight", "disk", "memory"] },
       { to: "/console/alerts", label: "Alerts", icon: Bell, keywords: ["notifications", "email", "webhook", "ntfy", "monitoring", "warnings"] },
     ],

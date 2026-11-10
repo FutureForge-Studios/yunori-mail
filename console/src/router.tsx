@@ -15,6 +15,7 @@ const MailboxesPage = lazy(() => import("./console/pages/mailboxes"));
 const AliasesPage = lazy(() => import("./console/pages/aliases"));
 const SendingPage = lazy(() => import("./console/pages/sending"));
 const DeliverabilityPage = lazy(() => import("./console/pages/deliverability"));
+const QueuePage = lazy(() => import("./console/pages/queue"));
 const SecurityPage = lazy(() => import("./console/pages/security"));
 const SystemPage = lazy(() => import("./console/pages/system"));
 const AlertsPage = lazy(() => import("./console/pages/alerts"));
@@ -53,6 +54,7 @@ export const router = createBrowserRouter([
           { path: "aliases", element: <AliasesPage /> },
           { path: "sending", element: <SendingPage /> },
           { path: "deliverability", element: <DeliverabilityPage /> },
+          { path: "queue", element: <QueuePage /> },
           { path: "security", element: <SecurityPage /> },
           { path: "system", element: <SystemPage /> },
           { path: "alerts", element: <AlertsPage /> },

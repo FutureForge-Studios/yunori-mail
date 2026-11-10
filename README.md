@@ -61,9 +61,6 @@ curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
   UIDVALIDITY and UID, plus Message-ID). The old password and the user's own credentials stay in memory; the job
   writes as the user through a temporary app password it revokes when done. Admins can do the same in bulk with
   `yunori-mail mailbox migrate`.
-- **Bulk mailboxes from CSV**: export every mailbox, or import `address[,display_name[,quota_mb]]` from the
-  console or `yunori-mail mailbox import` — checked row by row first (dry run), each new person gets an invite
-  link (or a generated password, shown once).
 - **Proactive alerts.** Every 10 minutes Yunori checks for a certificate close to expiry or failing to renew, a mail
   engine that stopped responding, outgoing mail stuck for more than 6 hours, the server's IP on a blocklist, a DNS
   record that used to pass and now fails on public resolvers, a disk over 90% full, and backups older than 7 days.
@@ -74,7 +71,17 @@ curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
     password sealed in the vault), to an ntfy topic, or to a JSON webhook. The webhook URL and token are
     write-only.
   - Firing alerts show on the Overview; the Alerts page has the settings, a test button and the history.
-- **Scriptable CLI**: `--json` on `domain|mailbox|alias list`, `doctor` and `preflight`; `install --dry-run`
+- **A queue manager.** The console's Queue page (and `yunori-mail queue`) lists outgoing mail that hasn't left yet:
+  sender, every recipient's status, the last problem in plain words (sign-in, TLS, network, refused by the
+  recipient, bad address) with what to do, the server's own answer, the next attempt and when delivery gives up.
+  Retry a message (or all) now, cancel one, or pause and resume all outgoing mail. Envelopes only, never content.
+- **Sign-in protection.** Addresses with 20 failed IMAP/SMTP/JMAP sign-ins within an hour are blocked for a day
+  (Stalwart's own default is 100 a day and a block that never expires). The Security page (and `yunori-mail access`)
+  shows what is blocked and why, unblocks, and keeps an allowlist of addresses or networks that are never blocked.
+- **Bulk mailboxes from CSV**: export every mailbox, or import `address[,display_name[,quota_mb]]` from the
+  console or `yunori-mail mailbox import` — checked row by row first (dry run), each new person gets an invite
+  link (or a generated password, shown once).
+- **Scriptable CLI**: `--json` on `domain|mailbox|alias|queue|access list`, `doctor` and `preflight`; `install --dry-run`
   shows exactly what would be downloaded, created and changed, then runs the read-only preflight.
 - **A self-service portal** at `/account` for every mailbox: password, app passwords, all the settings, and
   **Connect your devices**:
@@ -257,6 +264,10 @@ yunori-mail alias add sales@example.com ana@example.com
 OLD_PW=… yunori-mail mailbox migrate ana@example.com --from-host imap.gmail.com --from-user ana@gmail.com \
     --password-env OLD_PW [--folders INBOX,Receipts] [--dry-run]   # copy an old mailbox in (resumable)
 yunori-mail certificate status          # automatic HTTPS: state, last attempt, next retry
+yunori-mail queue list [--json]          # outgoing mail that hasn't left, with the reason in plain words
+yunori-mail queue retry <id>|--all       # try now;  queue delete <id> cancels;  queue pause|resume
+yunori-mail access list [--json]         # addresses blocked after failed sign-ins, and the allowlist
+yunori-mail access unblock 198.51.100.7  # access allow 203.0.113.0/24 --note office;  access remove <addr>
 sudo yunori-mail certificate renew       # ask the CA now
 sudo yunori-mail setup-token             # a new one-time console setup link
 sudo yunori-mail backup                  # encrypted; prints a recovery key once

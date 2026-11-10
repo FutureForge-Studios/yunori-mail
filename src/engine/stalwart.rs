@@ -45,7 +45,7 @@ impl StalwartEngine {
         }
     }
 
-    async fn admin_call(&self, calls: Vec<Call>) -> EngineResult<Vec<Value>> {
+    pub(super) async fn admin_call(&self, calls: Vec<Call>) -> EngineResult<Vec<Value>> {
         self.client.call(&self.admin, calls).await
     }
 
@@ -62,7 +62,7 @@ impl StalwartEngine {
             .ok_or(EngineError::NotFound)
     }
 
-    async fn update_singleton(&self, object: &str, patch: Value) -> EngineResult<()> {
+    pub(super) async fn update_singleton(&self, object: &str, patch: Value) -> EngineResult<()> {
         let id = SINGLETON.to_string();
         let r = self
             .admin_call(vec![Call::new(
@@ -73,7 +73,7 @@ impl StalwartEngine {
         set_outcome(&r[0], SetOp::Update, &id).map(|_| ())
     }
 
-    async fn create_action(&self, action: Value) -> EngineResult<Value> {
+    pub(super) async fn create_action(&self, action: Value) -> EngineResult<Value> {
         let r = self
             .admin_call(vec![Call::new(
                 "x:Action/set",
@@ -174,62 +174,77 @@ pub(crate) fn parse_account(v: &Value) -> Option<EAccount> {
     })
 }
 
-fn parse_queued(v: &Value) -> Option<EQueued> {
+/// Properties of `x:QueuedMessage` Yunori reads (envelope and status only,
+/// never the message itself: `blobId` is not requested).
+pub(super) const QUEUE_PROPS: &[&str] =
+    &["returnPath", "recipients", "nextRetry", "createdAt", "size"];
+
+fn str_of(v: Option<&Value>, key: &str) -> Option<String> {
+    v.and_then(|s| s.get(key))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// One `x:QueuedRecipient` (verified on a live 1.0.3 engine): `status` is
+/// `{"@type": Scheduled|Completed|TemporaryFailure|PermanentFailure, errorType,
+/// errorMessage, responseCode, responseEnhanced, responseMessage,
+/// responseHostname}`, `retryCount`, `retryDue`, and `expires` is
+/// `{"@type": "Ttl", expiresAt}` or `{"@type": "Attempts", expiresAttempts}`.
+fn parse_recipient(addr: &str, r: &Value) -> EQueuedRecipient {
+    let status = r.get("status");
+    let state = match status
+        .and_then(|s| s.get("@type"))
+        .and_then(Value::as_str)
+        .unwrap_or("Scheduled")
+    {
+        "Completed" => RcptState::Completed,
+        "TemporaryFailure" => RcptState::TemporaryFailure,
+        "PermanentFailure" => RcptState::PermanentFailure,
+        _ => RcptState::Scheduled,
+    };
+    let response = status.and_then(|s| {
+        let code = s.get("responseCode").and_then(Value::as_u64);
+        let enhanced = str_of(Some(s), "responseEnhanced");
+        let msg = str_of(Some(s), "responseMessage").or_else(|| str_of(Some(s), "errorMessage"));
+        let parts: Vec<String> = [code.map(|c| c.to_string()), enhanced, msg]
+            .into_iter()
+            .flatten()
+            .collect();
+        (!parts.is_empty()).then(|| parts.join(" "))
+    });
+    let expires = r.get("expires");
+    EQueuedRecipient {
+        address: addr.to_string(),
+        state,
+        error_type: str_of(status, "errorType"),
+        response,
+        retry_count: r.get("retryCount").and_then(Value::as_u64).unwrap_or(0),
+        remote_host: str_of(status, "responseHostname"),
+        next_retry: str_of(Some(r), "retryDue"),
+        expires_at: str_of(expires, "expiresAt"),
+        expires_after_attempts: expires
+            .and_then(|e| e.get("expiresAttempts"))
+            .and_then(Value::as_u64),
+    }
+}
+
+pub(super) fn parse_queued(v: &Value) -> Option<EQueued> {
     let recipients = v
         .get("recipients")
         .and_then(Value::as_object)
-        .map(|m| {
-            m.iter()
-                .map(|(addr, r)| {
-                    let status = r.get("status");
-                    let kind = status
-                        .and_then(|s| s.get("@type"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("Scheduled");
-                    let state = match kind {
-                        "Completed" => RcptState::Completed,
-                        "TemporaryFailure" => RcptState::TemporaryFailure,
-                        "PermanentFailure" => RcptState::PermanentFailure,
-                        _ => RcptState::Scheduled,
-                    };
-                    let response = status.and_then(|s| {
-                        let code = s.get("responseCode").and_then(Value::as_u64);
-                        let msg = s
-                            .get("responseMessage")
-                            .or_else(|| s.get("errorMessage"))
-                            .and_then(Value::as_str);
-                        match (code, msg) {
-                            (Some(c), Some(m)) => Some(format!("{c} {m}")),
-                            (None, Some(m)) => Some(m.to_string()),
-                            (Some(c), None) => Some(c.to_string()),
-                            _ => None,
-                        }
-                    });
-                    EQueuedRecipient {
-                        address: addr.clone(),
-                        state,
-                        error_type: status
-                            .and_then(|s| s.get("errorType"))
-                            .and_then(Value::as_str)
-                            .map(str::to_string),
-                        response,
-                        retry_count: r.get("retryCount").and_then(Value::as_u64).unwrap_or(0),
-                    }
-                })
-                .collect()
-        })
+        .map(|m| m.iter().map(|(a, r)| parse_recipient(a, r)).collect())
         .unwrap_or_default();
     Some(EQueued {
         id: v.get("id")?.as_str()?.to_string(),
-        created_at: v
-            .get("createdAt")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        next_retry: v
-            .get("nextRetry")
-            .and_then(Value::as_str)
-            .map(str::to_string),
+        created_at: str_of(Some(v), "createdAt"),
+        next_retry: str_of(Some(v), "nextRetry"),
         recipients,
+        sender: v
+            .get("returnPath")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        size: v.get("size").and_then(Value::as_u64),
     })
 }
 
@@ -520,7 +535,7 @@ impl Engine for StalwartEngine {
                 Call::new("x:QueuedMessage/query", json!({ "limit": 500 })),
                 Call::new(
                     "x:QueuedMessage/get",
-                    json!({ "#ids": ids_ref(0, "x:QueuedMessage/query"), "properties": ["recipients", "nextRetry", "createdAt"] }),
+                    json!({ "#ids": ids_ref(0, "x:QueuedMessage/query"), "properties": QUEUE_PROPS }),
                 ),
             ])
             .await?;
@@ -906,6 +921,38 @@ impl Engine for StalwartEngine {
     fn user_mail(&self, creds: &UserCreds) -> std::sync::Arc<dyn super::mail::UserMail> {
         std::sync::Arc::new(super::mail::JmapUserMail::new(self.client.clone(), creds))
     }
+
+    // Queue and login-abuse controls live in `stalwart_ops.rs`.
+    async fn queue_retry(&self, ids: &[String]) -> EngineResult<usize> {
+        self.op_queue_retry(ids).await
+    }
+    async fn queue_cancel(&self, id: &str) -> EngineResult<()> {
+        self.op_queue_cancel(id).await
+    }
+    async fn queue_set_paused(&self, paused: bool) -> EngineResult<()> {
+        self.op_queue_set_paused(paused).await
+    }
+    async fn blocked_ips(&self) -> EngineResult<Vec<EBlockedIp>> {
+        self.op_blocked_ips().await
+    }
+    async fn unblock_ip(&self, id: &str) -> EngineResult<()> {
+        self.op_unblock_ip(id).await
+    }
+    async fn allowed_ips(&self) -> EngineResult<Vec<EAllowedIp>> {
+        self.op_allowed_ips().await
+    }
+    async fn allow_ip(&self, address: &str, reason: Option<&str>) -> EngineResult<EAllowedIp> {
+        self.op_allow_ip(address, reason).await
+    }
+    async fn remove_allowed_ip(&self, id: &str) -> EngineResult<()> {
+        self.op_remove_allowed_ip(id).await
+    }
+    async fn auth_ban_policy(&self) -> EngineResult<EAuthBanPolicy> {
+        self.op_auth_ban_policy().await
+    }
+    async fn set_auth_ban_policy(&self, policy: &EAuthBanPolicy) -> EngineResult<()> {
+        self.op_set_auth_ban_policy(policy).await
+    }
 }
 
 const SIEVE_USING: [&str; 2] = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:sieve"];
@@ -1191,6 +1238,52 @@ mod tests {
             Some("connectionError")
         );
         assert_eq!(q.recipients[0].retry_count, 3);
+    }
+
+    #[test]
+    fn parses_a_live_queued_message() {
+        // Verbatim shape from a live 1.0.3 engine (one temporary DNS failure,
+        // one permanent "no MX"), minus `blobId`, which Yunori never asks for.
+        let q = parse_queued(&json!({
+            "createdAt": "2026-11-10T21:55:01Z", "nextRetry": "2026-11-10T21:57:01Z",
+            "returnPath": "bob@live.test", "size": 84, "id": "jn93tqlaaaaa",
+            "recipients": {
+                "b@example.com": {
+                    "retryCount": 1, "retryDue": "2026-11-10T21:57:01Z",
+                    "expires": {"expiresAt": "2026-11-13T21:55:01Z", "@type": "Ttl"},
+                    "queueName": "remote",
+                    "status": {"errorType": "dnsError", "errorMessage": "DNS resolution error: io error: Network is unreachable (os error 101)",
+                               "errorCommand": null, "responseHostname": "example.com", "responseCode": null,
+                               "responseEnhanced": null, "responseMessage": null, "@type": "TemporaryFailure"}
+                },
+                "x@example.org": {
+                    "retryCount": 2, "retryDue": "2026-11-10T22:10:00Z",
+                    "expires": {"expiresAttempts": 10, "@type": "Attempts"},
+                    "status": {"errorType": "unexpectedResponse", "responseHostname": "mx.example.org",
+                               "responseCode": 550, "responseEnhanced": "5.1.1", "responseMessage": "User unknown",
+                               "@type": "PermanentFailure"}
+                }
+            }
+        }))
+        .unwrap();
+        assert_eq!(q.sender.as_deref(), Some("bob@live.test"));
+        assert_eq!(q.size, Some(84));
+        let b = &q.recipients[0];
+        assert_eq!(b.address, "b@example.com");
+        assert_eq!(b.remote_host.as_deref(), Some("example.com"));
+        assert_eq!(b.next_retry.as_deref(), Some("2026-11-10T21:57:01Z"));
+        assert_eq!(b.expires_at.as_deref(), Some("2026-11-13T21:55:01Z"));
+        assert!(
+            b.response
+                .as_deref()
+                .unwrap()
+                .contains("Network is unreachable")
+        );
+        let x = &q.recipients[1];
+        assert_eq!(x.state, RcptState::PermanentFailure);
+        assert_eq!(x.response.as_deref(), Some("550 5.1.1 User unknown"));
+        assert_eq!(x.expires_after_attempts, Some(10));
+        assert_eq!(x.expires_at, None);
     }
 
     #[test]

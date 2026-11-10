@@ -9,6 +9,7 @@ mod alerts;
 mod dns_provider;
 mod migrate;
 mod portal;
+mod queue;
 mod session;
 
 pub use portal::take_profile;
@@ -273,6 +274,15 @@ pub fn router(app: AppState) -> Router {
         )
         .route("/sending", get(admin::get_sending).put(admin::put_sending))
         .route("/deliverability", get(admin::deliverability))
+        .route("/queue", get(queue::get_queue))
+        .route("/queue/retry", post(queue::retry))
+        .route("/queue/pause", post(queue::pause))
+        .route("/queue/resume", post(queue::resume))
+        .route("/queue/{id}", delete(queue::cancel))
+        .route("/security/access", get(queue::get_access))
+        .route("/security/blocked/{id}", delete(queue::unblock))
+        .route("/security/allowed", post(queue::allow))
+        .route("/security/allowed/{id}", delete(queue::disallow))
         .route("/system", get(admin::system))
         .route("/updates/check", post(admin::update_check))
         .route("/audit", get(admin::audit))
@@ -314,5 +324,7 @@ pub fn set_cookie(name: &str, value: &str, max_age_secs: i64, secure: bool) -> S
     )
 }
 
+#[cfg(test)]
+mod queue_tests;
 #[cfg(test)]
 mod tests;

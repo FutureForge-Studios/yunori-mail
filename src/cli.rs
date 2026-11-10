@@ -58,6 +58,12 @@ pub enum Command {
     /// TLS certificate status and renewal.
     #[command(subcommand)]
     Certificate(CertCmd),
+    /// Outgoing mail queue: list, retry, cancel, pause and resume.
+    #[command(subcommand)]
+    Queue(crate::cli_queue::QueueCmd),
+    /// Addresses blocked after failed sign-ins, and the allowlist.
+    #[command(subcommand)]
+    Access(crate::cli_queue::AccessCmd),
     /// Write an encrypted backup of the mail store and Yunori state.
     Backup {
         /// Directory to write the backup into.
@@ -521,6 +527,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         Command::Mailbox(c) => mailbox_cmd(c).await,
         Command::Alias(c) => alias_cmd(c).await,
         Command::Certificate(c) => cert_cmd(c).await,
+        Command::Queue(c) => crate::cli_queue::queue_cmd(c).await,
+        Command::Access(c) => crate::cli_queue::access_cmd(c).await,
         Command::Backup { out } => backup(out).await,
         Command::Restore { file, yes } => restore(file, yes).await,
         Command::Upgrade => upgrade().await,

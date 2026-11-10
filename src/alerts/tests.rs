@@ -292,7 +292,9 @@ fn queued(id: &str, age_hours: i64, state: RcptState, retries: u64) -> EQueued {
             error_type: Some("connectionError".into()),
             response: None,
             retry_count: retries,
+            ..Default::default()
         }],
+        ..Default::default()
     }
 }
 

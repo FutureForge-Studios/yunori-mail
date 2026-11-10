@@ -17,6 +17,10 @@ struct State {
     cert_installed: bool,
     /// (owner, app password id, secret): app passwords sign in, as on Stalwart.
     app_secrets: Vec<(String, String, String)>,
+    queue_paused: bool,
+    blocked: Vec<EBlockedIp>,
+    allowed: Vec<EAllowedIp>,
+    auth_ban: Option<EAuthBanPolicy>,
 }
 
 pub struct MockEngine {
@@ -84,13 +88,33 @@ impl MockEngine {
                 id: "q1".into(),
                 created_at: Some("2026-11-05T09:30:00Z".into()),
                 next_retry: Some("2026-11-05T09:45:00Z".into()),
+                sender: Some(format!("ana@{domain}")),
+                size: Some(18_432),
                 recipients: vec![EQueuedRecipient {
                     address: "partner@outlook.example".into(),
                     state: RcptState::TemporaryFailure,
                     error_type: Some("unexpectedResponse".into()),
                     response: Some("451 4.7.650 The mail server [203.0.113.10] has been temporarily rate limited due to IP reputation".into()),
                     retry_count: 2,
+                    remote_host: Some("outlook-com.olc.protection.outlook.example".into()),
+                    next_retry: Some("2026-11-05T09:45:00Z".into()),
+                    expires_at: Some("2026-11-10T09:30:00Z".into()),
+                    expires_after_attempts: None,
                 }],
+            });
+            s.blocked.push(EBlockedIp {
+                id: "b1".into(),
+                address: "198.51.100.23".into(),
+                reason: "authFailure".into(),
+                created_at: Some("2026-11-05T08:12:00Z".into()),
+                expires_at: Some("2026-11-06T08:12:00Z".into()),
+            });
+            s.blocked.push(EBlockedIp {
+                id: "b2".into(),
+                address: "203.0.113.200".into(),
+                reason: "portScanning".into(),
+                created_at: Some("2026-11-04T22:40:00Z".into()),
+                expires_at: None,
             });
         }
         e
@@ -130,6 +154,11 @@ impl MockEngine {
     #[cfg(test)]
     pub fn mail(&self) -> &super::mail::MemoryMail {
         &self.mail
+    }
+
+    #[cfg(test)]
+    pub fn queue_paused(&self) -> bool {
+        self.state.lock().unwrap().queue_paused
     }
 
     #[cfg(test)]
@@ -547,5 +576,95 @@ impl Engine for MockEngine {
 
     fn user_mail(&self, creds: &UserCreds) -> std::sync::Arc<dyn super::mail::UserMail> {
         self.mail.for_user(&creds.email)
+    }
+
+    async fn queue_retry(&self, ids: &[String]) -> EngineResult<usize> {
+        let mut s = self.state.lock().unwrap();
+        let mut n = 0;
+        for m in s.queue.iter_mut().filter(|m| ids.contains(&m.id)) {
+            n += 1;
+            for r in &mut m.recipients {
+                if matches!(r.state, RcptState::TemporaryFailure | RcptState::Scheduled) {
+                    r.retry_count += 1;
+                }
+            }
+        }
+        if n == 0 && ids.len() == 1 {
+            return Err(EngineError::NotFound);
+        }
+        Ok(n)
+    }
+
+    async fn queue_cancel(&self, id: &str) -> EngineResult<()> {
+        let mut s = self.state.lock().unwrap();
+        let before = s.queue.len();
+        s.queue.retain(|m| m.id != id);
+        if s.queue.len() == before {
+            Err(EngineError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn queue_set_paused(&self, paused: bool) -> EngineResult<()> {
+        self.state.lock().unwrap().queue_paused = paused;
+        Ok(())
+    }
+
+    async fn blocked_ips(&self) -> EngineResult<Vec<EBlockedIp>> {
+        Ok(self.state.lock().unwrap().blocked.clone())
+    }
+
+    async fn unblock_ip(&self, id: &str) -> EngineResult<()> {
+        let mut s = self.state.lock().unwrap();
+        let before = s.blocked.len();
+        s.blocked.retain(|b| b.id != id);
+        if s.blocked.len() == before {
+            Err(EngineError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn allowed_ips(&self) -> EngineResult<Vec<EAllowedIp>> {
+        Ok(self.state.lock().unwrap().allowed.clone())
+    }
+
+    async fn allow_ip(&self, address: &str, reason: Option<&str>) -> EngineResult<EAllowedIp> {
+        let mut s = self.state.lock().unwrap();
+        let entry = EAllowedIp {
+            id: Self::next_id(&mut s, "w"),
+            address: address.to_string(),
+            reason: reason.map(str::to_string),
+            created_at: Some(crate::util::now_rfc3339()),
+            expires_at: None,
+        };
+        s.allowed.push(entry.clone());
+        Ok(entry)
+    }
+
+    async fn remove_allowed_ip(&self, id: &str) -> EngineResult<()> {
+        let mut s = self.state.lock().unwrap();
+        let before = s.allowed.len();
+        s.allowed.retain(|b| b.id != id);
+        if s.allowed.len() == before {
+            Err(EngineError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    async fn auth_ban_policy(&self) -> EngineResult<EAuthBanPolicy> {
+        // Stalwart 1.0.3's defaults until something changes them.
+        let s = self.state.lock().unwrap();
+        Ok(s.auth_ban.clone().unwrap_or(EAuthBanPolicy {
+            rate: Some(crate::ipaccess::STALWART_DEFAULT_RATE),
+            ban_for_ms: None,
+        }))
+    }
+
+    async fn set_auth_ban_policy(&self, policy: &EAuthBanPolicy) -> EngineResult<()> {
+        self.state.lock().unwrap().auth_ban = Some(policy.clone());
+        Ok(())
     }
 }

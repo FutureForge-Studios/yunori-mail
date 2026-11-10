@@ -365,7 +365,7 @@ export const SIGNAL_TARGET: Record<string, string> = {
   port25: "/console/sending",
   blocklists: "/console/deliverability",
   engine: "/console/system",
-  queue: "/console/deliverability",
+  queue: "/console/queue",
 };
 
 function HealthMenu({ health, hostname }: { health: OverviewResponse | null; hostname: string }) {

@@ -5,10 +5,13 @@
 
 pub mod jmap;
 #[cfg(test)]
+mod live_queue_tests;
+#[cfg(test)]
 pub(crate) mod live_tests;
 pub mod mail;
 pub mod mock;
 pub mod stalwart;
+mod stalwart_ops;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -61,15 +64,16 @@ pub struct EAccount {
     pub created_at: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub enum RcptState {
+    #[default]
     Scheduled,
     Completed,
     TemporaryFailure,
     PermanentFailure,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EQueuedRecipient {
     pub address: String,
     pub state: RcptState,
@@ -77,14 +81,62 @@ pub struct EQueuedRecipient {
     pub error_type: Option<String>,
     pub response: Option<String>,
     pub retry_count: u64,
+    /// The remote host that answered (or could not be reached).
+    pub remote_host: Option<String>,
+    pub next_retry: Option<String>,
+    /// When the engine gives up on this recipient (TTL expiry) …
+    pub expires_at: Option<String>,
+    /// … or after how many attempts (attempt-based expiry).
+    pub expires_after_attempts: Option<u64>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EQueued {
     pub id: String,
     pub created_at: Option<String>,
     pub next_retry: Option<String>,
     pub recipients: Vec<EQueuedRecipient>,
+    /// Envelope sender (MAIL FROM); empty for bounces.
+    pub sender: Option<String>,
+    pub size: Option<u64>,
+}
+
+/// An address the engine refuses connections from (Stalwart `x:BlockedIp`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EBlockedIp {
+    pub id: String,
+    pub address: String,
+    /// `authFailure`, `rcptToFailure`, `loitering`, `portScanning`, `manual`, `other`.
+    pub reason: String,
+    pub created_at: Option<String>,
+    /// `None`: blocked until someone unblocks it.
+    pub expires_at: Option<String>,
+}
+
+/// An address or network that is never blocked (Stalwart `x:AllowedIp`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EAllowedIp {
+    pub id: String,
+    pub address: String,
+    pub reason: Option<String>,
+    pub created_at: Option<String>,
+    pub expires_at: Option<String>,
+}
+
+/// "`count` events within `period_ms`".
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BanRate {
+    pub count: u64,
+    pub period_ms: u64,
+}
+
+/// Automatic banning after failed sign-ins (Stalwart `x:Security`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EAuthBanPolicy {
+    /// `None`: failed sign-ins never lead to a ban.
+    pub rate: Option<BanRate>,
+    /// `None`: bans never expire.
+    pub ban_for_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -189,6 +241,27 @@ pub trait Engine: Send + Sync {
     ) -> EngineResult<()>;
     /// The user's own mail store (JMAP Mail as the user), for importing mail.
     fn user_mail(&self, creds: &UserCreds) -> std::sync::Arc<dyn mail::UserMail>;
+
+    // outgoing queue management
+    /// Attempt delivery of these queued messages now. Returns how many were
+    /// still queued (a message delivered meanwhile is not an error, unless it
+    /// was the only one asked for: then `NotFound`).
+    async fn queue_retry(&self, ids: &[String]) -> EngineResult<usize>;
+    /// Cancel delivery: the message leaves the queue without a bounce.
+    async fn queue_cancel(&self, id: &str) -> EngineResult<()>;
+    /// Pause or resume all outbound delivery. The engine keeps this in memory
+    /// only (an engine restart resumes), so Yunori records and re-applies it.
+    async fn queue_set_paused(&self, paused: bool) -> EngineResult<()>;
+
+    // login abuse: blocked and allowed addresses
+    async fn blocked_ips(&self) -> EngineResult<Vec<EBlockedIp>>;
+    async fn unblock_ip(&self, id: &str) -> EngineResult<()>;
+    async fn allowed_ips(&self) -> EngineResult<Vec<EAllowedIp>>;
+    /// `address` is an IP or a CIDR network, already validated by the caller.
+    async fn allow_ip(&self, address: &str, reason: Option<&str>) -> EngineResult<EAllowedIp>;
+    async fn remove_allowed_ip(&self, id: &str) -> EngineResult<()>;
+    async fn auth_ban_policy(&self) -> EngineResult<EAuthBanPolicy>;
+    async fn set_auth_ban_policy(&self, policy: &EAuthBanPolicy) -> EngineResult<()>;
 }
 
 /// Resolve an account's alias list into full addresses given the domain list.
