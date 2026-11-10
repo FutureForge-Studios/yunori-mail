@@ -314,9 +314,11 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check
 - `YUNORI_LIVE_ACME=1 cargo test live_acme -- --ignored` talks to Let's Encrypt staging (account + a refused order;
   no validation) to check the ACME conversation and how CA errors are explained.
 - `e2e/vps-smoke.sh` exercises the real engine on a throwaway VPS (including Let's Encrypt).
-- `e2e/vps-e2e.py` drives an installed server end to end (154 checks): every console route and CLI command,
+- `e2e/vps-e2e.py` drives an installed server end to end (185 checks): every console route and CLI command,
   SMTP/IMAP/JMAP mail flow, auto-reply/forwarding/catch-all delivered for real, relay and spoofing refusals, the
-  hidden admin surface, portal, invites, device profiles, CSV import/export, throttling, backup → restore.
+  hidden admin surface, portal, invites, device profiles, CSV import/export, throttling, alerts (webhook and
+  email), the queue (pause, retry, cancel), sign-in bans from a real address, Cloudflare's real API refusing a bad
+  token, mail import guards and a real Gmail sign-in, backup → restore.
 - `e2e/ui-smoke.mjs` drives the real console and portal pages in Chromium on the same server.
 - [`docs/BENCHMARK.md`](docs/BENCHMARK.md): measured side by side with Openship Mail and BillionMail.
 

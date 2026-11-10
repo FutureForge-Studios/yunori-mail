@@ -71,10 +71,7 @@ impl StalwartEngine {
             .map(|id| (id.clone(), json!({ "nextRetry": RETRY_NOW })))
             .collect();
         let r = self
-            .admin_call(vec![Call::new(
-                "x:QueuedMessage/set",
-                json!({ "update": update }),
-            )])
+            .queue_set_while_locked(json!({ "update": update }), ids)
             .await?;
         let mut retried = 0;
         for id in ids {
@@ -90,12 +87,45 @@ impl StalwartEngine {
 
     pub(super) async fn op_queue_cancel(&self, id: &str) -> EngineResult<()> {
         let r = self
-            .admin_call(vec![Call::new(
-                "x:QueuedMessage/set",
-                json!({ "destroy": [id] }),
-            )])
+            .queue_set_while_locked(json!({ "destroy": [id] }), &[id.to_string()])
             .await?;
         set_outcome(&r[0], SetOp::Destroy, id).map(|_| ())
+    }
+
+    /// `x:QueuedMessage/set`, waiting briefly while the engine holds a message
+    /// for a delivery attempt in progress: it refuses changes to a message it
+    /// is delivering (`forbidden`; seen live right after a message is queued).
+    async fn queue_set_while_locked(
+        &self,
+        args: Value,
+        ids: &[String],
+    ) -> EngineResult<Vec<Value>> {
+        let mut attempt = 0;
+        loop {
+            let r = self
+                .admin_call(vec![Call::new("x:QueuedMessage/set", args.clone())])
+                .await?;
+            let locked = ["notUpdated", "notDestroyed"].iter().any(|k| {
+                r[0].get(*k).and_then(Value::as_object).is_some_and(|m| {
+                    ids.iter().any(|id| {
+                        m.get(id)
+                            .and_then(|e| e.get("type"))
+                            .and_then(Value::as_str)
+                            == Some("forbidden")
+                    })
+                })
+            });
+            attempt += 1;
+            if !locked || attempt >= 4 {
+                if locked {
+                    return Err(EngineError::Rejected(
+                        "The engine is delivering this message right now. Try again in a few seconds.".into(),
+                    ));
+                }
+                return Ok(r);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        }
     }
 
     pub(super) async fn op_queue_set_paused(&self, paused: bool) -> EngineResult<()> {

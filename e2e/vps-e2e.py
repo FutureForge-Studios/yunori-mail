@@ -408,6 +408,7 @@ def main():
     portal_lifecycle(host, alice, pw_alice)
     cli_commands(domain, run)
     brute_force(host)
+    operations(edge, host, domain, dom, run, alice, pw_alice)
 
     step("backup → restore keeps the mail")
     out = "/root/yunori-e2e-backups"
@@ -725,6 +726,153 @@ def brute_force(host):
         st, _ = p.api("POST", "/portal/login", {"email": f"nobody@{host}", "password": "wrong"})
         codes.append(st)
     check("portal login throttled after repeated failures", 429 in codes, codes)
+
+
+def operations(edge, host, domain, dom, run, alice, pw_alice):
+    """Alerts, queue, sign-in protection, DNS automation and mail import."""
+    import http.server
+    import threading
+
+    step("alerts: webhook + email, test and check now")
+    got = []
+
+    class Hook(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            got.append(json.loads(self.rfile.read(int(self.headers.get("content-length", 0))) or b"{}"))
+            self.send_response(204)
+            self.end_headers()
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Hook)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    hook = f"http://127.0.0.1:{srv.server_port}/hook"
+    st, r = edge.api("PUT", "/alerts/settings", {"emailEnabled": True, "recipient": f"alice@{domain}",
+                                                  "webhook": {"enabled": True, "kind": "json", "url": hook}})
+    check("a recipient on this server's own domain is refused", st == 400, (st, r))
+    st, r = edge.api("PUT", "/alerts/settings", {"emailEnabled": True, "recipient": "yunori-e2e-ops@gmail.com",
+                                                  "webhook": {"enabled": True, "kind": "json", "url": hook,
+                                                              "token": "hook-secret-e2e"}})
+    check("alert settings saved; webhook URL and token never echoed",
+          st == 200 and "hook-secret-e2e" not in json.dumps(r) and f":{srv.server_port}/hook" not in json.dumps(r), (st, r))
+    st, r = edge.api("POST", "/alerts/test")
+    check("send test alert", st == 200, (st, r))
+    for _ in range(20):
+        if got:
+            break
+        time.sleep(1)
+    check("webhook received the test alert", bool(got), got[:1])
+    st, r = edge.api("GET", "/alerts")
+    check("alert history records the test with per-channel results", st == 200 and r.get("history"), (st, str(r)[:300]))
+    st, r = edge.api("POST", "/alerts/check")
+    check("check now", st == 200, (st, r))
+    st, r = edge.api("GET", "/overview")
+    check("overview carries firing alerts", st == 200 and "alerts" in r, st)
+
+    step("queue: the test alert email to an outside address waits in the queue")
+    # Outbound port 25 is blocked here, so that email stays queued: a real queue to manage.
+    queued = []
+    for _ in range(30):
+        st, r = edge.api("GET", "/queue")
+        queued = (r or {}).get("messages", r if isinstance(r, list) else [])
+        if st == 200 and queued:
+            break
+        time.sleep(2)
+    check("GET /queue lists the waiting message", st == 200 and bool(queued), (st, str(r)[:300]))
+    out = subprocess.run([BIN, "queue", "list", "--json"], capture_output=True, text=True, timeout=120).stdout
+    try:
+        json.loads(out)
+        check("yunori-mail queue list --json", True)
+    except ValueError:
+        check("yunori-mail queue list --json", False, out[:200])
+    st, _ = edge.api("POST", "/queue/pause")
+    check("pause outgoing mail", st in (200, 204), st)
+    st, r = edge.api("GET", "/queue")
+    check("queue reports paused", st == 200 and r.get("paused") is True, str(r)[:200])
+    # Act while paused, so the engine cannot finish (or permanently fail) it meanwhile.
+    if queued:
+        mid = queued[0]["id"]
+        st, r = edge.api("POST", "/queue/retry", {"id": mid})
+        check("retry now", st == 200, (st, r))
+        st, r = edge.api("DELETE", f"/queue/{mid}")
+        check("cancel a queued message", st in (200, 204), (st, r))
+        st, r = edge.api("GET", "/queue")
+        check("cancelled message is gone", st == 200 and all(m["id"] != mid for m in r.get("messages", [])), "")
+    st, _ = edge.api("POST", "/queue/resume")
+    check("resume outgoing mail", st in (200, 204), st)
+    edge.api("PUT", "/alerts/settings", {"emailEnabled": False, "webhook": {"enabled": False, "url": ""}})
+    srv.shutdown()
+
+    step("sign-in protection: bad logins from a real address get it blocked")
+    st, r = edge.api("GET", "/security/access")
+    check("ban policy is Yunori's (20 failures/hour, 1 day)", st == 200 and "20" in json.dumps(r.get("policy", r)), str(r)[:300])
+    v6 = sh("sh", "-c", "ip -6 -o addr show scope global | awk '{print $4}' | cut -d/ -f1 | head -1").strip()
+    if v6:
+        for i in range(22):
+            try:
+                m = imaplib.IMAP4_SSL(v6, 993, ssl_context=CTX, timeout=10)
+                m.login(alice, "definitely-wrong")
+            except Exception:
+                pass
+        blocked = False
+        for _ in range(10):
+            st, r = edge.api("GET", "/security/access")
+            ent = [b for b in r.get("blocked", []) if b.get("address", "").split("/")[0] == v6]
+            if ent:
+                blocked = True
+                break
+            time.sleep(2)
+        check(f"{v6} blocked after repeated failures", blocked, str(r.get("blocked"))[:300])
+        try:
+            imaplib.IMAP4_SSL(v6, 993, ssl_context=CTX, timeout=10).login(alice, pw_alice)
+            check("a blocked address cannot sign in even with the right password", False)
+        except Exception:
+            check("a blocked address cannot sign in even with the right password", True)
+        if blocked:
+            st, _ = edge.api("DELETE", f"/security/blocked/{ent[0]['id']}")
+            check("unblock", st in (200, 204), st)
+            time.sleep(2)
+            try:
+                m = imaplib.IMAP4_SSL(v6, 993, ssl_context=CTX, timeout=10)
+                m.login(alice, pw_alice)
+                m.logout()
+                check("unblocked address signs in again", True)
+            except Exception as e:
+                check("unblocked address signs in again", False, e)
+    st, r = edge.api("POST", "/security/allowed", {"address": "10.0.0.0/4"})
+    check("an over-broad allowlist network is refused", st == 400, (st, r))
+    st, r = edge.api("POST", "/security/allowed", {"address": "203.0.113.7/24", "note": "e2e office"})
+    check("allowlist a network (normalised)", st in (200, 201) and "203.0.113.0/24" in json.dumps(r), (st, r))
+    if st in (200, 201):
+        st, _ = edge.api("DELETE", f"/security/allowed/{r.get('id') or r.get('entry', {}).get('id')}")
+        check("remove the allowlist entry", st in (200, 204), st)
+    out = subprocess.run([BIN, "access", "list", "--json"], capture_output=True, text=True, timeout=60).stdout
+    check("yunori-mail access list --json", out.strip().startswith("{"), out[:120])
+
+    step("DNS automation: talks to the real Cloudflare API")
+    st, r = edge.api("GET", f"/domains/{dom['id']}/dns/provider")
+    check("provider status (not connected)", st == 200, (st, r))
+    st, r = edge.api("PUT", f"/domains/{dom['id']}/dns/provider", {"provider": "cloudflare", "token": "e2e-not-a-real-token-0123456789"})
+    check("a bad token is refused in plain words by Cloudflare's API", st in (400, 422) and "token" in json.dumps(r).lower()
+          and "e2e-not-a-real-token" not in json.dumps(r), (st, r))
+    st, r = edge.api("GET", f"/domains/{dom['id']}/dns/plan")
+    check("no preview without a connected provider", st in (400, 404, 409), (st, r))
+
+    step("Move your mail here: guards, and a real Gmail sign-in attempt")
+    p = Edge(host)
+    p.api("POST", "/portal/login", {"email": alice, "password": pw_alice})
+    st, r = p.api("POST", "/portal/migrate/test", {"host": "127.0.0.1", "port": 993, "username": "x", "password": "y"})
+    check("importing from a loopback/private host is refused", st in (400, 422) and "private" in json.dumps(r), (st, r))
+    st, r = p.api("POST", "/portal/migrate/test", {"host": "imap.gmail.com", "port": 110, "username": "x", "password": "y"})
+    check("only 993 or 143+STARTTLS", st in (400, 422), (st, r))
+    st, r = p.api("POST", "/portal/migrate/test", {"host": "imap.gmail.com", "port": 993,
+                                                   "username": "yunori-e2e-nobody@gmail.com", "password": "wrong-app-password"})
+    msg = json.dumps(r).lower()
+    check("real Gmail: TLS verified, wrong password explained (app-password hint)",
+          st in (400, 401, 422) and ("password" in msg), (st, r))
+    st, r = p.api("GET", "/portal/migrate")
+    check("migration status readable", st == 200, (st, r))
 
 
 if __name__ == "__main__":

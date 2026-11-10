@@ -37,6 +37,18 @@ then exercised locally. Nothing below is from documentation alone; every number 
 - **Neither** offers an end-user out-of-office reply or forwarding without webmail; Yunori 0.2.0 does, in the
   portal.
 
+## Where Yunori now goes further (0.2.0, all exercised on a real install)
+
+| | Yunori | Openship | BillionMail |
+|---|---|---|---|
+| DNS automation | Cloudflare: preview, write only missing/wrong records (never deletes), then verified on public resolvers | Cloudflare auto-apply, gates self-attested | none |
+| Alerts | certificate, engine down, stuck queue, blocklist, DNS drift, disk, stale backups → email (own sender) + webhook/ntfy, one message per change, daily reminder at most | none | none |
+| Queue | list with plain-language reasons, retry, cancel, pause/resume (re-applied after engine restarts) | health only | none |
+| Sign-in bans | 20 failures/hour → 1-day ban (Stalwart's stock: 100/day, forever); blocked list, unblock, allowlist | fail2ban (no UI) | fail2ban on console only |
+| Bring your old mail | Gmail, Microsoft 365, iCloud, Fastmail, Yahoo, any IMAP; resumable, no duplicates, flags and dates kept | none | none |
+| Out-of-office & forwarding | portal, no webmail needed | webmail only | webmail only |
+| Mailbox CSV import/export | dry run, invite links | none | plaintext passwords in export |
+
 ## Yunori defects this exercise found, all fixed in 0.2.0
 
 1. **Critical:** the edge's proxy allowlist checked the raw path, so `/dav/.%2E/login` reached Stalwart's web admin

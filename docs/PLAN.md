@@ -866,6 +866,18 @@ the two competitors installed per their READMEs. Full comparison: [`docs/BENCHMA
   catch-all, auto-reply (once per sender), forward with/without copy, session revocation, login throttling; plus
   `e2e/ui-smoke.mjs` in Chromium against the real server. Both green on the InstaBox VM.
 
+### DNS automation, alerts, queue + sign-in protection, mail import (2026-11-10)
+
+Built in parallel by four agents (one worktree each), merged, then exercised together on the InstaBox VM:
+`e2e/vps-e2e.py` 185/185, `e2e/ui-smoke.mjs` 9/9, live suites (engine, queue/login abuse, migration) green.
+Found on the VM after merging: a queued message the engine is delivering at that moment refuses changes with a
+per-object `forbidden`, which the JMAP layer reported as an authentication failure ("the console could not
+authenticate to the mail engine"). Per-object `forbidden` is now a plain refusal, and queue retry/cancel wait
+briefly for the delivery attempt to finish. Also confirmed against real third parties: Cloudflare's API refuses a
+bad token with our plain-language message; Gmail's IMAP over verified TLS answers a wrong password with the
+app-password hint. Not yet verified: a real Cloudflare zone, a real Gmail/Microsoft 365 import with valid
+credentials, alert email to an outside inbox (outbound port 25 is blocked on the test VM).
+
 ## 15. Sources
 
 - Openship: <https://github.com/oblien/openship> (read-only code review of `main`, 2026-11). DeepWiki: <https://deepwiki.com/oblien/openship/10-email-server>.

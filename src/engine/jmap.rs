@@ -285,7 +285,15 @@ fn set_error(err: &Value) -> EngineError {
         .unwrap_or_default();
     match kind {
         "notFound" => EngineError::NotFound,
-        "forbidden" => EngineError::Unauthorized,
+        // Per object, `forbidden` means "not allowed on this object" (e.g. a
+        // queued message the engine is delivering this very moment), not bad
+        // credentials: the request itself was authenticated. Reporting it as
+        // an authentication failure told admins to check the engine password.
+        "forbidden" => EngineError::Rejected(if desc.is_empty() {
+            "The mail engine did not allow this change right now.".into()
+        } else {
+            desc.to_string()
+        }),
         "objectIsLinked" => {
             // `linkedObjects` lists what still references the object.
             let linked = err
@@ -380,6 +388,15 @@ mod tests {
         match parse_method_responses(v, 1) {
             Err(EngineError::Rejected(m)) => assert!(m.contains("bad")),
             other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn per_object_forbidden_is_not_an_authentication_failure() {
+        let r = json!({ "notUpdated": { "m1": { "type": "forbidden", "description": "Message is locked" } } });
+        match set_outcome(&r, SetOp::Update, "m1") {
+            Err(EngineError::Rejected(m)) => assert_eq!(m, "Message is locked"),
+            other => panic!("{other:?}"),
         }
     }
 
