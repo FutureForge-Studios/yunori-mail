@@ -501,6 +501,7 @@ pub async fn delete_domain(
     e.delete_domain(&id).await?;
     app.db
         .audit(&a.admin.email, "domain.delete", Some(&d.name), None)?;
+    crate::dns_publish::disconnect(&app, &d.name, &a.admin.email)?;
     Ok(StatusCode::NO_CONTENT)
 }
 

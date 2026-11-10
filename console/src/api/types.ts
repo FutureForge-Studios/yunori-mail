@@ -196,6 +196,100 @@ export interface DomainDnsResponse {
   zoneFile: string;
 }
 
+// ── DNS provider automation ───────────────────────────────────────────────
+// GET/PUT/DELETE /domains/:id/dns/provider → DnsProviderStatus (PUT {provider, token?}: token is
+// write-only, blank re-checks the saved one); GET /domains/:id/dns/plan → DnsPlan (read-only at the
+// provider); POST /domains/:id/dns/publish {only?, planId?, dryRun?} → DnsPublishResponse
+// (409 "plan_changed" when the provider changed since the preview).
+
+export interface DnsProviderInfo {
+  id: string;
+  label: string;
+  /** How to create a least-privilege token, in one paragraph. */
+  tokenHelp: string;
+  tokenUrl: string;
+}
+
+export interface DnsPublishSummary {
+  at: string;
+  by: string;
+  created: number;
+  updated: number;
+  failed: number;
+}
+
+export interface DnsProviderConnection {
+  provider: string;
+  label: string;
+  zoneName: string;
+  /** The token itself is never returned. */
+  hasSecret: boolean;
+  connectedAt: string;
+  connectedBy: string;
+  lastPublish: DnsPublishSummary | null;
+}
+
+export interface DnsProviderStatus {
+  domain: string;
+  connected: DnsProviderConnection | null;
+  providers: DnsProviderInfo[];
+}
+
+export interface ConnectDnsProviderRequest {
+  provider: string;
+  token?: string;
+}
+
+/** create/update: Yunori writes it · unchanged: already right · manual: needs a person (Yunori never deletes) · skip: left alone on purpose. */
+export type DnsPlanAction = "create" | "update" | "unchanged" | "manual" | "skip";
+
+export interface DnsPlanItem {
+  id: string;
+  type: DnsRecordType;
+  name: string;
+  required: boolean;
+  action: DnsPlanAction;
+  /** What Yunori writes (create/update) or expects. */
+  value: string;
+  /** What the provider holds now at this name (same kind of record). */
+  current: string[];
+  note?: string;
+}
+
+export interface DnsPlan {
+  domain: string;
+  provider: string;
+  providerLabel: string;
+  zoneName: string;
+  items: DnsPlanItem[];
+  counts: Record<DnsPlanAction, number>;
+  /** Send back with publish so it refuses a stale preview. */
+  planId: string;
+}
+
+export interface PublishDnsRequest {
+  /** Item ids to write (default: every create/update). */
+  only?: string[];
+  planId?: string;
+  dryRun?: boolean;
+}
+
+export interface DnsPublishResult {
+  id: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface DnsPublishResponse extends DnsPlan {
+  dryRun: boolean;
+  results: DnsPublishResult[];
+  created: number;
+  updated: number;
+  failed: number;
+  /** The public-resolver check run right after publishing. */
+  dns?: DomainDnsResponse;
+}
+
 // ── Mailboxes ────────────────────────────────────────────────────────────
 
 export interface Mailbox {

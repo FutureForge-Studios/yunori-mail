@@ -36,7 +36,7 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 | Path | What |
 |---|---|
 | `src/engine/` | `Engine` trait, Stalwart JMAP adapter (`stalwart.rs`), in-memory mock, live tests |
-| `src/dns/` | Expected record set (`records.rs`), zone parser, public-resolver checks, PTR/FCrDNS, DNSBLs |
+| `src/dns/` | Expected record set (`records.rs`), zone parser, public-resolver checks, PTR/FCrDNS, DNSBLs; `provider/` DNS-provider API (Cloudflare) + publish plan, driven by `src/dns_publish.rs` |
 | `src/rules.rs` | Portal auto-reply + forwarding → one user-owned Sieve script (settings embedded, strings escaped) |
 | `src/csv.rs` | RFC 4180 CSV for mailbox import/export (formula-safe export) |
 | `src/relay.rs` | Relay provider rules (Amazon SES region→host, Easy DKIM, MAIL FROM; Resend DKIM + `send.`) |
@@ -57,6 +57,9 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
   `hasPassword`/`hasSecret` only.
 - **DNS and PTR are verified against public resolvers**, never self-attested. New records join
   `dns::records::expected_records` and get an evaluation branch.
+- **DNS-provider writes go through `dns_publish`** (preview plan first; `DnsProvider` has no delete, so records are
+  only created or rewritten in place) and are followed by the public-resolver check. The provider token is sealed
+  (`dns_provider.<domain>.token`) and never returned, logged or audited.
 - **Certificates only go through `edge::certs::ensure`** (never `acme::order` directly): it holds the cross-process
   lock, the backoff and the staging rehearsal that keep Let's Encrypt's production rate limits safe. Every failure
   becomes a `CertProblem` with a summary and a remedy a person can act on.

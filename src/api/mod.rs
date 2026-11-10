@@ -5,6 +5,7 @@
 //! of SameSite=Strict cookies). Errors are `{ "error": { code, message, field? } }`.
 
 pub(crate) mod admin;
+mod dns_provider;
 mod portal;
 mod session;
 
@@ -242,6 +243,14 @@ pub fn router(app: AppState) -> Router {
         )
         .route("/domains/{id}/dns", get(admin::domain_dns))
         .route("/domains/{id}/dns/check", post(admin::domain_dns_check))
+        .route(
+            "/domains/{id}/dns/provider",
+            get(dns_provider::get_provider)
+                .put(dns_provider::put_provider)
+                .delete(dns_provider::delete_provider),
+        )
+        .route("/domains/{id}/dns/plan", get(dns_provider::plan))
+        .route("/domains/{id}/dns/publish", post(dns_provider::publish))
         .route(
             "/mailboxes",
             get(admin::list_mailboxes).post(admin::create_mailbox),

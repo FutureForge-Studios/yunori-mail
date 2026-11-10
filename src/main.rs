@@ -12,6 +12,7 @@ mod checks;
 mod cli;
 mod csv;
 mod dns;
+mod dns_publish;
 mod edge;
 mod engine;
 mod installer;

@@ -1070,3 +1070,5 @@ async fn mailboxes_export_and_import_as_csv() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
     assert_eq!(b["error"]["field"], "csv");
 }
+
+mod dns_provider;

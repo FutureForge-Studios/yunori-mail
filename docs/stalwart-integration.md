@@ -97,6 +97,28 @@ POP3 is off by default. The edge proxies JMAP/DAV/well-known paths to `127.0.0.1
 | `x:QueuedMessage` | Queue health (`recipients` map with per-recipient status) |
 | `x:MtaRoute` (`Relay` variant) | Relay / smarthost mode (P2) |
 
+## DNS management (`x:DnsServer`, `Domain.dnsManagement`) — not used
+
+Stalwart 1.0.3 can publish DNS itself: an `x:DnsServer` object (tagged union, ~70 providers: `Cloudflare`, `Route53`,
+`Hetzner`, `Tsig` (RFC 2136), …; `secret` is an `x:SecretKey` such as `{"@type": "Value", "secret": "…"}`) and
+`Domain.dnsManagement = {"@type": "Automatic", "dnsServerId", "origin", "publishRecords": {"mx": true, …}}` with
+`DnsRecordType` values `dkim tlsa spf mx dmarc srv mtaSts tlsRpt caa autoConfig autoConfigLegacy autoDiscover`.
+Verified live (2026-11-10, `src/dns/provider/live.rs`, `cargo test live_dns_management -- --ignored --nocapture`):
+
+| Finding | Consequence for Yunori |
+|---|---|
+| `x:DnsServer/get` masks the secret (`"secret": "****"`). | Write-only, as Yunori's own vault. |
+| Switching a domain to `Automatic` immediately queues an `x:Task` `{"@type": "DnsManagement", "updateRecords": …}` that calls the provider's fixed public endpoint. | It cannot be pointed at a test double; nothing to preview first. |
+| It **sets whole RRsets** ("Failed to set DNS RRSet for live.test./MX"), and with only `mx`+`spf` selected it also touched the host-name SPF (`mail.<d>/TXT`). | Replacing an RRset deletes other records of that name and type (e.g. a second MX): against Yunori's "never delete" rule. |
+| It publishes Stalwart's own values: DMARC `p=reject`, no relay `include:`, no relay CNAMEs, no host A/AAAA. | Differs from `dns::records::expected_records` (DMARC ladder, relay rows, host rows). |
+| Failures surface only as the task's `status: {"@type": "Retry", "failureReason": "<provider JSON>"}`, retried later. | No per-record result a person can act on. |
+
+So Yunori calls the provider's API itself (`src/dns/provider/`, Cloudflare first): preview diff, writes only what is
+missing or wrong, never deletes, then the public-resolver check. Domains stay `dnsManagement: Manual`. The cost:
+Stalwart's automatic DKIM rotation needs Automatic DNS, so rotation remains a guided/manual flow for now (a later
+option is handing Stalwart a provider limited to `publishRecords: {dkim}`, once its RRset behaviour for selector
+names is checked).
+
 ## Autoconfig
 
 Stalwart's own autoconfig (`legacy_autoconfig.rs`) uses the bare domain as `displayShortName` and offers

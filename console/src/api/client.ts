@@ -14,6 +14,11 @@ import type {
   Domain,
   DomainDnsResponse,
   CertificateInfo,
+  ConnectDnsProviderRequest,
+  DnsPlan,
+  DnsProviderStatus,
+  DnsPublishResponse,
+  PublishDnsRequest,
   FirstMailboxRequest,
   FirstMailboxResponse,
   ImportMailboxesRequest,
@@ -218,6 +223,13 @@ export const api = {
   deleteDomain: (domainId: string) => request<void>("DELETE", `/domains/${id(domainId)}`),
   dns: (domainId: string) => request<DomainDnsResponse>("GET", `/domains/${id(domainId)}/dns`),
   checkDns: (domainId: string) => request<DomainDnsResponse>("POST", `/domains/${id(domainId)}/dns/check`),
+  dnsProvider: (domainId: string) => request<DnsProviderStatus>("GET", `/domains/${id(domainId)}/dns/provider`),
+  connectDnsProvider: (domainId: string, body: ConnectDnsProviderRequest) =>
+    request<DnsProviderStatus>("PUT", `/domains/${id(domainId)}/dns/provider`, body),
+  disconnectDnsProvider: (domainId: string) => request<DnsProviderStatus>("DELETE", `/domains/${id(domainId)}/dns/provider`),
+  dnsPlan: (domainId: string) => request<DnsPlan>("GET", `/domains/${id(domainId)}/dns/plan`),
+  publishDns: (domainId: string, body: PublishDnsRequest) =>
+    request<DnsPublishResponse>("POST", `/domains/${id(domainId)}/dns/publish`, body),
 
   mailboxes: (domainId?: string) => request<Mailbox[]>("GET", `/mailboxes${q({ domainId })}`),
   createMailbox: (body: CreateMailboxRequest) => request<CreateMailboxResponse>("POST", "/mailboxes", body),

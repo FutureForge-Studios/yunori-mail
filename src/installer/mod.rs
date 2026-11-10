@@ -371,6 +371,12 @@ impl Installer {
 
     async fn host_record(&self) -> Result<Outcome> {
         let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
+        // With a connected DNS provider, publish the host record first.
+        match crate::dns_publish::publish_host_record(&self.app, "install").await {
+            Ok(Some(msg)) => self.log("info", "host_record", &msg),
+            Ok(None) => {}
+            Err(e) => self.log("warn", "host_record", &format!("DNS provider: {e}")),
+        }
         let c = checks::check_host_record(
             &cfg.hostname,
             cfg.public_ipv4.as_deref(),
@@ -693,6 +699,29 @@ impl Installer {
             .into_iter()
             .find(|d| d.name == cfg.primary_domain)
             .ok_or_else(|| anyhow!("the primary domain is missing from the engine"))?;
+        // With a connected DNS provider, publish what is missing or wrong first.
+        let mut published = false;
+        if crate::dns_publish::link(&self.app, &domain.name)?.is_some() {
+            let req = crate::dns_publish::PublishRequest {
+                only: None,
+                plan_id: None,
+                dry_run: false,
+                check: false,
+            };
+            match crate::dns_publish::publish(&self.app, &domain, req, "install").await {
+                Ok(o) => {
+                    let s = crate::dns_publish::sentence(&o);
+                    ui.info(&s);
+                    self.log("info", "dns", &s);
+                    published = o.failed == 0;
+                }
+                Err(e) => {
+                    let s = format!("DNS provider: {e}");
+                    ui.info(&s);
+                    self.log("warn", "dns", &s);
+                }
+            }
+        }
         let dns = ops::domain_dns(&self.app, &domain, true).await?;
         ui.records(&dns.records);
         let failing: Vec<&crate::model::DnsRecord> = dns
@@ -709,12 +738,21 @@ impl Installer {
                 .iter()
                 .map(|r| format!("{} {}", r.rtype, r.name))
                 .collect();
-            Ok(Outcome::Waiting(format!(
-                "Publish {} record{} at your DNS provider: {}.",
-                failing.len(),
-                if failing.len() == 1 { "" } else { "s" },
-                names.join(", ")
-            )))
+            Ok(Outcome::Waiting(if published {
+                format!(
+                    "Published through your DNS provider; waiting for public resolvers to see {} record{}: {}.",
+                    failing.len(),
+                    if failing.len() == 1 { "" } else { "s" },
+                    names.join(", ")
+                )
+            } else {
+                format!(
+                    "Publish {} record{} at your DNS provider: {}.",
+                    failing.len(),
+                    if failing.len() == 1 { "" } else { "s" },
+                    names.join(", ")
+                )
+            }))
         }
     }
 

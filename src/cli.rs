@@ -125,6 +125,13 @@ pub struct InstallArgs {
     /// Yunori client origin for "Open in Yunori" links.
     #[arg(long, default_value = crate::app::DEFAULT_CLIENT_ORIGIN)]
     client_origin: String,
+    /// Publish the DNS records through this provider's API (cloudflare), so the
+    /// DNS steps complete themselves. Needs --dns-token-env.
+    #[arg(long, requires = "dns_token_env", value_name = "PROVIDER")]
+    dns_provider: Option<String>,
+    /// Name of an environment variable holding the DNS provider's API token.
+    #[arg(long, requires = "dns_provider", value_name = "VAR")]
+    dns_token_env: Option<String>,
     /// Continue a previous install with its saved answers.
     #[arg(long)]
     resume: bool,
@@ -184,9 +191,26 @@ pub enum DomainCmd {
     Remove {
         name: String,
     },
-    /// Show expected vs published DNS records.
+    /// Show expected vs published DNS records; with a connected DNS provider,
+    /// publish the missing or wrong ones.
     Dns {
         name: String,
+        /// Connect a DNS provider (cloudflare) with a token from --token-env.
+        #[arg(long, value_name = "PROVIDER")]
+        connect: Option<String>,
+        /// Name of an environment variable holding the provider's API token.
+        #[arg(long, requires = "connect", value_name = "VAR")]
+        token_env: Option<String>,
+        /// Forget the connected DNS provider and its token.
+        #[arg(long, conflicts_with_all = ["connect", "publish"])]
+        disconnect: bool,
+        /// Write the records that are missing or wrong at the connected provider
+        /// (never deletes), then check public DNS.
+        #[arg(long)]
+        publish: bool,
+        /// With --publish: show what would change, change nothing.
+        #[arg(long, requires = "publish")]
+        dry_run: bool,
     },
 }
 
@@ -578,7 +602,14 @@ async fn install_dry_run(args: &InstallArgs) -> Result<()> {
             "Your domain: {domain}, mail hostname {hostname}, first mailbox {}@{domain}, sending {sending}.",
             args.first_mailbox
         ),
-        format!("Wait until {hostname} points at this server (checked against public resolvers)."),
+        match &args.dns_provider {
+            Some(prov) => format!(
+                "Check the {prov} token (read-only), publish {hostname}'s A record through it, and wait until public resolvers see it."
+            ),
+            None => format!(
+                "Wait until {hostname} points at this server (checked against public resolvers)."
+            ),
+        },
         format!("Firewall: {firewall}"),
         format!(
             "Download Stalwart {} from {engine_url}\n       verify SHA-256 {engine_sha}, install as {}; apt install unbound dns-root-data; create users stalwart and yunori.",
@@ -598,7 +629,12 @@ async fn install_dry_run(args: &InstallArgs) -> Result<()> {
             "Get a Let's Encrypt certificate for {hostname} (rehearsed on staging first, with backoff)."
         ),
         format!(
-            "Publish DNS records for {domain} (MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT, autoconfig): each one is verified, never assumed."
+            "Publish DNS records for {domain} (MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT, autoconfig){}: each one is verified, never assumed.",
+            if args.dns_provider.is_some() {
+                " through the provider's API, only those missing or wrong, never deleting any"
+            } else {
+                ""
+            }
         ),
         format!("Reverse DNS: this server's IP must point back to {hostname}."),
         format!("Create the first mailbox {}@{domain}.", args.first_mailbox),
@@ -740,6 +776,25 @@ async fn install(args: InstallArgs) -> Result<()> {
         inst.preflight_results = Some(results);
 
         let inputs = gather_inputs(&args, &term, ask_questions, port25_open, ipv4.as_deref())?;
+        // A DNS provider token is checked now (read-only), before anything is installed.
+        if let Some(provider) = &args.dns_provider {
+            let token = read_token_env(args.dns_token_env.as_deref())?;
+            let l = crate::dns_publish::connect(
+                &app,
+                &inputs.domain,
+                provider,
+                Some(&token),
+                "install",
+            )
+            .await
+            .map_err(|e| anyhow!("DNS provider: {e}"))?;
+            println!(
+                "  {} DNS: {} zone {} is connected; the installer publishes the records itself.",
+                term.paint("32", "✓"),
+                provider_label(&l.provider),
+                l.zone_name
+            );
+        }
         if ask_questions {
             print_summary(&term, &inputs, ipv4.as_deref());
             if !confirm("Install with these settings?", true)? {
@@ -1501,16 +1556,149 @@ async fn domain_cmd(c: DomainCmd) -> Result<()> {
             }
             e.delete_domain(&d.id).await?;
             app.db.audit("cli", "domain.delete", Some(&d.name), None)?;
+            crate::dns_publish::disconnect(&app, &d.name, "cli")?;
             println!("Removed {}.", d.name);
         }
-        DomainCmd::Dns { name } => {
+        DomainCmd::Dns {
+            name,
+            connect,
+            token_env,
+            disconnect,
+            publish,
+            dry_run,
+        } => {
             let d = find_domain_id(&app, &name).await?;
+            if disconnect {
+                if crate::dns_publish::disconnect(&app, &d.name, "cli")? {
+                    println!(
+                        "Disconnected the DNS provider for {}. Published records stay as they are.",
+                        d.name
+                    );
+                } else {
+                    println!("No DNS provider was connected for {}.", d.name);
+                }
+                return Ok(());
+            }
+            if let Some(provider) = connect {
+                let token = read_token_env(token_env.as_deref())?;
+                let l = crate::dns_publish::connect(&app, &d.name, &provider, Some(&token), "cli")
+                    .await
+                    .map_err(|e| anyhow!("{e}"))?;
+                println!(
+                    "Connected {} (zone {}). The token is stored encrypted.",
+                    provider_label(&l.provider),
+                    l.zone_name
+                );
+                if !publish {
+                    println!(
+                        "Publish the records with: yunori-mail domain dns {} --publish",
+                        d.name
+                    );
+                    return Ok(());
+                }
+            }
+            if publish {
+                let out = crate::dns_publish::publish(
+                    &app,
+                    &d,
+                    crate::dns_publish::PublishRequest {
+                        only: None,
+                        plan_id: None,
+                        dry_run,
+                        check: !dry_run,
+                    },
+                    "cli",
+                )
+                .await
+                .map_err(|e| anyhow!("{e}"))?;
+                print_plan(&t, &out);
+                println!("\n  {}", crate::dns_publish::sentence(&out));
+                match &out.dns {
+                    Some(dns) => {
+                        println!("\nPublic DNS right now:");
+                        print_records(&t, &dns.records);
+                        println!(
+                            "\nResolvers can take a few minutes to see new records; check again with: yunori-mail domain dns {}",
+                            d.name
+                        );
+                    }
+                    None => println!("Nothing was changed (dry run)."),
+                }
+                if out.failed > 0 {
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
             let dns = ops::domain_dns(&app, &d, true).await?;
             print_records(&t, &dns.records);
             println!("\nZone file:\n{}", dns.zone_file);
+            if crate::dns_publish::link(&app, &d.name)?.is_some() {
+                println!(
+                    "A DNS provider is connected: publish with `yunori-mail domain dns {} --publish`.",
+                    d.name
+                );
+            }
         }
     }
     Ok(())
+}
+
+fn read_token_env(var: Option<&str>) -> Result<String> {
+    match var {
+        Some(v) => std::env::var(v).with_context(|| format!("environment variable {v} is not set")),
+        None if interactive() => Ok(rpassword::prompt_password("  API token (hidden): ")?),
+        None => bail!("pass the token with --token-env VAR (never as an argument)"),
+    }
+}
+
+fn provider_label(id: &str) -> &'static str {
+    crate::dns::provider::info(id)
+        .map(|p| p.label)
+        .unwrap_or("DNS provider")
+}
+
+fn print_plan(t: &Term, out: &crate::dns_publish::PublishOutcome) {
+    use crate::dns::provider::plan::Action;
+    println!(
+        "{} zone {}:",
+        out.preview.provider_label, out.preview.zone_name
+    );
+    for i in &out.preview.items {
+        let (tag, color) = match i.action {
+            Action::Create => ("create", "32"),
+            Action::Update => ("update", "33"),
+            Action::Unchanged => ("ok", "2"),
+            Action::Manual => ("you", "31"),
+            Action::Skip => ("skip", "2"),
+        };
+        let result = out.results.iter().find(|r| r.id == i.id);
+        let mark = match result {
+            Some(r) if r.ok => " ✓".to_string(),
+            Some(r) => format!(" ✗ {}", r.error.as_deref().unwrap_or_default()),
+            None => String::new(),
+        };
+        println!(
+            "  [{}] {:<5} {}{mark}",
+            t.paint(color, &format!("{tag:^6}")),
+            i.rtype,
+            i.name
+        );
+        if i.is_change() {
+            for c in &i.current {
+                println!("           was {}", t.paint("2", c));
+            }
+            println!(
+                "           {} {}",
+                if i.current.is_empty() { "new" } else { "now" },
+                i.value
+            );
+        }
+        if let Some(n) = &i.note
+            && i.action != Action::Unchanged
+        {
+            println!("           {}", t.paint("2", n));
+        }
+    }
 }
 
 fn split_address(address: &str) -> Result<(String, String)> {

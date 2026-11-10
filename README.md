@@ -33,6 +33,12 @@ curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
   - Preflight measures outbound port 25, reverse DNS, blocklists and your hosting provider *before* installing
     anything.
   - The DNS and reverse-DNS steps are **verified against public resolvers**, never "I've done it" buttons.
+- **DNS published for you (Cloudflare).** Connect a scoped API token once per domain (checked with read-only calls,
+  sealed in the vault, never shown again). "Preview changes" lists exactly what would be added or changed; "Publish"
+  writes only the records that are missing or wrong, then runs the same public-resolver check. Yunori never deletes a
+  record: anything that would need a deletion (two conflicting records, a CNAME in the way) is listed for you to fix.
+  Existing SPF senders and DMARC report addresses are kept, and a proxied ("orange cloud") host record is switched
+  to DNS only. The installer can do it too: `--dns-provider cloudflare --dns-token-env VAR`.
 - **Relay mode** for providers that block port 25: Amazon SES, Resend, Postmark, Mailgun, SMTP2GO, Brevo or any
   SMTP relay. DKIM is still signed locally.
   - **Amazon SES:** pick the region and the SMTP host follows. Paste the three Easy DKIM records from SES, and
@@ -95,6 +101,10 @@ sudo YUNORI_VERSION=0.2.0 sh install.sh
 
 # The binary is already here: run the installer directly
 sudo yunori-mail install
+
+# DNS through Cloudflare: the host record and the mail records are published for you (still verified publicly)
+CF_TOKEN=… sudo -E yunori-mail install --domain example.com --admin-email you@gmail.com \
+  --dns-provider cloudflare --dns-token-env CF_TOKEN
 
 # Relay mode (the password is read from an environment variable, never from argv)
 POSTMARK_TOKEN=… sudo -E yunori-mail install --domain example.com --admin-email you@gmail.com \
@@ -219,6 +229,10 @@ yunori-mail preflight [--hostname mail.example.com]   # can this server run mail
 yunori-mail status                       # install progress
 yunori-mail doctor                       # end-to-end health, with fixes
 yunori-mail domain add example.org       # then: yunori-mail domain dns example.org
+CF_TOKEN=… yunori-mail domain dns example.org --connect cloudflare --token-env CF_TOKEN
+yunori-mail domain dns example.org --publish --dry-run   # what would change at the provider
+yunori-mail domain dns example.org --publish             # write missing/wrong records, then check public DNS
+yunori-mail domain dns example.org --disconnect          # forget the token (records stay)
 yunori-mail mailbox add ana@example.com --name "Ana" --quota-mb 5120
 yunori-mail alias add sales@example.com ana@example.com
 yunori-mail certificate status          # automatic HTTPS: state, last attempt, next retry
@@ -277,7 +291,7 @@ Source layout:
 | Path | What |
 |---|---|
 | `src/engine/` | Engine trait, Stalwart JMAP adapter, mock |
-| `src/dns/` | Record set, public-resolver checks, PTR/FCrDNS, DNSBLs |
+| `src/dns/` | Record set, public-resolver checks, PTR/FCrDNS, DNSBLs; `provider/` = DNS-provider API (Cloudflare) and the publish plan |
 | `src/installer/` | Step machine + OS operations |
 | `src/edge/` | TLS, automatic HTTPS (`certs.rs` decides when, checks first, retries, explains; `acme.rs` talks to the CA), proxy, autoconfig, embedded console |
 | `src/api/` | Console + portal REST API |

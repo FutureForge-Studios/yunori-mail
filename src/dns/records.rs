@@ -66,7 +66,7 @@ fn adjust_spf(value: &str, include: Option<&str>) -> String {
     terms.join(" ")
 }
 
-fn adjust_dmarc(value: &str, policy: DmarcPolicy) -> String {
+pub(crate) fn adjust_dmarc(value: &str, policy: DmarcPolicy) -> String {
     let mut parts: Vec<String> = value
         .split(';')
         .map(|p| p.trim().to_string())
@@ -207,14 +207,14 @@ pub fn render_zone(records: &[Expected]) -> String {
         .join("\n")
 }
 
-fn squash(s: &str) -> String {
+pub(crate) fn squash(s: &str) -> String {
     s.split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .to_ascii_lowercase()
 }
 
-fn dkim_key(v: &str) -> Option<String> {
+pub(crate) fn dkim_key(v: &str) -> Option<String> {
     v.split(';').map(str::trim).find_map(|p| {
         p.strip_prefix("p=")
             .map(|k| k.replace(char::is_whitespace, ""))

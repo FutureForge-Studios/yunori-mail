@@ -21,7 +21,16 @@ import type {
   CertState,
   Check,
   CheckStatus,
+  DnsPlan,
+  DnsPlanAction,
+  DnsPlanItem,
+  DnsProviderInfo,
+  DnsProviderStatus,
+  DnsPublishResponse,
+  DnsPublishResult,
+  DnsPublishSummary,
   DnsRecord,
+  DomainDnsResponse,
   Domain,
   InstallLogLine,
   InstallState,
@@ -138,6 +147,8 @@ interface DB {
   invites?: Record<string, { mailboxId: string; expiresAt: string }>;
   /** Auto-reply & forwarding per mailbox address (the real server keeps a Sieve script). */
   rules?: Record<string, MailRules>;
+  /** Connected DNS providers by domain id (the real server seals the token; the mock keeps none). */
+  dnsProviders?: Record<string, MockDnsProvider>;
   seq: number;
 }
 
@@ -554,6 +565,141 @@ function zoneFile(domain: string, records: DnsRecord[]): string {
     lines.push(`${name.padEnd(48)} 3600 IN ${r.type.padEnd(5)} ${value}`);
   }
   return lines.join("\n") + "\n";
+}
+
+// ── DNS provider automation ───────────────────────────────────────────────────
+
+interface MockDnsProvider {
+  provider: string;
+  zoneName: string;
+  connectedAt: string;
+  connectedBy: string;
+  lastPublish: DnsPublishSummary | null;
+}
+
+const DNS_PROVIDERS: DnsProviderInfo[] = [
+  {
+    id: "cloudflare",
+    label: "Cloudflare",
+    tokenHelp:
+      'In Cloudflare, open My Profile → API Tokens → Create Token, start from "Edit zone DNS" and limit it to this domain\'s zone (Zone → DNS → Edit; Zone → Zone → Read).',
+    tokenUrl: "https://dash.cloudflare.com/profile/api-tokens",
+  },
+];
+
+function dnsProviderStatus(db: DB, d: DomainRow): DnsProviderStatus {
+  const c = db.dnsProviders?.[d.id];
+  return {
+    domain: d.name,
+    providers: DNS_PROVIDERS,
+    connected: c ? { ...c, label: DNS_PROVIDERS.find((p) => p.id === c.provider)?.label ?? "DNS provider", hasSecret: true } : null,
+  };
+}
+
+function dnsPlanFor(db: DB, d: DomainRow, c: MockDnsProvider): DnsPlan {
+  const items: DnsPlanItem[] = dnsFor(db, d)
+    .filter((r) => r.type !== "PTR")
+    .map((r): DnsPlanItem => {
+      const base = { id: r.id, type: r.type, name: r.name, required: r.required, value: r.expected };
+      const state = d.published[r.id] ?? "missing";
+      if (r.id === "aaaa") return { ...base, action: "skip", current: [], note: "Optional, and left to you: publish an IPv6 address only once reverse DNS for IPv6 is set too." };
+      if (r.type === "CAA" && state !== "ok")
+        return { ...base, action: "skip", current: [], note: "No CAA records exist, so every certificate authority may already issue for this domain. Nothing to add." };
+      if (state === "ok") return { ...base, action: "unchanged", current: [r.expected] };
+      if (state === "stale") {
+        const current = r.actual.length ? r.actual : ["(an older value)"];
+        if (r.id === "dmarc") return { ...base, action: "update", current, note: "Changes the policy to the DMARC step this server is on. Your report addresses stay." };
+        return { ...base, action: "update", current };
+      }
+      if (r.id === "autodiscover" && d.isPrimary)
+        return {
+          ...base,
+          action: "manual",
+          current: ["A 198.51.100.7"],
+          note: `${r.name} already has an A record, and a CNAME cannot sit beside other records. Remove it at Cloudflare if you no longer need it, then publish again.`,
+        };
+      return { ...base, action: "create", current: [] };
+    });
+  const counts: Record<DnsPlanAction, number> = { create: 0, update: 0, unchanged: 0, manual: 0, skip: 0 };
+  for (const i of items) counts[i.action]++;
+  const changes = items.filter((i) => i.action === "create" || i.action === "update");
+  const planId = String(hashOf(changes.map((i) => `${i.id}:${i.action}`).join("|")));
+  return { domain: d.name, provider: c.provider, providerLabel: "Cloudflare", zoneName: c.zoneName, items, counts, planId };
+}
+
+/** /domains/:id/dns/provider|plan|publish, or null when the path is something else. */
+function dnsProviderRoute(db: DB, d: DomainRow, method: string, seg: string[], body: Body): [number, unknown?] | null {
+  const sub = seg[3];
+  if (sub === "provider") {
+    if (method === "GET") return [200, dnsProviderStatus(db, d)];
+    if (method === "DELETE") {
+      if (db.dnsProviders?.[d.id]) {
+        delete db.dnsProviders[d.id];
+        audit(db, "dns.provider.disconnect", d.name);
+      }
+      return [200, dnsProviderStatus(db, d)];
+    }
+    if (method === "PUT") {
+      const provider = str(body, "provider");
+      const token = str(body, "token").trim();
+      if (!DNS_PROVIDERS.some((p) => p.id === provider)) fail(400, "invalid_request", `Unknown DNS provider '${provider}'.`, "provider");
+      const existing = db.dnsProviders?.[d.id];
+      if (!token && !existing) fail(400, "invalid_request", "Enter the API token.", "token");
+      if (token && (token.length < 20 || /\s/.test(token)))
+        fail(422, "provider_auth", "That does not look like a Cloudflare API token (about 40 letters, digits, - and _). Copy it again from Cloudflare.", "token");
+      if (token.toLowerCase().includes("bad"))
+        fail(422, "provider_auth", "Cloudflare did not accept this token. Check that you copied all of it and that it has not expired or been revoked.", "token");
+      if (token.toLowerCase().includes("nozone"))
+        fail(
+          422,
+          "provider_zone",
+          `This token cannot see a Cloudflare zone for ${d.name}. Check that ${d.name} is on this Cloudflare account and that the token's Zone Resources include it.`,
+          "token",
+        );
+      const actor = db.admins.find((a) => a.id === db.adminId)?.email ?? "owner";
+      db.dnsProviders = {
+        ...(db.dnsProviders ?? {}),
+        [d.id]: { provider, zoneName: d.name, connectedAt: iso(), connectedBy: actor, lastPublish: existing?.lastPublish ?? null },
+      };
+      audit(db, "dns.provider.connect", d.name, `Cloudflare zone ${d.name}`);
+      return [200, dnsProviderStatus(db, d)];
+    }
+  }
+  if (sub === "plan" || sub === "publish") {
+    const c = db.dnsProviders?.[d.id];
+    if (!c) return fail(409, "conflict", `No DNS provider is connected for ${d.name}.`);
+    const plan = dnsPlanFor(db, d, c);
+    if (sub === "plan" && method === "GET") return [200, plan];
+    if (sub === "publish" && method === "POST") {
+      if (typeof body.planId === "string" && body.planId !== plan.planId)
+        fail(409, "plan_changed", "The records at the DNS provider changed since the preview. Review the new preview, then publish.");
+      const only = Array.isArray(body.only) ? (body.only as string[]) : null;
+      const dryRun = body.dryRun === true;
+      const results: DnsPublishResult[] = [];
+      if (!dryRun) {
+        for (const i of plan.items) {
+          if ((i.action !== "create" && i.action !== "update") || (only && !only.includes(i.id))) continue;
+          d.published[i.id] = "ok";
+          results.push({ id: i.id, ok: true });
+        }
+      }
+      const created = results.filter((r) => plan.items.find((i) => i.id === r.id)?.action === "create").length;
+      const updated = results.length - created;
+      let dns: DomainDnsResponse | undefined;
+      if (!dryRun) {
+        if (results.length) {
+          c.lastPublish = { at: iso(), by: c.connectedBy, created, updated, failed: 0 };
+          audit(db, "dns.publish", d.name, `Cloudflare: created ${created}, updated ${updated}, failed 0 (${results.map((r) => r.id).join(", ")})`);
+        }
+        d.dnsCheckedAt = iso();
+        const records = dnsFor(db, d);
+        dns = { domain: d.name, records, checkedAt: d.dnsCheckedAt, zoneFile: zoneFile(d.name, records) };
+      }
+      const out: DnsPublishResponse = { ...plan, dryRun, results, created, updated, failed: 0, ...(dns ? { dns } : {}) };
+      return [200, out];
+    }
+  }
+  return null;
 }
 
 const ORDER: Record<CheckStatus, number> = { fail: 0, warn: 1, unknown: 2, info: 3, pass: 4 };
@@ -1153,6 +1299,8 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     if (!d) fail(404, "not_found", "That domain doesn't exist (any more).");
     const dom = d!;
     if (seg[2] === "dns") {
+      const provided = dnsProviderRoute(db, dom, method, seg, body);
+      if (provided) return provided;
       if (method === "GET" && !seg[3]) {
         const records = dnsFor(db, dom);
         return [200, { domain: dom.name, records, checkedAt: dom.dnsCheckedAt, zoneFile: zoneFile(dom.name, records) }];

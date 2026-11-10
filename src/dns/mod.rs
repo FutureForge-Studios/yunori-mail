@@ -4,6 +4,7 @@
 //! trap). Blocklist queries go through the local resolver instead, because
 //! Spamhaus refuses queries that arrive via public resolvers.
 
+pub mod provider;
 pub mod records;
 pub mod reputation;
 pub mod zone;

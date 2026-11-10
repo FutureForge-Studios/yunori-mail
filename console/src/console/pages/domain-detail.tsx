@@ -15,6 +15,7 @@ import { fmtDateTime, timeAgo } from "@/lib/format";
 import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { useCrumb, useShell } from "../shell";
+import { DnsProviderCard } from "./domain-dns-provider";
 
 interface Loaded {
   domain: Domain | null;
@@ -133,6 +134,16 @@ export default function DomainDetailPage() {
             { value: "all", label: `All ${dns.records.length}` },
             { value: "attention", label: `Needs attention ${attention.length}` },
           ]}
+        />
+      </div>
+
+      <div className="mb-4">
+        <DnsProviderCard
+          domain={domain}
+          onChecked={(fresh) => {
+            setData((d) => (d ? { ...d, dns: fresh } : d));
+            refreshHealth();
+          }}
         />
       </div>
 
