@@ -30,11 +30,12 @@ then exercised locally. Nothing below is from documentation alone; every number 
 ## What the others do that Yunori doesn't (yet)
 
 - **BillionMail:** an email-marketing suite (campaigns, lists, templates, warm-up, open/click analytics), bundled
-  Roundcube webmail, multi-IP sending, CSV mailbox import/export.
-  Webmail is deliberately the Yunori client's job; marketing is out of scope.
-- **Openship:** a `--dry-run` install preview; `--schema`/JSON-stdin on every CLI write; preconfigured fail2ban and
-  postscreen. Stalwart's built-in fail2ban-style auto-ban covers the brute-force case; a dry-run preview and
-  JSON-in CLI are worth adding.
+  Roundcube webmail, multi-IP sending. Webmail is deliberately the Yunori client's job; marketing is out of scope.
+  *CSV mailbox import/export: added in 0.2.0 (with invite links instead of BillionMail's plaintext passwords).*
+- **Openship:** `--schema`/JSON-stdin on every CLI write; preconfigured fail2ban and postscreen.
+  *`install --dry-run` and `--json` list output: added in 0.2.0.*
+- **Neither** offers an end-user out-of-office reply or forwarding without webmail; Yunori 0.2.0 does, in the
+  portal.
 
 ## Yunori defects this exercise found, all fixed in 0.2.0
 

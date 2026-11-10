@@ -143,6 +143,10 @@ pub struct InstallArgs {
     /// ACME directory URL of another certificate authority (default: Let's Encrypt).
     #[arg(long, env = "YUNORI_ACME_DIRECTORY")]
     acme_directory: Option<String>,
+    /// Show everything the installer would download, create and change, run
+    /// the read-only preflight, and stop. Changes nothing.
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -169,7 +173,11 @@ pub struct ServeArgs {
 
 #[derive(Subcommand)]
 pub enum DomainCmd {
-    List,
+    List {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
     Add {
         name: String,
     },
@@ -184,7 +192,32 @@ pub enum DomainCmd {
 
 #[derive(Subcommand)]
 pub enum MailboxCmd {
-    List,
+    List {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Write every mailbox as CSV (address, name, quota, usage, aliases).
+    Export {
+        /// File to write (default: standard output).
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
+    },
+    /// Create mailboxes from CSV: address[,display_name[,quota_mb]] per line.
+    /// Each person gets an invite link to choose their own password.
+    Import {
+        /// CSV file (`-` for standard input).
+        file: std::path::PathBuf,
+        /// Generate passwords instead of invite links (printed once).
+        #[arg(long)]
+        passwords: bool,
+        /// Check every row and report; create nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
     Add {
         address: String,
         #[arg(long)]
@@ -193,9 +226,7 @@ pub enum MailboxCmd {
         quota_mb: Option<u64>,
     },
     /// Set a new generated password.
-    Passwd {
-        address: String,
-    },
+    Passwd { address: String },
     Remove {
         address: String,
         #[arg(long)]
@@ -205,9 +236,18 @@ pub enum MailboxCmd {
 
 #[derive(Subcommand)]
 pub enum AliasCmd {
-    List,
-    Add { alias: String, mailbox: String },
-    Remove { alias: String },
+    List {
+        /// Machine-readable output.
+        #[arg(long)]
+        json: bool,
+    },
+    Add {
+        alias: String,
+        mailbox: String,
+    },
+    Remove {
+        alias: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -492,6 +532,95 @@ fn preflight_verdict(results: &[Check]) -> (bool, String) {
     )
 }
 
+/// `install --dry-run`: the whole plan, concretely, then the read-only preflight.
+async fn install_dry_run(args: &InstallArgs) -> Result<()> {
+    let p = Paths::from_env();
+    let t = Term::new();
+    let domain = args
+        .domain
+        .as_deref()
+        .and_then(crate::util::normalize_domain)
+        .unwrap_or_else(|| "<your domain>".into());
+    let hostname = args
+        .hostname
+        .clone()
+        .unwrap_or_else(|| format!("mail.{domain}"));
+    let (engine_url, engine_sha) = os::engine_asset()?;
+    let firewall = match os::detect_firewall() {
+        os::Firewall::Ufw { active: true } => "ufw is active: allow TCP {ports} (and your SSH port).",
+        os::Firewall::Firewalld => "firewalld is active: add TCP {ports} permanently and reload.",
+        _ => "no active host firewall: nothing to change (allow TCP {ports} in your provider's firewall).",
+    }
+    .replace(
+        "{ports}",
+        &os::PUBLIC_PORTS
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+    );
+    let sending = match args.sending {
+        Some(SendingArg::Relay) => format!(
+            "relay through {}",
+            args.relay_provider.as_deref().unwrap_or("your provider")
+        ),
+        Some(SendingArg::Direct) => "direct (this server delivers)".into(),
+        None => "asked (suggested from the outbound port-25 check)".into(),
+    };
+    println!(
+        "{}",
+        t.paint("1", "Yunori Mail Server · install plan (dry run)")
+    );
+    println!("{}", t.paint("2", "Nothing is changed. A real install does this, in order, and can be resumed at any step:\n"));
+    let steps = [
+        "Check this server: the read-only preflight below.".to_string(),
+        format!(
+            "Your domain: {domain}, mail hostname {hostname}, first mailbox {}@{domain}, sending {sending}.",
+            args.first_mailbox
+        ),
+        format!("Wait until {hostname} points at this server (checked against public resolvers)."),
+        format!("Firewall: {firewall}"),
+        format!(
+            "Download Stalwart {} from {engine_url}\n       verify SHA-256 {engine_sha}, install as {}; apt install unbound dns-root-data; create users stalwart and yunori.",
+            os::ENGINE.version,
+            p.stalwart_bin().display()
+        ),
+        format!(
+            "Configure the engine: {} and its store in {}. Its first-run management port is limited to loopback while it runs.",
+            p.stalwart_config().display(),
+            p.stalwart_data().display()
+        ),
+        format!(
+            "Write {}/stalwart.service and yunori-mail.service (sandboxed), start the console and HTTPS edge on ports 80 and 443.",
+            p.systemd_dir().display()
+        ),
+        format!(
+            "Get a Let's Encrypt certificate for {hostname} (rehearsed on staging first, with backoff)."
+        ),
+        format!(
+            "Publish DNS records for {domain} (MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT, autoconfig): each one is verified, never assumed."
+        ),
+        format!("Reverse DNS: this server's IP must point back to {hostname}."),
+        format!("Create the first mailbox {}@{domain}.", args.first_mailbox),
+        "Finish: print the one-time console setup link (it is shown, never logged).".into(),
+    ];
+    for (i, s) in steps.iter().enumerate() {
+        println!("  {:>2}. {s}", i + 1);
+    }
+    println!(
+        "\n  State: {} (SQLite, audit log), secrets sealed with {} (0600). Generated secrets are never printed.\n",
+        p.db().display(),
+        p.master_key().display()
+    );
+    preflight_cmd(
+        args.hostname
+            .clone()
+            .or_else(|| args.domain.as_ref().map(|_| hostname.clone())),
+        false,
+    )
+    .await
+}
+
 async fn preflight_cmd(hostname: Option<String>, json: bool) -> Result<()> {
     let paths = Paths::from_env();
     let t = Term::new();
@@ -541,6 +670,9 @@ async fn preflight_cmd(hostname: Option<String>, json: bool) -> Result<()> {
 }
 
 async fn install(args: InstallArgs) -> Result<()> {
+    if args.dry_run {
+        return install_dry_run(&args).await;
+    }
     let paths = Paths::from_env();
     if paths.is_production() && !os::is_root() {
         bail!("run the installer as root: sudo yunori-mail install");
@@ -1325,8 +1457,27 @@ async fn domain_cmd(c: DomainCmd) -> Result<()> {
     let e = app.engine()?;
     let t = Term::new();
     match c {
-        DomainCmd::List => {
+        DomainCmd::List { json } => {
             let accounts = e.list_accounts().await?;
+            if json {
+                let out: Vec<_> = e
+                    .list_domains()
+                    .await?
+                    .into_iter()
+                    .map(|d| {
+                        let (st, _) = ops::cached_dns_status(&app, &d.name);
+                        serde_json::json!({
+                            "name": d.name,
+                            "enabled": d.enabled,
+                            "catchAll": d.catch_all,
+                            "mailboxes": accounts.iter().filter(|a| a.domain_id == d.id).count(),
+                            "dnsStatus": st,
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
             for d in e.list_domains().await? {
                 let (st, _) = ops::cached_dns_status(&app, &d.name);
                 let n = accounts.iter().filter(|a| a.domain_id == d.id).count();
@@ -1377,8 +1528,27 @@ async fn mailbox_cmd(c: MailboxCmd) -> Result<()> {
     let app = open_app(false, false)?;
     let e = app.engine()?;
     match c {
-        MailboxCmd::List => {
+        MailboxCmd::List { json } => {
             let domains = e.list_domains().await?;
+            if json {
+                let out: Vec<_> = e
+                    .list_accounts()
+                    .await?
+                    .into_iter()
+                    .map(|a| {
+                        serde_json::json!({
+                            "address": a.address,
+                            "displayName": a.display_name,
+                            "role": if a.is_admin { "admin" } else { "user" },
+                            "quotaBytes": a.quota_bytes,
+                            "usedBytes": a.used_bytes,
+                            "aliases": crate::engine::alias_addresses(&a, &domains),
+                        })
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
             for a in e.list_accounts().await? {
                 let aliases = crate::engine::alias_addresses(&a, &domains);
                 println!(
@@ -1391,6 +1561,94 @@ async fn mailbox_cmd(c: MailboxCmd) -> Result<()> {
                         format!("  (aliases: {})", aliases.join(", "))
                     }
                 );
+            }
+        }
+        MailboxCmd::Export { out } => {
+            let domains = e.list_domains().await?;
+            let accounts = e.list_accounts().await?;
+            let csv = crate::api::admin::mailboxes_csv(&accounts, &domains);
+            app.db.audit(
+                "cli",
+                "mailbox.export",
+                None,
+                Some(&format!("{} mailboxes", accounts.len())),
+            )?;
+            match out {
+                Some(path) => {
+                    std::fs::write(&path, csv)?;
+                    eprintln!("Wrote {} mailboxes to {}.", accounts.len(), path.display());
+                }
+                None => print!("{csv}"),
+            }
+        }
+        MailboxCmd::Import {
+            file,
+            passwords,
+            dry_run,
+            json,
+        } => {
+            let text = if file.as_os_str() == "-" {
+                let mut s = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
+                s
+            } else {
+                std::fs::read_to_string(&file)
+                    .with_context(|| format!("reading {}", file.display()))?
+            };
+            let host = app.config().map(|c| c.hostname).unwrap_or_default();
+            let report = crate::api::admin::import_csv(
+                &app,
+                "cli",
+                &text,
+                !passwords,
+                dry_run,
+                &format!("https://{host}"),
+            )
+            .await
+            .map_err(|e| anyhow!(e.message))?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(());
+            }
+            let list = |k: &str| report[k].as_array().cloned().unwrap_or_default();
+            if dry_run {
+                println!(
+                    "Dry run: {} mailbox(es) would be created.",
+                    list("ready").len()
+                );
+                for a in list("ready") {
+                    println!("  + {}", a.as_str().unwrap_or_default());
+                }
+            } else {
+                println!(
+                    "Created {} mailbox(es) (links and passwords are shown once):",
+                    list("created").len()
+                );
+                for c in list("created") {
+                    let secret = c["inviteUrl"]
+                        .as_str()
+                        .or_else(|| c["password"].as_str())
+                        .unwrap_or_default();
+                    println!(
+                        "  + {:<36} {secret}",
+                        c["address"].as_str().unwrap_or_default()
+                    );
+                }
+            }
+            let skipped = list("skipped");
+            if !skipped.is_empty() {
+                println!("Skipped {}:", skipped.len());
+                for s in skipped {
+                    println!(
+                        "  - line {:<4} {:<36} {}",
+                        s["line"]
+                            .as_u64()
+                            .map(|n| n.to_string())
+                            .unwrap_or_default(),
+                        s["address"].as_str().unwrap_or_default(),
+                        s["reason"].as_str().unwrap_or_default()
+                    );
+                }
             }
         }
         MailboxCmd::Add {
@@ -1469,7 +1727,19 @@ async fn alias_cmd(c: AliasCmd) -> Result<()> {
     let domains = e.list_domains().await?;
     let accounts = e.list_accounts().await?;
     match c {
-        AliasCmd::List => {
+        AliasCmd::List { json } => {
+            if json {
+                let out: Vec<_> = accounts
+                    .iter()
+                    .flat_map(|a| {
+                        crate::engine::alias_addresses(a, &domains)
+                            .into_iter()
+                            .map(|al| serde_json::json!({ "alias": al, "mailbox": a.address }))
+                    })
+                    .collect();
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
             for a in &accounts {
                 for al in crate::engine::alias_addresses(a, &domains) {
                     println!("  {al:<36} → {}", a.address);

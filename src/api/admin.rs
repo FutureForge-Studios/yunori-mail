@@ -746,6 +746,249 @@ fn quota_bytes(mb: u64) -> ApiResult<u64> {
     Ok(mb * 1024 * 1024)
 }
 
+// ── CSV export / import ──────────────────────────────────────────────────
+
+const CSV_HEADER: [&str; 7] = [
+    "address",
+    "display_name",
+    "quota_mb",
+    "used_mb",
+    "role",
+    "aliases",
+    "created_at",
+];
+const IMPORT_MAX_ROWS: usize = 1000;
+
+/// `GET /mailboxes/export`: every mailbox as CSV (no passwords: there are none to export).
+pub async fn export_mailboxes(State(app): State<AppState>, a: AdminAuth) -> ApiResult<Response> {
+    let e = app.engine()?;
+    let (domains, accounts) = (e.list_domains().await?, e.list_accounts().await?);
+    let out = mailboxes_csv(&accounts, &domains);
+    app.db.audit(
+        &a.admin.email,
+        "mailbox.export",
+        None,
+        Some(&format!("{} mailboxes", accounts.len())),
+    )?;
+    let stamp = chrono::Utc::now().format("%Y%m%d");
+    Ok((
+        [
+            (
+                axum::http::header::CONTENT_TYPE,
+                "text/csv; charset=utf-8".to_string(),
+            ),
+            (
+                axum::http::header::CONTENT_DISPOSITION,
+                format!("attachment; filename=\"mailboxes-{stamp}.csv\""),
+            ),
+        ],
+        out,
+    )
+        .into_response())
+}
+
+/// Every mailbox as CSV; shared by the console and `yunori-mail mailbox export`.
+pub fn mailboxes_csv(accounts: &[EAccount], domains: &[EDomain]) -> String {
+    let mut out = crate::csv::line(&CSV_HEADER);
+    let mb = |b: Option<u64>| b.map(|b| (b / 1_048_576).to_string()).unwrap_or_default();
+    for acct in accounts {
+        let m = mailbox_out(acct, domains);
+        out.push_str(&crate::csv::line(&[
+            &m.address,
+            m.display_name.as_deref().unwrap_or(""),
+            &mb(m.quota_bytes),
+            &mb(m.used_bytes),
+            m.role,
+            &m.aliases.join(" "),
+            m.created_at.as_deref().unwrap_or(""),
+        ]));
+    }
+    out
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportMailboxes {
+    csv: String,
+    /// Send each person an invite link (default) instead of making a password.
+    #[serde(default = "default_true")]
+    invite: bool,
+    /// Check every row and report, creating nothing.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// `POST /mailboxes/import`: create mailboxes from CSV with columns
+/// `address[,display_name[,quota_mb]]` (a header row is optional; the export's
+/// own columns are accepted, extra columns ignored). Every row is checked
+/// first; rows that cannot be created are reported, not fatal.
+pub async fn import_mailboxes(
+    State(app): State<AppState>,
+    a: AdminAuth,
+    headers: HeaderMap,
+    Json(req): Json<ImportMailboxes>,
+) -> ApiResult<Json<Value>> {
+    let base = public_base(&app, &headers);
+    import_csv(
+        &app,
+        &a.admin.email,
+        &req.csv,
+        req.invite,
+        req.dry_run,
+        &base,
+    )
+    .await
+    .map(Json)
+}
+
+/// The CSV import shared by the console and `yunori-mail mailbox import`.
+/// `base` is the public origin invite links point at.
+pub async fn import_csv(
+    app: &crate::app::App,
+    actor: &str,
+    csv: &str,
+    invite: bool,
+    dry_run: bool,
+    base: &str,
+) -> ApiResult<Value> {
+    let mut rows = crate::csv::parse(csv).map_err(|e| ApiError::bad_request(e).field("csv"))?;
+    // Rows are reported by their line in the file, as a spreadsheet shows them.
+    let mut first_line = 1;
+    if rows
+        .first()
+        .and_then(|r| r.first())
+        .is_some_and(|c| c.trim().eq_ignore_ascii_case("address"))
+    {
+        rows.remove(0);
+        first_line = 2;
+    }
+    if rows.is_empty() {
+        return Err(ApiError::bad_request("The file has no mailboxes in it.").field("csv"));
+    }
+    if rows.len() > IMPORT_MAX_ROWS {
+        return Err(ApiError::bad_request(format!(
+            "Import at most {IMPORT_MAX_ROWS} mailboxes at a time."
+        ))
+        .field("csv"));
+    }
+    let e = app.engine()?;
+    let domains = e.list_domains().await?;
+    let accounts = e.list_accounts().await?;
+    let mut taken: std::collections::HashSet<String> = accounts
+        .iter()
+        .flat_map(|x| {
+            let mut v = alias_addresses(x, &domains);
+            v.push(x.address.clone());
+            v
+        })
+        .collect();
+
+    let mut ready = vec![];
+    let mut skipped = vec![];
+    for (i, row) in rows.iter().enumerate() {
+        let line = i + first_line;
+        let address = row
+            .first()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .unwrap_or_default();
+        let skip = |reason: &str| json!({ "line": line, "address": address, "reason": reason });
+        let Some((local, domain_name)) = address.split_once('@') else {
+            skipped.push(skip("Not an email address."));
+            continue;
+        };
+        if !valid_local_part(local) || !valid_email(&address) {
+            skipped.push(skip(
+                "Use letters, digits, dots, dashes or underscores before the @.",
+            ));
+            continue;
+        }
+        let Some(domain) = domains.iter().find(|d| d.name == domain_name) else {
+            skipped.push(skip("That domain is not on this server; add it first."));
+            continue;
+        };
+        if taken.contains(&address) {
+            skipped.push(skip("Already in use (or listed twice)."));
+            continue;
+        }
+        let display = row
+            .get(1)
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        let quota = match row.get(2).map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            None => None,
+            Some(q) => match q.parse::<u64>() {
+                Ok(0) => None,
+                Ok(mb) => match quota_bytes(mb) {
+                    Ok(b) => Some(b),
+                    Err(_) => {
+                        skipped.push(skip("A quota can be at most 16 TB."));
+                        continue;
+                    }
+                },
+                Err(_) => {
+                    skipped.push(skip("The quota is not a whole number of MB."));
+                    continue;
+                }
+            },
+        };
+        taken.insert(address.clone());
+        ready.push((
+            address.clone(),
+            local.to_string(),
+            domain.id.clone(),
+            display,
+            quota,
+        ));
+    }
+
+    let mut created = vec![];
+    if !dry_run {
+        for (address, local, domain_id, display, quota) in ready.iter().cloned() {
+            let password = generate_password(if invite { 32 } else { 20 });
+            let acct = match e
+                .create_account(&local, &domain_id, display.as_deref(), quota, &password)
+                .await
+            {
+                Ok(acct) => acct,
+                Err(err) => {
+                    skipped.push(
+                        json!({ "line": null, "address": address, "reason": err.to_string() }),
+                    );
+                    continue;
+                }
+            };
+            app.db.audit(
+                actor,
+                "mailbox.create",
+                Some(&acct.address),
+                Some("CSV import"),
+            )?;
+            if invite {
+                let (token, expires_at) = app.db.create_invite(&acct.id, &acct.address, actor)?;
+                app.db
+                    .audit(actor, "mailbox.invite", Some(&acct.address), None)?;
+                created.push(json!({
+                    "address": acct.address,
+                    "inviteUrl": format!("{base}/account/welcome#invite={token}"),
+                    "inviteExpiresAt": expires_at,
+                }));
+            } else {
+                created.push(json!({ "address": acct.address, "password": password }));
+            }
+        }
+    }
+    Ok(json!({
+        "dryRun": dry_run,
+        "ready": ready.iter().map(|r| r.0.clone()).collect::<Vec<_>>(),
+        "created": created,
+        "skipped": skipped,
+    }))
+}
+
 #[derive(Deserialize)]
 pub struct ResetPassword {
     password: Option<String>,

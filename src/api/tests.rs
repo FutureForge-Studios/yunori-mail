@@ -64,6 +64,29 @@ impl Client {
         (status, json)
     }
 
+    async fn get_text(&mut self, path: &str) -> (StatusCode, String, String) {
+        let mut req = Request::builder().method("GET").uri(path);
+        if !self.cookies.is_empty() {
+            req = req.header(header::COOKIE, self.cookies.join("; "));
+        }
+        let res = self
+            .router
+            .clone()
+            .oneshot(req.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let ct = res
+            .headers()
+            .get(header::CONTENT_TYPE)
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, ct, String::from_utf8(bytes.to_vec()).unwrap())
+    }
+
     async fn get(&mut self, path: &str) -> (StatusCode, Value) {
         self.send("GET", path, None, false).await
     }
@@ -906,4 +929,144 @@ async fn a_saved_relay_password_never_follows_a_new_host() {
         app.mock().unwrap().relay().unwrap().host,
         "smtp.relay.example"
     );
+}
+
+#[tokio::test]
+async fn auto_reply_and_forwarding_are_set_as_the_user() {
+    let (mut c, app) = Client::new();
+    let (s, _) = c.get("/portal/rules").await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    c.post(
+        "/portal/login",
+        json!({"email": "ana@example.test", "password": "demo-password-1234"}),
+    )
+    .await;
+    let (s, b) = c.get("/portal/rules").await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["vacation"]["enabled"], false);
+    assert_eq!(b["forwarding"]["enabled"], false);
+
+    let rules = json!({
+        "vacation": {"enabled": true, "subject": "", "body": "Back Monday.", "endDate": "2026-12-31"},
+        "forwarding": {"enabled": true, "address": "Ana@Elsewhere.Example", "keepCopy": true}
+    });
+    let (s, b) = c.send("PUT", "/portal/rules", Some(rules), true).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["vacation"]["subject"], "Out of office");
+    assert_eq!(b["forwarding"]["address"], "ana@elsewhere.example");
+    let (_, again) = c.get("/portal/rules").await;
+    assert_eq!(again, b, "read back from the engine's script");
+
+    // Forwarding to itself and a vacation without text are refused, field by field.
+    let (s, b) = c
+        .send(
+            "PUT",
+            "/portal/rules",
+            Some(json!({"forwarding": {"enabled": true, "address": "ana@example.test"}})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["error"]["field"], "forwarding.address");
+    let (s, b) = c
+        .send(
+            "PUT",
+            "/portal/rules",
+            Some(json!({"vacation": {"enabled": true, "body": " "}})),
+            true,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["error"]["field"], "vacation.body");
+
+    // Switching both off removes the script.
+    let (s, _) = c.send("PUT", "/portal/rules", Some(json!({})), true).await;
+    assert_eq!(s, StatusCode::OK);
+    let (_, b) = c.get("/portal/rules").await;
+    assert_eq!(b["vacation"]["enabled"], false);
+    let audit = app.db.audit_list(20).unwrap();
+    assert!(
+        audit
+            .iter()
+            .any(|e| e.action == "portal.rules" && e.actor == "ana@example.test")
+    );
+}
+
+#[tokio::test]
+async fn mailboxes_export_and_import_as_csv() {
+    let (mut c, app) = Client::new();
+    let (s, _, _) = c.get_text("/mailboxes/export").await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED);
+    c.sign_in(&app).await;
+    let (s, ct, csv) = c.get_text("/mailboxes/export").await;
+    assert_eq!(s, StatusCode::OK);
+    assert!(ct.starts_with("text/csv"), "{ct}");
+    assert!(csv.starts_with("address,display_name,quota_mb,used_mb,role,aliases,created_at\r\n"));
+    assert!(csv.contains("ana@example.test,Ana Ito,5120,"), "{csv}");
+
+    let file = "address,display_name,quota_mb\n\
+        new1@example.test,\"Doe, Jane\",250\n\
+        new2@example.test,,\n\
+        ana@example.test,Dup,\n\
+        new1@example.test,Twice,\n\
+        x@unknown.test,,\n\
+        bad address,,\n\
+        new3@example.test,,lots\n";
+    // Dry run: nothing is created.
+    let (s, b) = c
+        .post("/mailboxes/import", json!({"csv": file, "dryRun": true}))
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(
+        b["ready"],
+        json!(["new1@example.test", "new2@example.test"])
+    );
+    assert_eq!(b["skipped"].as_array().unwrap().len(), 5, "{b}");
+    assert_eq!(
+        b["skipped"][0]["line"], 4,
+        "file line numbers, header included"
+    );
+    assert_eq!(b["created"], json!([]));
+    let (_, list) = c.get("/mailboxes").await;
+    assert!(!list.to_string().contains("new1@example.test"));
+
+    // For real, with invite links.
+    let (s, b) = c.post("/mailboxes/import", json!({"csv": file})).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    let created = b["created"].as_array().unwrap();
+    assert_eq!(created.len(), 2);
+    assert!(
+        created[0]["inviteUrl"]
+            .as_str()
+            .unwrap()
+            .contains("/account/welcome#invite=")
+    );
+    assert!(created[0].get("password").is_none());
+    let (_, list) = c.get("/mailboxes").await;
+    let jane = list
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|m| m["address"] == "new1@example.test")
+        .unwrap()
+        .clone();
+    assert_eq!(jane["displayName"], "Doe, Jane");
+    assert_eq!(jane["quotaBytes"], 250 * 1024 * 1024);
+    assert!(jane["inviteExpiresAt"].is_string());
+
+    // Password mode returns the generated passwords once.
+    let (s, b) = c
+        .post(
+            "/mailboxes/import",
+            json!({"csv": "pw1@example.test", "invite": false}),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+    assert_eq!(b["created"][0]["password"].as_str().unwrap().len(), 20);
+
+    let (s, b) = c
+        .post("/mailboxes/import", json!({"csv": "address\n"}))
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    assert_eq!(b["error"]["field"], "csv");
 }

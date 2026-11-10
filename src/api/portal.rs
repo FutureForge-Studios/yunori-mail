@@ -212,6 +212,69 @@ pub async fn change_password(
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ── auto-reply & forwarding ──────────────────────────────────────────────
+
+/// `GET /portal/rules`: the out-of-office reply and forwarding, read back from
+/// the engine (the settings live in the Sieve script itself).
+pub async fn get_rules(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<crate::rules::MailRules>> {
+    let creds = creds_from(&app, &headers)?;
+    let script = app
+        .engine()?
+        .user_sieve_script(&creds, crate::rules::SCRIPT_NAME)
+        .await
+        .map_err(map_user_err)?;
+    Ok(Json(
+        script
+            .as_deref()
+            .and_then(crate::rules::MailRules::from_sieve)
+            .unwrap_or_default(),
+    ))
+}
+
+/// `PUT /portal/rules`: validate, then install (or remove) the script as the user.
+pub async fn put_rules(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<crate::rules::MailRules>,
+) -> ApiResult<Json<crate::rules::MailRules>> {
+    let creds = creds_from(&app, &headers)?;
+    let rules = req
+        .normalised(&creds.email)
+        .map_err(|e| ApiError::bad_request(e.message).field(e.field))?;
+    let script = (!rules.is_empty()).then(|| rules.to_sieve());
+    app.engine()?
+        .user_put_sieve_script(&creds, crate::rules::SCRIPT_NAME, script.as_deref())
+        .await
+        .map_err(map_user_err)?;
+    let detail = format!(
+        "auto-reply {}; forwarding {}",
+        if rules.vacation.enabled { "on" } else { "off" },
+        if rules.forwarding.enabled {
+            format!(
+                "to {}{}",
+                rules.forwarding.address,
+                if rules.forwarding.keep_copy {
+                    " (keeping a copy)"
+                } else {
+                    ""
+                }
+            )
+        } else {
+            "off".into()
+        }
+    );
+    app.db.audit(
+        &creds.email,
+        "portal.rules",
+        Some(&creds.email),
+        Some(&detail),
+    )?;
+    Ok(Json(rules))
+}
+
 #[derive(Deserialize)]
 pub struct AppPasswordRequest {
     description: String,

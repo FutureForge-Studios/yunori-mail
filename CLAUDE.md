@@ -23,7 +23,8 @@ yunori-mail preflight                                        # read-only server 
 yunori-mail update --check                                   # newest release on yunori.email/server/latest.json
 YUNORI_LIVE_ACME=1 cargo test live_acme -- --ignored         # ACME conversation against Let's Encrypt staging
 YUNORI_STALWART_BIN=/path/to/stalwart cargo test -- --ignored live_   # end-to-end against a real Stalwart
-sudo python3 e2e/vps-e2e.py                                  # on an installed throwaway server: full client-side e2e
+sudo python3 e2e/vps-e2e.py                                  # on an installed throwaway server: every route and command
+node e2e/ui-smoke.mjs                                        # then the real console/portal in Chromium (see its header)
 ```
 
 Console checks: `npm --prefix console run typecheck`, `npm --prefix console run lint`. Design drift:
@@ -36,6 +37,8 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 |---|---|
 | `src/engine/` | `Engine` trait, Stalwart JMAP adapter (`stalwart.rs`), in-memory mock, live tests |
 | `src/dns/` | Expected record set (`records.rs`), zone parser, public-resolver checks, PTR/FCrDNS, DNSBLs |
+| `src/rules.rs` | Portal auto-reply + forwarding → one user-owned Sieve script (settings embedded, strings escaped) |
+| `src/csv.rs` | RFC 4180 CSV for mailbox import/export (formula-safe export) |
 | `src/relay.rs` | Relay provider rules (Amazon SES region→host, Easy DKIM, MAIL FROM; Resend DKIM + `send.`) |
 | `src/installer/` | 12 resumable steps + OS operations (pinned engine download, systemd, firewall) |
 | `src/cli.rs` | Terminal wizard (preflight first, re-asks bad answers, summary card) and day-two commands |

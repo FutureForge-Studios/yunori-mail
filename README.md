@@ -42,6 +42,15 @@ curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- preflight
 - **Invite links instead of handed-over passwords.** Create a mailbox (or pick an existing one) and send its owner
   a link: they choose their own password and land on their account page. The token travels in the URL fragment,
   only its hash is stored, it works once and expires after 7 days; a password reset withdraws it.
+- **Out-of-office auto-reply and forwarding** that the mailbox owner sets in the portal. Both run on the server
+  as one Sieve script (installed as the user, compiled by the engine before it is saved): an auto-reply with
+  optional first/last day, sent at most once a day per sender and marked `Auto-Submitted`; forwarding with or
+  without a local copy.
+- **Bulk mailboxes from CSV**: export every mailbox, or import `address[,display_name[,quota_mb]]` from the
+  console or `yunori-mail mailbox import` — checked row by row first (dry run), each new person gets an invite
+  link (or a generated password, shown once).
+- **Scriptable CLI**: `--json` on `domain|mailbox|alias list`, `doctor` and `preflight`; `install --dry-run`
+  shows exactly what would be downloaded, created and changed, then runs the read-only preflight.
 - **A self-service portal** at `/account` for every mailbox: password, app passwords, all the settings, and
   **Connect your devices**:
   - **Yunori:** a QR code that opens the client on a phone with the address filled in.
@@ -257,8 +266,10 @@ cargo clippy --all-targets -- -D warnings && cargo fmt --check
 - `YUNORI_LIVE_ACME=1 cargo test live_acme -- --ignored` talks to Let's Encrypt staging (account + a refused order;
   no validation) to check the ACME conversation and how CA errors are explained.
 - `e2e/vps-smoke.sh` exercises the real engine on a throwaway VPS (including Let's Encrypt).
-- `e2e/vps-e2e.py` drives an installed server end to end: console, SMTP/IMAP/JMAP mail flow, relay and spoofing
-  refusals, the hidden admin surface, portal, invites, device profiles, backup → restore.
+- `e2e/vps-e2e.py` drives an installed server end to end (154 checks): every console route and CLI command,
+  SMTP/IMAP/JMAP mail flow, auto-reply/forwarding/catch-all delivered for real, relay and spoofing refusals, the
+  hidden admin surface, portal, invites, device profiles, CSV import/export, throttling, backup → restore.
+- `e2e/ui-smoke.mjs` drives the real console and portal pages in Chromium on the same server.
 - [`docs/BENCHMARK.md`](docs/BENCHMARK.md): measured side by side with Openship Mail and BillionMail.
 
 Source layout:

@@ -86,15 +86,89 @@ impl JmapClient {
         }
     }
 
+    /// Download a blob as text (RFC 8620 §6.2).
+    pub async fn download_text(
+        &self,
+        auth: &Auth,
+        account_id: &str,
+        blob_id: &str,
+    ) -> Result<String, EngineError> {
+        let req = self.apply_auth(
+            self.http.get(format!(
+                "{}/jmap/download/{account_id}/{blob_id}/script",
+                self.base
+            )),
+            auth,
+        );
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| EngineError::Unavailable(e.to_string()))?;
+        match resp.status().as_u16() {
+            200 => resp
+                .text()
+                .await
+                .map_err(|e| EngineError::Protocol(e.to_string())),
+            401 | 403 => Err(EngineError::Unauthorized),
+            s => Err(EngineError::Protocol(format!("download returned HTTP {s}"))),
+        }
+    }
+
+    /// Upload a blob for `account_id` (RFC 8620 §6.1); returns its blobId.
+    /// The session's `uploadUrl` names the public host, so only its template
+    /// path is used, against the loopback engine.
+    pub async fn upload(
+        &self,
+        auth: &Auth,
+        account_id: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<String, EngineError> {
+        let req = self.apply_auth(
+            self.http
+                .post(format!("{}/jmap/upload/{account_id}/", self.base))
+                .header(reqwest::header::CONTENT_TYPE, content_type)
+                .body(body),
+            auth,
+        );
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| EngineError::Unavailable(e.to_string()))?;
+        let status = resp.status().as_u16();
+        if status == 401 || status == 403 {
+            return Err(EngineError::Unauthorized);
+        }
+        let v: Value = resp
+            .json()
+            .await
+            .map_err(|e| EngineError::Protocol(e.to_string()))?;
+        v.get("blobId")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| EngineError::Rejected(format!("upload refused (HTTP {status}): {v}")))
+    }
+
     /// Send method calls in one request; returns each response's arguments in order.
     /// Calls are tagged `c0`, `c1`, … so later calls can back-reference earlier results.
     pub async fn call(&self, auth: &Auth, calls: Vec<Call>) -> Result<Vec<Value>, EngineError> {
+        self.call_using(auth, &USING, calls).await
+    }
+
+    /// Like [`call`](Self::call), declaring other capabilities (standard JMAP
+    /// objects such as `SieveScript` need `urn:ietf:params:jmap:sieve`).
+    pub async fn call_using(
+        &self,
+        auth: &Auth,
+        using: &[&str],
+        calls: Vec<Call>,
+    ) -> Result<Vec<Value>, EngineError> {
         let method_calls: Vec<Value> = calls
             .iter()
             .enumerate()
             .map(|(i, c)| json!([c.method, c.args, format!("c{i}")]))
             .collect();
-        let body = json!({ "using": USING, "methodCalls": method_calls });
+        let body = json!({ "using": using, "methodCalls": method_calls });
         let req = self.apply_auth(
             self.http.post(format!("{}/jmap/", self.base)).json(&body),
             auth,

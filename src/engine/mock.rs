@@ -13,6 +13,7 @@ struct State {
     queue: Vec<EQueued>,
     relay: Option<RelayConfig>,
     app_passwords: Vec<(String, EAppPassword)>, // (owner address, pw)
+    sieve: std::collections::HashMap<(String, String), String>, // (owner, name) → script
     cert_installed: bool,
 }
 
@@ -492,5 +493,37 @@ impl Engine for MockEngine {
         } else {
             Ok(())
         }
+    }
+
+    async fn user_sieve_script(
+        &self,
+        creds: &UserCreds,
+        name: &str,
+    ) -> EngineResult<Option<String>> {
+        self.user_verify(creds).await?;
+        let s = self.state.lock().unwrap();
+        Ok(s.sieve
+            .get(&(creds.email.clone(), name.to_string()))
+            .cloned())
+    }
+
+    async fn user_put_sieve_script(
+        &self,
+        creds: &UserCreds,
+        name: &str,
+        script: Option<&str>,
+    ) -> EngineResult<()> {
+        self.user_verify(creds).await?;
+        let mut s = self.state.lock().unwrap();
+        let key = (creds.email.clone(), name.to_string());
+        match script {
+            Some(t) => {
+                s.sieve.insert(key, t.to_string());
+            }
+            None => {
+                s.sieve.remove(&key);
+            }
+        }
+        Ok(())
     }
 }

@@ -26,7 +26,10 @@ import type {
   InstallLogLine,
   InstallState,
   InstallStep,
+  ImportCreated,
+  ImportSkipped,
   Mailbox,
+  MailRules,
   OverviewResponse,
   PortalMe,
   QueueSummary,
@@ -133,6 +136,8 @@ interface DB {
   appPasswords: Record<string, AppPassword[]>;
   /** Invite links by token (the real server keeps only a hash). */
   invites?: Record<string, { mailboxId: string; expiresAt: string }>;
+  /** Auto-reply & forwarding per mailbox address (the real server keeps a Sieve script). */
+  rules?: Record<string, MailRules>;
   seq: number;
 }
 
@@ -909,7 +914,16 @@ const fail = (status: number, code: string, message: string, field?: string): ne
   throw new HttpError(status, { code, message, ...(field ? { field } : {}) });
 };
 
+/** A non-JSON body (the CSV export). */
+class Raw {
+  constructor(
+    readonly body: string,
+    readonly headers: Record<string, string>,
+  ) {}
+}
+
 function json(status: number, body?: unknown): Response {
+  if (body instanceof Raw) return new Response(body.body, { status, headers: body.headers });
   if (status === 204 || body === undefined) return new Response(null, { status: 204 });
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -1058,6 +1072,12 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
       const token = randomFrom("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz0123456789", 32);
       const expiresAt = new Date(Date.now() + 10 * 60e3).toISOString().replace(/\.\d+Z$/, "Z");
       return [201, { url: `https://${HOST}/account/profile/${token}`, expiresAt, appPassword: ap }];
+    }
+    if (is("GET", "/portal/rules")) return [200, db.rules?.[address] ?? defaultRules()];
+    if (is("PUT", "/portal/rules")) {
+      const rules = normaliseRules(body, address);
+      db.rules = { ...db.rules, [address]: rules };
+      return [200, rules];
     }
     if (method === "DELETE" && seg[1] === "app-passwords" && seg[2]) {
       const list = db.appPasswords[address] ?? [];
@@ -1219,6 +1239,23 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     }
     return [200, { mailbox: toMailbox(db, row), password }];
   }
+  if (is("GET", "/mailboxes/export")) {
+    const mb = (b: number | null) => (b === null ? "" : String(Math.floor(b / MB)));
+    const lines = [CSV_HEADER, ...db.mailboxes.map((m) => {
+      const x = toMailbox(db, m);
+      return [x.address, x.displayName ?? "", mb(x.quotaBytes), mb(x.usedBytes), x.role, x.aliases.join(" "), x.createdAt ?? ""];
+    })];
+    audit(db, "mailbox.export", null, `${db.mailboxes.length} mailboxes`);
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    return [
+      200,
+      new Raw(lines.map((l) => l.map(csvField).join(",") + "\r\n").join(""), {
+        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Disposition": `attachment; filename="mailboxes-${stamp}.csv"`,
+      }),
+    ];
+  }
+  if (is("POST", "/mailboxes/import")) return [200, importMailboxes(db, body)];
   if (seg[0] === "mailboxes" && seg[1]) {
     const m = db.mailboxes.find((x) => x.id === seg[1]);
     if (!m) fail(404, "not_found", "That mailbox doesn't exist (any more).");
@@ -1417,6 +1454,153 @@ function sendingView(db: DB): SendingResponse {
     port25: port25Check(db),
     ptr: ptrCheck(db),
   };
+}
+
+// ── auto-reply & forwarding (mirrors src/rules.rs `normalised`) ─────────────
+
+function defaultRules(): MailRules {
+  return { vacation: { enabled: false, subject: "", body: "" }, forwarding: { enabled: false, address: "", keepCopy: true } };
+}
+
+function normaliseRules(body: Body, own: string): MailRules {
+  const v = (body.vacation && typeof body.vacation === "object" ? body.vacation : {}) as Body;
+  const f = (body.forwarding && typeof body.forwarding === "object" ? body.forwarding : {}) as Body;
+  const clean = (t: string, newlines: boolean) =>
+    [...t.replace(/\r\n/g, "\n")]
+      .filter((c) => {
+        const n = c.charCodeAt(0);
+        return !(n < 32 || n === 127) || (newlines && (c === "\n" || c === "\t"));
+      })
+      .join("")
+      .trim();
+  const date = (k: string) => (typeof v[k] === "string" && (v[k] as string).trim() ? (v[k] as string).trim() : undefined);
+  const vacation: MailRules["vacation"] = { enabled: v.enabled === true, subject: clean(str(v, "subject"), false), body: clean(str(v, "body"), true) };
+  const startDate = date("startDate");
+  const endDate = date("endDate");
+  if (vacation.enabled) {
+    if (!vacation.body) fail(400, "invalid_request", "Write the reply people will get.", "vacation.body");
+    if (!vacation.subject) vacation.subject = "Out of office";
+  }
+  if ([...vacation.subject].length > 200) fail(400, "invalid_request", "Keep the subject under 200 characters.", "vacation.subject");
+  if ([...vacation.body].length > 5000) fail(400, "invalid_request", "Keep the reply under 5000 characters.", "vacation.body");
+  const validDate = (d: string) => /^\d{4}-\d{2}-\d{2}$/.test(d) && !Number.isNaN(Date.parse(`${d}T00:00:00Z`)) && new Date(`${d}T00:00:00Z`).toISOString().startsWith(d);
+  if (startDate && !validDate(startDate)) fail(400, "invalid_request", "Use a date like 2026-12-24.", "vacation.startDate");
+  if (endDate && !validDate(endDate)) fail(400, "invalid_request", "Use a date like 2026-12-24.", "vacation.endDate");
+  if (startDate && endDate && endDate < startDate) fail(400, "invalid_request", "The last day comes before the first day.", "vacation.endDate");
+  if (startDate) vacation.startDate = startDate;
+  if (endDate) vacation.endDate = endDate;
+  const forwarding: MailRules["forwarding"] = {
+    enabled: f.enabled === true,
+    address: str(f, "address").trim().toLowerCase(),
+    keepCopy: f.keepCopy !== false,
+  };
+  if (forwarding.enabled) {
+    if (!EMAIL_RE.test(forwarding.address)) fail(400, "invalid_request", "Enter a valid email address.", "forwarding.address");
+    if (forwarding.address === own.toLowerCase()) fail(400, "invalid_request", "That is this mailbox; forward to another address.", "forwarding.address");
+  }
+  return { vacation, forwarding };
+}
+
+// ── CSV export / import (mirrors src/csv.rs and admin::import_mailboxes) ─────
+
+const CSV_HEADER = ["address", "display_name", "quota_mb", "used_mb", "role", "aliases", "created_at"];
+const IMPORT_MAX_ROWS = 1000;
+
+function csvField(v: string): string {
+  const x = /^[=+\-@\t\r]/.test(v) ? `'${v}` : v;
+  return /[,"\r\n]/.test(x) ? `"${x.replace(/"/g, '""')}"` : x;
+}
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
+  let line = 1;
+  const src = text.replace(/^\ufeff/, "");
+  const pushRow = () => {
+    row.push(field);
+    field = "";
+    if (!(row.length === 1 && !row[0].trim())) rows.push(row);
+    row = [];
+  };
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i];
+    if (inQuotes) {
+      if (c === '"' && src[i + 1] === '"') {
+        field += '"';
+        i++;
+      } else if (c === '"') inQuotes = false;
+      else {
+        if (c === "\n") line++;
+        field += c;
+      }
+      continue;
+    }
+    if (c === '"' && field === "") inQuotes = true;
+    else if (c === ",") {
+      row.push(field);
+      field = "";
+    } else if (c === "\r") continue;
+    else if (c === "\n") {
+      line++;
+      pushRow();
+    } else field += c;
+  }
+  if (inQuotes) fail(400, "invalid_request", `a quoted field is not closed (line ${line})`, "csv");
+  if (field || row.length) pushRow();
+  return rows;
+}
+
+function importMailboxes(db: DB, body: Body) {
+  const rows = parseCsv(str(body, "csv"));
+  if (rows[0]?.[0]?.trim().toLowerCase() === "address") rows.shift();
+  if (rows.length === 0) fail(400, "invalid_request", "The file has no mailboxes in it.", "csv");
+  if (rows.length > IMPORT_MAX_ROWS) fail(400, "invalid_request", `Import at most ${IMPORT_MAX_ROWS} mailboxes at a time.`, "csv");
+  const invite = body.invite !== false;
+  const dryRun = body.dryRun === true;
+  const taken = new Set([...db.mailboxes.map((m) => addressOf(db, m)), ...db.aliases.map((a) => a.address)]);
+  const ready: { address: string; local: string; domainId: string; displayName: string | null; quotaMb: number | null }[] = [];
+  const skipped: ImportSkipped[] = [];
+  rows.forEach((row, i) => {
+    const address = (row[0] ?? "").trim().toLowerCase();
+    const skip = (reason: string) => skipped.push({ line: i + 1, address, reason });
+    const at = address.indexOf("@");
+    if (at < 0) return skip("Not an email address.");
+    const local = address.slice(0, at);
+    const domainName = address.slice(at + 1);
+    if (!LOCAL_RE.test(local) || !EMAIL_RE.test(address)) return skip("Use letters, digits, dots, dashes or underscores before the @.");
+    const d = db.domains.find((x) => x.name === domainName);
+    if (!d) return skip("That domain is not on this server; add it first.");
+    if (taken.has(address)) return skip("Already in use (or listed twice).");
+    const q = (row[2] ?? "").trim();
+    let quotaMb: number | null = null;
+    if (q) {
+      if (!/^\d+$/.test(q)) return skip("The quota is not a whole number of MB.");
+      quotaMb = Number(q) || null;
+      if (quotaMb !== null && quotaMb > 16 * 1024 * 1024) return skip("A quota can be at most 16 TB.");
+    }
+    taken.add(address);
+    ready.push({ address, local, domainId: d.id, displayName: (row[1] ?? "").trim() || null, quotaMb });
+  });
+  const created: ImportCreated[] = [];
+  if (!dryRun) {
+    for (const r of ready) {
+      const password = genPassword();
+      const mrow: MailboxRow = {
+        id: `mbx_${++db.seq}`, local: r.local, domainId: r.domainId, displayName: r.displayName, role: "user",
+        quotaBytes: r.quotaMb ? r.quotaMb * MB : null, usedBytes: 0, createdAt: iso(), password,
+      };
+      db.mailboxes.push(mrow);
+      audit(db, "mailbox.create", r.address, "CSV import");
+      if (invite) {
+        const link = createInvite(db, mrow.id);
+        audit(db, "mailbox.invite", r.address);
+        created.push({ address: r.address, inviteUrl: link.url, inviteExpiresAt: link.expiresAt });
+      } else created.push({ address: r.address, password });
+    }
+  }
+  return { dryRun, ready: ready.map((r) => r.address), created, skipped };
 }
 
 function portalMe(db: DB): PortalMe {

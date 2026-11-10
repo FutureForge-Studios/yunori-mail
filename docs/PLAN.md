@@ -853,6 +853,19 @@ the two competitors installed per their READMEs. Full comparison: [`docs/BENCHMA
   graceful shutdown; light unit hardening; and the public install script still on v0.1.0 (no `preflight`).
 - §3 correction (Openship 0.9.11): the mail DB roles now have distinct passwords. The rest of §3 still holds.
 
+### Features from the competitor gaps, every feature tested (2026-11-10)
+
+- **Portal: out-of-office reply and forwarding** (`src/rules.rs`, `GET/PUT /portal/rules`, `portal/rules.tsx`): one
+  Sieve script installed as the user over JMAP Sieve; settings embedded in the script; user text only ever inside
+  escaped Sieve strings (unit-tested against injection). Openship and BillionMail need webmail for this.
+- **Mailbox CSV export/import** (`src/csv.rs`, `/mailboxes/export|import`, console dialog, `yunori-mail mailbox
+  export|import`): dry run first, file line numbers in every skip reason, invite links by default, 1000 rows max,
+  formula-neutralised export.
+- **CLI:** `--json` on every list; `install --dry-run` (the plan, concretely, then the read-only preflight).
+- **Testing:** `e2e/vps-e2e.py` grew to 154 checks covering every console route, every day-two CLI command,
+  catch-all, auto-reply (once per sender), forward with/without copy, session revocation, login throttling; plus
+  `e2e/ui-smoke.mjs` in Chromium against the real server. Both green on the InstaBox VM.
+
 ## 15. Sources
 
 - Openship: <https://github.com/oblien/openship> (read-only code review of `main`, 2026-11). DeepWiki: <https://deepwiki.com/oblien/openship/10-email-server>.

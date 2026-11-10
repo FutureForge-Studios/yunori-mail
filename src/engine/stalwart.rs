@@ -762,6 +762,135 @@ impl Engine for StalwartEngine {
         ))
     }
 
+    async fn user_sieve_script(
+        &self,
+        creds: &UserCreds,
+        name: &str,
+    ) -> EngineResult<Option<String>> {
+        let auth = Auth::basic(&creds.email, &creds.password);
+        let account = self.sieve_account(&auth).await?;
+        let r = self
+            .client
+            .call_using(
+                &auth,
+                &SIEVE_USING,
+                vec![Call::new(
+                    "SieveScript/get",
+                    json!({ "accountId": account, "ids": null }),
+                )],
+            )
+            .await?;
+        let Some(blob) = get_list(&r[0])
+            .into_iter()
+            .find(|s| s.get("name").and_then(Value::as_str) == Some(name))
+            .and_then(|s| s.get("blobId").and_then(Value::as_str).map(str::to_string))
+        else {
+            return Ok(None);
+        };
+        self.client
+            .download_text(&auth, &account, &blob)
+            .await
+            .map(Some)
+    }
+
+    async fn user_put_sieve_script(
+        &self,
+        creds: &UserCreds,
+        name: &str,
+        script: Option<&str>,
+    ) -> EngineResult<()> {
+        let auth = Auth::basic(&creds.email, &creds.password);
+        let account = self.sieve_account(&auth).await?;
+        let r = self
+            .client
+            .call_using(
+                &auth,
+                &SIEVE_USING,
+                vec![Call::new(
+                    "SieveScript/get",
+                    json!({ "accountId": account, "ids": null, "properties": ["name", "isActive"] }),
+                )],
+            )
+            .await?;
+        let existing = get_list(&r[0])
+            .into_iter()
+            .find(|s| s.get("name").and_then(Value::as_str) == Some(name))
+            .and_then(|s| s.get("id").and_then(Value::as_str).map(str::to_string));
+        let set = match (script, existing) {
+            (None, None) => return Ok(()),
+            (None, Some(id)) => {
+                // Stalwart refuses to delete the active script, and
+                // onSuccessDeactivateScript runs only after the destroy: so
+                // deactivate first, on its own.
+                self.client
+                    .call_using(
+                        &auth,
+                        &SIEVE_USING,
+                        vec![Call::new(
+                            "SieveScript/set",
+                            json!({ "accountId": account, "onSuccessDeactivateScript": true }),
+                        )],
+                    )
+                    .await?;
+                json!({ "accountId": account, "destroy": [id] })
+            }
+            (Some(text), existing) => {
+                let blob = self
+                    .client
+                    .upload(
+                        &auth,
+                        &account,
+                        "application/sieve",
+                        text.as_bytes().to_vec(),
+                    )
+                    .await?;
+                match existing {
+                    Some(id) => json!({
+                        "accountId": account,
+                        "update": { id.clone(): { "blobId": blob } },
+                        "onSuccessActivateScript": id,
+                    }),
+                    None => json!({
+                        "accountId": account,
+                        "create": { "s": { "name": name, "blobId": blob } },
+                        "onSuccessActivateScript": "#s",
+                    }),
+                }
+            }
+        };
+        let destroying = set.get("destroy").is_some();
+        let r = self
+            .client
+            .call_using(&auth, &SIEVE_USING, vec![Call::new("SieveScript/set", set)])
+            .await?;
+        let r = &r[0];
+        for (key, what) in [
+            ("notCreated", "create"),
+            ("notUpdated", "update"),
+            ("notDestroyed", "delete"),
+        ] {
+            if let Some(e) = r
+                .get(key)
+                .and_then(Value::as_object)
+                .and_then(|m| m.values().next())
+            {
+                let desc = e
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .unwrap_or("refused");
+                return Err(EngineError::Rejected(format!(
+                    "the engine refused to {what} the rules script: {desc}"
+                )));
+            }
+        }
+        if !destroying && r.get("created").is_none() && r.get("updated").is_none() {
+            return Err(EngineError::Protocol(format!(
+                "unexpected SieveScript/set answer: {r}"
+            )));
+        }
+        Ok(())
+    }
+
     async fn user_delete_app_password(&self, creds: &UserCreds, id: &str) -> EngineResult<()> {
         let auth = Auth::basic(&creds.email, &creds.password);
         let r = self
@@ -772,6 +901,21 @@ impl Engine for StalwartEngine {
             )
             .await?;
         set_outcome(&r[0], SetOp::Destroy, id).map(|_| ())
+    }
+}
+
+const SIEVE_USING: [&str; 2] = ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:sieve"];
+
+impl StalwartEngine {
+    /// The user's account id for JMAP Sieve, from their session.
+    async fn sieve_account(&self, auth: &Auth) -> EngineResult<String> {
+        let session = self.client.session(auth).await?;
+        session
+            .pointer("/primaryAccounts/urn:ietf:params:jmap:sieve")
+            .or_else(|| session.pointer("/primaryAccounts/urn:ietf:params:jmap:mail"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| EngineError::Protocol("no Sieve account in the session".into()))
     }
 }
 

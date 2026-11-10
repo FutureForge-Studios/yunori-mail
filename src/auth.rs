@@ -88,7 +88,7 @@ pub fn totp_step(secret_b32: &str, account: &str, code: &str) -> Option<u64> {
     let step = now / 30;
     [step.saturating_sub(1), step, step + 1]
         .into_iter()
-        .find(|s| crate::util::ct_eq(totp.generate(s * 30).as_bytes(), code.as_bytes()))
+        .find(|s| constant_eq(totp.generate(s * 30).as_bytes(), code.as_bytes()))
 }
 
 impl Db {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ExternalLink, KeyRound, Link2, MoreHorizontal, Pencil, Plus, Search, Trash2 } from "lucide-react";
+import { Download, ExternalLink, KeyRound, Link2, MoreHorizontal, Pencil, Plus, Search, Trash2, Upload } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
 import { Button } from "@/design/vendor/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/design/vendor/ui/dialog";
@@ -16,14 +16,16 @@ import { Label } from "@/design/vendor/ui/label";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { CreateMailboxResponse, Domain, Mailbox } from "@/api/types";
 import { ConfirmAction } from "@/components/confirm";
-import { DataTable, FieldError, FilterPills, LoadError, Page, selectClass, usePageTitle, type Column } from "@/components/kit";
+import { DataTable, FieldError, FilterPills, LoadError, Page, RadioRow, selectClass, usePageTitle, type Column } from "@/components/kit";
 import { Meter } from "@/components/meter";
 import { PasswordInput, StrengthHint } from "@/components/password-input";
 import { SecretReveal } from "@/components/secret-reveal";
 import { fmtBytes, fmtDate, fmtNumber, openInYunoriUrl, pct, relativeDays, timeAgo } from "@/lib/format";
+import { saveBlob } from "@/lib/download";
 import { MIN_PASSWORD } from "@/lib/password";
 import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
+import { ImportMailboxesDialog } from "../mailbox-import";
 import { useSession } from "../session";
 
 const QUOTAS: { mb: number | null; label: string }[] = [
@@ -40,7 +42,7 @@ type Reveal =
   | { kind: "created" | "reset"; address: string; password: string }
   | { kind: "invite"; address: string; name: string | null; url: string; expiresAt: string; isNew: boolean };
 
-/** Mailboxes: create (invite link, or a password shown once), reset, edit, delete. */
+/** Mailboxes: create (invite link, or a password shown once), import/export CSV, reset, edit, delete. */
 export default function MailboxesPage() {
   usePageTitle("Mailboxes");
   const { session } = useSession();
@@ -52,6 +54,8 @@ export default function MailboxesPage() {
   const [q, setQ] = useState(params.get("q") ?? "");
   const domainFilter = params.get("domain") ?? "all";
   const [createOpen, setCreateOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [reveal, setReveal] = useState<Reveal | null>(null);
   const [editing, setEditing] = useState<Mailbox | null>(null);
   const [resetting, setResetting] = useState<Mailbox | null>(null);
@@ -64,6 +68,18 @@ export default function MailboxesPage() {
       void reload();
     } catch (err) {
       toast.error(errorMessage(err));
+    }
+  }
+
+  async function exportCsv() {
+    setExporting(true);
+    try {
+      const { blob, filename } = await api.exportMailboxes();
+      saveBlob(blob, filename);
+    } catch (err) {
+      toast.error(errorMessage(err, "The export didn't download. Try again."));
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -222,10 +238,20 @@ export default function MailboxesPage() {
           : "The console never sees what's inside a mailbox."
       }
       actions={
-        <Button size="sm" onClick={() => setCreateOpen(true)} disabled={!data || domains.length === 0}>
-          <Plus className="h-4 w-4" />
-          New mailbox
-        </Button>
+        <>
+          <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)} disabled={!data || domains.length === 0}>
+            <Upload className="h-3.5 w-3.5" />
+            Import
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => void exportCsv()} disabled={!data || data.mailboxes.length === 0 || exporting}>
+            <Download className="h-3.5 w-3.5" />
+            {exporting ? "Exporting…" : "Export"}
+          </Button>
+          <Button size="sm" onClick={() => setCreateOpen(true)} disabled={!data || domains.length === 0}>
+            <Plus className="h-4 w-4" />
+            New mailbox
+          </Button>
+        </>
       }
     >
       {reveal && <RevealPanel reveal={reveal} openUrl={yunori(reveal.address)} onDone={() => setReveal(null)} />}
@@ -270,6 +296,7 @@ export default function MailboxesPage() {
           void reload();
         }}
       />
+      <ImportMailboxesDialog open={importOpen} onOpenChange={setImportOpen} onImported={() => void reload()} />
       {editing && <EditMailboxDialog mailbox={editing} onClose={() => setEditing(null)} onSaved={() => void reload()} />}
       <ConfirmAction
         open={!!resetting}
@@ -608,18 +635,6 @@ function CreateMailboxDialog({
         </form>
       </DialogContent>
     </Dialog>
-  );
-}
-
-function RadioRow({ name, checked, onChange, label, hint }: { name: string; checked: boolean; onChange: () => void; label: string; hint?: string }) {
-  return (
-    <label className="flex cursor-pointer items-start gap-2.5 text-sm">
-      <input type="radio" name={name} checked={checked} onChange={onChange} className="mt-1 h-3.5 w-3.5 accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
-      <span>
-        <span className="text-foreground/90">{label}</span>
-        {hint && <span className="block text-[11px] text-muted-foreground">{hint}</span>}
-      </span>
-    </label>
   );
 }
 

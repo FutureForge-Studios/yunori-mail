@@ -339,6 +339,66 @@ async fn live_engine_end_to_end() {
         .await
         .expect("changed password works");
 
+    step("6b. mailbox rules (auto-reply + forwarding) as a Sieve script, as the user");
+    let rules = crate::rules::MailRules {
+        vacation: crate::rules::Vacation {
+            enabled: true,
+            subject: "Away \"until\" Monday".into(),
+            body: "Back soon.\nAna".into(),
+            start_date: Some("2026-01-01".into()),
+            end_date: None,
+        },
+        forwarding: crate::rules::Forwarding {
+            enabled: true,
+            address: "ana@elsewhere.example".into(),
+            keep_copy: true,
+        },
+    }
+    .normalised("ana@live.test")
+    .unwrap();
+    let me = creds("Third-Strong-Pass-77!");
+    let name = crate::rules::SCRIPT_NAME;
+    assert_eq!(
+        engine
+            .user_sieve_script(&me, name)
+            .await
+            .expect("no script yet"),
+        None
+    );
+    engine
+        .user_put_sieve_script(&me, name, Some(&rules.to_sieve()))
+        .await
+        .expect("engine accepts the generated script (it compiles)");
+    let back = engine
+        .user_sieve_script(&me, name)
+        .await
+        .unwrap()
+        .expect("script stored");
+    assert_eq!(
+        crate::rules::MailRules::from_sieve(&back),
+        Some(rules.clone())
+    );
+    let mut off = rules.clone();
+    off.forwarding.enabled = false;
+    engine
+        .user_put_sieve_script(&me, name, Some(&off.to_sieve()))
+        .await
+        .expect("update in place");
+    let back = engine.user_sieve_script(&me, name).await.unwrap().unwrap();
+    assert!(!back.contains("redirect"), "{back}");
+    assert!(
+        engine
+            .user_put_sieve_script(&me, name, Some("this is not sieve;"))
+            .await
+            .is_err(),
+        "an invalid script is refused, not stored"
+    );
+    engine
+        .user_put_sieve_script(&me, name, None)
+        .await
+        .expect("remove");
+    assert_eq!(engine.user_sieve_script(&me, name).await.unwrap(), None);
+
     step("7. operations: queue, reload, certificate push, relay route");
     let q = engine.queue().await.expect("queue");
     eprintln!("queued messages: {}", q.len());

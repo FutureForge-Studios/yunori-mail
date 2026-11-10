@@ -4,7 +4,7 @@
 //! Every non-GET request must carry `X-Yunori-Request: 1` (CSRF guard on top
 //! of SameSite=Strict cookies). Errors are `{ "error": { code, message, field? } }`.
 
-mod admin;
+pub(crate) mod admin;
 mod portal;
 mod session;
 
@@ -246,6 +246,8 @@ pub fn router(app: AppState) -> Router {
             "/mailboxes",
             get(admin::list_mailboxes).post(admin::create_mailbox),
         )
+        .route("/mailboxes/export", get(admin::export_mailboxes))
+        .route("/mailboxes/import", post(admin::import_mailboxes))
         .route(
             "/mailboxes/{id}",
             patch(admin::update_mailbox).delete(admin::delete_mailbox),
@@ -273,6 +275,10 @@ pub fn router(app: AppState) -> Router {
         .route(
             "/portal/app-passwords/{id}",
             delete(portal::delete_app_password),
+        )
+        .route(
+            "/portal/rules",
+            get(portal::get_rules).put(portal::put_rules),
         )
         .route("/portal/invite", post(portal::invite_check))
         .route("/portal/invite/accept", post(portal::invite_accept))

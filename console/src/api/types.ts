@@ -257,6 +257,38 @@ export interface ResetPasswordResponse {
   password: string;
 }
 
+/** GET /mailboxes/export → text/csv attachment ("mailboxes-YYYYMMDD.csv"):
+ *  address, display_name, quota_mb, used_mb, role, aliases (space-separated), created_at. No passwords. */
+/** POST /mailboxes/import — CSV columns `address[,display_name[,quota_mb]]`, header row optional
+ *  (the export's own file is accepted). At most 1000 rows; 400 field "csv" for an unreadable/empty/too-large file. */
+export interface ImportMailboxesRequest {
+  csv: string;
+  /** Send each person an invite link (default true) instead of generating a password. */
+  invite: boolean;
+  /** Check every row and report, creating nothing. */
+  dryRun: boolean;
+}
+export interface ImportCreated {
+  address: string;
+  inviteUrl?: string;
+  inviteExpiresAt?: string;
+  /** Only when `invite` was false — shown once. */
+  password?: string;
+}
+export interface ImportSkipped {
+  /** 1-based data row (after any header); null when the engine refused it during creation. */
+  line: number | null;
+  address: string;
+  reason: string;
+}
+export interface ImportMailboxesResponse {
+  dryRun: boolean;
+  /** Addresses that passed the checks (would be / were attempted). */
+  ready: string[];
+  created: ImportCreated[];
+  skipped: ImportSkipped[];
+}
+
 // ── Aliases ──────────────────────────────────────────────────────────────
 
 export interface Alias {
@@ -552,6 +584,29 @@ export interface AppleProfileResponse {
   url: string;
   expiresAt: string;
   appPassword: AppPassword;
+}
+
+/** GET /portal/rules → MailRules ; PUT /portal/rules MailRules → normalised MailRules.
+ *  400 field: vacation.subject | vacation.body | vacation.startDate | vacation.endDate | forwarding.address */
+export interface VacationRule {
+  enabled: boolean;
+  /** Defaults to "Out of office" when on and empty; ≤ 200 characters. */
+  subject: string;
+  /** Required when on; ≤ 5000 characters. */
+  body: string;
+  /** YYYY-MM-DD; absent = from now. */
+  startDate?: string;
+  /** YYYY-MM-DD (≥ startDate); absent = until switched off. */
+  endDate?: string;
+}
+export interface ForwardingRule {
+  enabled: boolean;
+  address: string;
+  keepCopy: boolean;
+}
+export interface MailRules {
+  vacation: VacationRule;
+  forwarding: ForwardingRule;
 }
 
 /** POST /portal/password {current, next} → 204 */

@@ -118,5 +118,14 @@ Live-tested facts (2026-11-10):
   reindex. Reindexing is **not** an `x:Action`; it is a task: `x:Task/set` create
   `{"@type": "StoreMaintenance", "maintenanceType": "reindexAccounts"}` (value camelCase; `"ReindexAccounts"` is
   rejected). Stalwart fans it out into per-account `AccountMaintenance`/`reindex` tasks due a few minutes apart.
+- **Mailbox rules (portal)** use standard JMAP Sieve (`urn:ietf:params:jmap:sieve`) *as the user*: upload the
+  script to `/jmap/upload/<accountId>/` (`application/sieve`; the session's `uploadUrl` names the public host, so
+  only its path is used against loopback), then `SieveScript/set` create `{name, blobId}` with
+  `onSuccessActivateScript: "#s"` or update `{blobId}`. Stalwart compiles on set: an invalid script is refused, not
+  stored. It refuses to delete the *active* script and `onSuccessDeactivateScript` runs after the destroy, so
+  deactivation is a separate `SieveScript/set` first. The script carries its own settings on line 1
+  (`# yunori-rules v1 <base64 json>`), so the portal reads back what the engine runs and Yunori stores nothing.
+  Verified live: `vacation :days 1` replies once per sender per day with `Auto-Submitted: auto-replied`;
+  `redirect :copy` keeps a copy, plain `redirect` does not.
 - JMAP over WebSocket (`/jmap/ws`) is not proxied through the edge (the HTTP proxy cannot carry an upgrade); clients
   use EventSource push, which works.

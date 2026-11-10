@@ -172,6 +172,20 @@ pub trait Engine: Send + Sync {
         description: &str,
     ) -> EngineResult<(EAppPassword, String)>;
     async fn user_delete_app_password(&self, creds: &UserCreds, id: &str) -> EngineResult<()>;
+    /// The text of the user's Sieve script called `name`, if there is one.
+    async fn user_sieve_script(
+        &self,
+        creds: &UserCreds,
+        name: &str,
+    ) -> EngineResult<Option<String>>;
+    /// Install (and activate) the user's Sieve script `name`, or with `None`
+    /// deactivate and delete it. Other scripts are left alone.
+    async fn user_put_sieve_script(
+        &self,
+        creds: &UserCreds,
+        name: &str,
+        script: Option<&str>,
+    ) -> EngineResult<()>;
 }
 
 /// Resolve an account's alias list into full addresses given the domain list.

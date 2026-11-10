@@ -22,6 +22,7 @@ import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
 import { NotFound } from "@/pages/not-found";
 import { ConnectDevices } from "./devices";
+import { MailRulesCard } from "./rules";
 import { PortalWelcome } from "./welcome";
 
 /**
@@ -215,6 +216,13 @@ function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void
           {storageText}
           {p !== null && p >= 90 && <span className="text-amber-700 dark:text-amber-400"> · nearly full — new mail is refused once it's full</span>}
         </p>
+      </Section>
+
+      <Section
+        title="Auto-reply & forwarding"
+        blurb="Answer mail while you're away, or send it on to another address. Both run on the server, so they work with every app closed."
+      >
+        <MailRulesCard address={me.address} />
       </Section>
 
       <Section title="Mail settings" blurb="Most apps find these on their own. If yours asks, use these — your username is your full address.">

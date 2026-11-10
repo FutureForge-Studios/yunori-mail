@@ -402,6 +402,13 @@ def main():
         except imaplib.IMAP4.error as e:
             check("invited person can sign in over IMAP", False, e)
 
+    if link:
+        mail_rules(host, domain, run, alice, pw_alice, bob, pw_bob, carol, carol_pw)
+    console_routes(edge, host, domain, dom, run, bob, pw_bob)
+    portal_lifecycle(host, alice, pw_alice)
+    cli_commands(domain, run)
+    brute_force(host)
+
     step("backup → restore keeps the mail")
     out = "/root/yunori-e2e-backups"
     printed = sh(BIN, "backup", "--out", out)
@@ -450,6 +457,274 @@ def main():
     for f in failed:
         print(f"  FAIL: {f}")
     sys.exit(1 if failed else 0)
+
+
+def mail_rules(host, domain, run, alice, pw_alice, bob, pw_bob, carol, carol_pw):
+    step("portal: auto-reply and forwarding, delivered for real")
+    p = Edge(host)
+    st, _ = p.api("POST", "/portal/login", {"email": bob, "password": pw_bob})
+    check("bob signs in to the portal", st == 200, st)
+    st, r = p.api("GET", "/portal/rules")
+    check("rules start off", st == 200 and not r["vacation"]["enabled"] and not r["forwarding"]["enabled"], (st, r))
+    st, r = p.api("PUT", "/portal/rules", {"forwarding": {"enabled": True, "address": bob}})
+    check("forwarding to itself refused", st == 400 and r["error"]["field"] == "forwarding.address", (st, r))
+    st, r = p.api("PUT", "/portal/rules", {"vacation": {"enabled": True, "body": " "}})
+    check("auto-reply without text refused", st == 400 and r["error"]["field"] == "vacation.body", (st, r))
+    rules = {
+        "vacation": {"enabled": True, "subject": f"Away {run}", "body": "I am away until Monday.\nBob"},
+        "forwarding": {"enabled": True, "address": carol, "keepCopy": True},
+    }
+    st, r = p.api("PUT", "/portal/rules", rules)
+    check("auto-reply + forwarding saved (engine compiled the script)", st == 200, (st, r))
+    st, back = p.api("GET", "/portal/rules")
+    check("rules read back from the engine", st == 200 and back.get("forwarding", {}).get("address") == carol, back)
+
+    subj = f"e2e-rules-{run}"
+    with smtplib.SMTP_SSL("127.0.0.1", 465, context=CTX, timeout=30) as s:
+        s.login(alice, pw_alice)
+        s.send_message(message(alice, bob, subj))
+    check("bob keeps a copy", bool(imap_fetch(bob, pw_bob, subj)))
+    fwd = imap_fetch(carol, carol_pw, subj, timeout=90)
+    check("carol receives the forwarded message", bool(fwd))
+    reply = imap_fetch(alice, pw_alice, f"Away {run}", timeout=90)
+    check("alice gets bob's auto-reply", bool(reply))
+    if reply:
+        check("auto-reply is marked automatic (no loops)", "Auto-Submitted: auto-replied" in reply, "")
+    # Only one auto-reply per sender per day.
+    with smtplib.SMTP_SSL("127.0.0.1", 465, context=CTX, timeout=30) as s:
+        s.login(alice, pw_alice)
+        s.send_message(message(alice, bob, subj + "-again"))
+    imap_fetch(bob, pw_bob, subj + "-again")
+    time.sleep(8)
+    m = imaplib.IMAP4_SSL("127.0.0.1", 993, ssl_context=CTX)
+    m.login(alice, pw_alice)
+    m.select("INBOX")
+    typ, rows = m.fetch("1:*", "(BODY.PEEK[HEADER.FIELDS (SUBJECT)])")
+    m.logout()
+    replies = sum(1 for r_ in rows if isinstance(r_, tuple) and f"Away {run}".encode() in r_[1])
+    check("auto-reply sent once per sender, not per message", replies == 1, replies)
+
+    # Forward only: bob no longer keeps a copy.
+    st, _ = p.api("PUT", "/portal/rules", {"forwarding": {"enabled": True, "address": carol, "keepCopy": False}})
+    check("forward-only saved", st == 200, st)
+    subj2 = f"e2e-fwdonly-{run}"
+    with smtplib.SMTP_SSL("127.0.0.1", 465, context=CTX, timeout=30) as s:
+        s.login(alice, pw_alice)
+        s.send_message(message(alice, bob, subj2))
+    check("forward-only reaches carol", bool(imap_fetch(carol, carol_pw, subj2, timeout=90)))
+    check("forward-only leaves no copy with bob", not imap_fetch(bob, pw_bob, subj2, timeout=10))
+    st, _ = p.api("PUT", "/portal/rules", {})
+    st2, r = p.api("GET", "/portal/rules")
+    check("rules switched off", st == 200 and not r["forwarding"]["enabled"], r)
+
+
+def console_routes(edge, host, domain, dom, run, bob, pw_bob):
+    step("console: every route")
+    for path in ("/overview", "/install", "/preflight", "/certificate", "/sending", "/deliverability",
+                 "/system", "/admins", f"/domains/{dom['id']}"):
+        st, r = edge.api("GET", path)
+        check(f"GET {path}", st == 200, st if st == 200 else (st, r))
+    st, r = edge.api("POST", "/updates/check")
+    check("POST /updates/check answers (or explains)", st == 200, (st, r))
+
+    # A second domain, catch-all on, its DNS checklist, then removed.
+    extra = f"e2e{run}.{domain}"
+    st, d2 = edge.api("POST", "/domains", {"name": extra})
+    check(f"add domain {extra}", st in (200, 201), (st, d2))
+    if st in (200, 201):
+        st, r = edge.api("GET", f"/domains/{d2['id']}/dns")
+        check("new domain has a DNS checklist (DKIM generated)", st == 200, st)
+        st, r = edge.api("DELETE", f"/domains/{d2['id']}")
+        check("remove the empty domain", st in (200, 204), (st, r))
+
+    st, r = edge.api("PATCH", f"/domains/{dom['id']}", {"catchAll": "not-an-address"})
+    check("catch-all must be an address", st == 400, st)
+    st, r = edge.api("PATCH", f"/domains/{dom['id']}", {"catchAll": bob})
+    check("catch-all on", st == 200 and r.get("catchAll") == bob, (st, r))
+    if st == 200:
+        subj = f"e2e-catchall-{run}"
+        with smtplib.SMTP("127.0.0.1", 25, timeout=30) as s:
+            s.ehlo("sender.example.net")
+            s.starttls(context=CTX)
+            s.ehlo("sender.example.net")
+            s.send_message(message("someone@example.net", f"nobody-{run}@{domain}", subj))
+        check("mail to an unknown address lands in the catch-all",
+              bool(imap_fetch(bob, pw_bob, subj, folders=("INBOX", "Junk Mail"))))
+        st, r = edge.api("PATCH", f"/domains/{dom['id']}", {"catchAll": None})
+        check("catch-all off", st == 200 and not r.get("catchAll"), (st, r))
+
+    # Mailbox lifecycle: create, rename, quota, invite, reset, delete.
+    st, r = edge.api("POST", "/mailboxes", {"local": f"dave{run}", "domainId": dom["id"], "password": "short"})
+    check("weak password refused", st == 400, st)
+    st, r = edge.api("POST", "/mailboxes", {"local": f"dave{run}", "domainId": dom["id"]})
+    mid = (r or {}).get("mailbox", {}).get("id") if st in (200, 201) else None
+    check("create a mailbox with a generated password", bool(mid) and len(r.get("password", "")) >= 16, (st, r))
+    if mid:
+        st, r = edge.api("PATCH", f"/mailboxes/{mid}", {"displayName": "Dave E2E", "quotaMb": 512})
+        check("rename + quota", st == 200 and r["displayName"] == "Dave E2E" and r["quotaBytes"] == 512 << 20, (st, r))
+        st, r = edge.api("POST", f"/mailboxes/{mid}/invite")
+        check("invite link for an existing mailbox", st in (200, 201) and "#invite=" in r.get("url", ""), (st, r))
+        st, r = edge.api("POST", f"/mailboxes/{mid}/password", {})
+        new_pw = (r or {}).get("password")
+        check("password reset returns a new password once", st == 200 and bool(new_pw), st)
+        try:
+            m = imaplib.IMAP4_SSL("127.0.0.1", 993, ssl_context=CTX)
+            m.login(f"dave{run}@{domain}", new_pw)
+            m.logout()
+            check("reset password works over IMAP", True)
+        except Exception as e:
+            check("reset password works over IMAP", False, e)
+        st, r = edge.api("GET", "/mailboxes")
+        check("reset withdrew the invite", st == 200 and not next(m for m in r if m["id"] == mid).get("inviteExpiresAt"), "")
+        st, r = edge.api("DELETE", f"/mailboxes/{mid}")
+        check("delete the mailbox", st in (200, 204), (st, r))
+
+    # Alias delete.
+    st, mbs = edge.api("GET", "/mailboxes")
+    bob_id = next(m["id"] for m in mbs if m["address"] == bob)
+    tmp = f"tmp{run}"
+    st, r = edge.api("POST", "/aliases", {"local": tmp, "domainId": dom["id"], "mailboxId": bob_id})
+    check("add alias", st in (200, 201), (st, r))
+    st, r = edge.api("DELETE", f"/aliases?address={tmp}@{domain}")
+    check("remove alias", st in (200, 204), (st, r))
+
+    # CSV export / import.
+    st, body, h = edge.req("GET", "/api/yunori/mailboxes/export", raw=True)
+    check("CSV export", st == 200 and h.get("content-type", "").startswith("text/csv") and bob.encode() in body, st)
+    csv = f"address,display_name,quota_mb\ncsv1{run}@{domain},\"CSV, One\",100\ncsv2{run}@{domain},,\n{bob},Dup,\n"
+    st, r = edge.api("POST", "/mailboxes/import", {"csv": csv, "dryRun": True})
+    check("CSV import dry run: 2 ready, 1 skipped, none created",
+          st == 200 and len(r["ready"]) == 2 and len(r["skipped"]) == 1 and not r["created"], (st, r))
+    st, r = edge.api("POST", "/mailboxes/import", {"csv": csv})
+    check("CSV import creates with invite links",
+          st == 200 and len(r["created"]) == 2 and all("#invite=" in c["inviteUrl"] for c in r["created"]), (st, r))
+    st, mbs = edge.api("GET", "/mailboxes")
+    for m in mbs:
+        if m["address"].startswith(("csv1" + run, "csv2" + run)):
+            edge.api("DELETE", f"/mailboxes/{m['id']}")
+
+    # Sending: switch to a relay (credential write-only), then back to direct.
+    st, r = edge.api("PUT", "/sending", {"mode": "relay", "relay": {
+        "provider": "custom", "host": "smtp.relay.example", "port": 587, "username": "u", "password": "relay-secret-e2e"}})
+    check("relay mode saved, password never echoed", st == 200 and "relay-secret-e2e" not in json.dumps(r)
+          and r.get("relay", {}).get("hasPassword"), (st, r))
+    st, r = edge.api("PUT", "/sending", {"mode": "relay", "relay": {
+        "provider": "custom", "host": "elsewhere.example", "port": 587, "username": "u"}})
+    check("saved relay password does not follow a new host", st == 400, st)
+    st, r = edge.api("PUT", "/sending", {"mode": "direct"})
+    check("back to direct sending", st == 200 and r.get("mode") == "direct", (st, r))
+
+    # Sessions are revocable rows: a logged-out cookie is dead.
+    old = dict(edge.cookies)
+    st, _ = edge.api("POST", "/logout")
+    dead = Edge(host)
+    dead.cookies = old
+    st, _ = dead.api("GET", "/overview")
+    check("a signed-out session cannot be reused", st == 401, st)
+    saved = json.load(open("/root/.yunori-e2e-owner.json"))
+    st, _ = edge.api("POST", "/login", {"email": saved["owner"], "password": saved["password"],
+                                        "totp": next_totp(saved["secret"])})
+    check("sign in again", st == 200, st)
+    st, r = edge.api("GET", "/audit")
+    actions = {e["action"] for e in r.get("entries", [])}
+    check("audit log records the mutations, chain intact",
+          r.get("chainOk") and {"mailbox.create", "mailbox.delete", "domain.update", "mailbox.export"} <= actions, actions)
+
+
+def portal_lifecycle(host, alice, pw_alice):
+    step("portal: password change, app password revoke, sign-out")
+    p = Edge(host)
+    p.api("POST", "/portal/login", {"email": alice, "password": pw_alice})
+    st, r = p.api("POST", "/portal/app-passwords", {"description": "e2e revoke"})
+    ap_id, secret = (r or {}).get("appPassword", {}).get("id"), (r or {}).get("secret")
+    st, _ = p.api("DELETE", f"/portal/app-passwords/{ap_id}")
+    check("revoke an app password", st == 204, st)
+    try:
+        m = imaplib.IMAP4_SSL("127.0.0.1", 993, ssl_context=CTX)
+        m.login(alice, secret)
+        m.logout()
+        check("revoked app password stops working", False)
+    except imaplib.IMAP4.error:
+        check("revoked app password stops working", True)
+    st, _ = p.api("POST", "/portal/password", {"current": "wrong", "next": pw_alice + "2"})
+    check("password change needs the current password", st == 401, st)
+    st, _ = p.api("POST", "/portal/password", {"current": pw_alice, "next": pw_alice + "2"})
+    check("password change", st == 204, st)
+    st, _ = p.api("POST", "/portal/password", {"current": pw_alice + "2", "next": pw_alice})
+    check("and back (session follows the new password)", st == 204, st)
+    st, _ = p.api("POST", "/portal/logout")
+    st, _ = p.api("GET", "/portal/me")
+    check("portal sign-out ends the session", st == 401, st)
+
+
+def cli_commands(domain, run):
+    step("CLI: every day-two command")
+    def ok(args, want=None, rc=0):
+        r = subprocess.run([BIN, *args], capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL)
+        good = r.returncode == rc and (want is None or want in r.stdout + r.stderr)
+        check("yunori-mail " + " ".join(args), good, "" if good else (r.returncode, (r.stdout + r.stderr)[-300:]))
+        return r.stdout
+    ok(["status"])
+    r = subprocess.run([BIN, "doctor", "--json"], capture_output=True, text=True, timeout=300)
+    try:
+        json.loads(r.stdout)
+        check("yunori-mail doctor --json is JSON", True)
+    except ValueError:
+        check("yunori-mail doctor --json is JSON", False, r.stdout[-200:])
+    r = subprocess.run([BIN, "preflight", "--json"], capture_output=True, text=True, timeout=300)
+    check("yunori-mail preflight --json on an installed server", r.stdout.strip().startswith(("{", "[")), r.stdout[:120])
+    for kind in ("domain", "mailbox", "alias"):
+        out = ok([kind, "list", "--json"])
+        try:
+            json.loads(out)
+            check(f"{kind} list --json is JSON", True)
+        except ValueError:
+            check(f"{kind} list --json is JSON", False, out[:120])
+    ok(["domain", "dns", domain], want="MX")
+    addr = f"cli{run}@{domain}"
+    ok(["mailbox", "add", addr, "--name", "CLI Box", "--quota-mb", "50"], want="Password (shown once)")
+    ok(["alias", "add", f"cli-alias{run}@{domain}", addr])
+    ok(["mailbox", "passwd", addr], want="New password")
+    ok(["alias", "remove", f"cli-alias{run}@{domain}"])
+    ok(["mailbox", "remove", addr, "--yes"])
+    exp = "/root/e2e-mailboxes.csv"
+    ok(["mailbox", "export", "--out", exp])
+    check("export file is CSV", open(exp).readline().startswith("address,display_name"))
+    with open("/root/e2e-import.csv", "w") as f:
+        f.write(f"cliimp{run}@{domain},Imported\nbad,,\n")
+    out = ok(["mailbox", "import", "/root/e2e-import.csv", "--dry-run", "--json"])
+    try:
+        rep = json.loads(out)
+        check("CLI import dry run reports 1 ready, 1 skipped", len(rep["ready"]) == 1 and len(rep["skipped"]) == 1, rep)
+    except ValueError:
+        check("CLI import dry run reports 1 ready, 1 skipped", False, out[:200])
+    ok(["mailbox", "import", "/root/e2e-import.csv"], want="#invite=")
+    ok(["mailbox", "remove", f"cliimp{run}@{domain}", "--yes"])
+    before = sh("find", "/etc/systemd/system", "/var/lib/yunori-mail", "-newer", "/root/e2e-import.csv")
+    ok(["install", "--dry-run", "--domain", domain], want="install plan (dry run)", rc=0)
+    after = sh("find", "/etc/systemd/system", "/var/lib/yunori-mail", "-newer", "/root/e2e-import.csv")
+    check("install --dry-run changes nothing", before == after, (before, after))
+    ok(["certificate", "status"])
+    r = subprocess.run([BIN, "update", "--check"], capture_output=True, text=True, timeout=120)
+    check("update --check answers", r.returncode in (0, 1) and r.stdout.strip() != "", (r.returncode, r.stdout[-200:]))
+    r = subprocess.run([BIN, "setup-token"], capture_output=True, text=True, timeout=60)
+    check("setup-token refused once an owner exists", r.returncode != 0 or "#token=" not in r.stdout, r.stdout[-200:])
+    ok(["upgrade"], want="already current")
+
+
+def brute_force(host):
+    step("brute force: repeated bad logins are slowed or blocked")
+    p = Edge(host)
+    codes = []
+    for i in range(12):
+        st, _ = p.api("POST", "/login", {"email": "owner-probe@example.org", "password": "wrong-password", "totp": "000000"})
+        codes.append(st)
+    check("console login throttled after repeated failures", 429 in codes, codes)
+    codes = []
+    for i in range(12):
+        st, _ = p.api("POST", "/portal/login", {"email": f"nobody@{host}", "password": "wrong"})
+        codes.append(st)
+    check("portal login throttled after repeated failures", 429 in codes, codes)
 
 
 if __name__ == "__main__":

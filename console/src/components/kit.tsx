@@ -84,3 +84,16 @@ export function FieldError({ id, children }: { id: string; children: ReactNode }
     </p>
   );
 }
+
+/** A radio choice with an optional one-line hint under its label. */
+export function RadioRow({ name, checked, onChange, label, hint }: { name: string; checked: boolean; onChange: () => void; label: string; hint?: string }) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2.5 text-sm">
+      <input type="radio" name={name} checked={checked} onChange={onChange} className="mt-1 h-3.5 w-3.5 accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring" />
+      <span>
+        <span className="text-foreground/90">{label}</span>
+        {hint && <span className="block text-[11px] text-muted-foreground">{hint}</span>}
+      </span>
+    </label>
+  );
+}

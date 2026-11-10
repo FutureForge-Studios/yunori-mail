@@ -16,12 +16,15 @@ import type {
   CertificateInfo,
   FirstMailboxRequest,
   FirstMailboxResponse,
+  ImportMailboxesRequest,
+  ImportMailboxesResponse,
   InstallState,
   InviteAcceptRequest,
   InviteInfo,
   InviteLink,
   LoginRequest,
   Mailbox,
+  MailRules,
   OverviewResponse,
   PortalLoginRequest,
   PortalMe,
@@ -138,21 +141,46 @@ export async function request<T>(
     }
   }
 
-  if (!res.ok) {
-    const apiError =
-      json && typeof json === "object" && "error" in json && isApiError((json as { error: unknown }).error)
-        ? (json as { error: ApiError }).error
-        : {
-            code: res.status === 401 ? "unauthenticated" : "http_error",
-            message:
-              res.status >= 500
-                ? "The server ran into a problem. Try again in a moment."
-                : `The request failed (${res.status}).`,
-          };
-    if (res.status === 401 && !opts.allow401) redirectToSignIn(path);
-    throw new ApiRequestError(res.status, apiError);
-  }
+  if (!res.ok) throw failure(res.status, json, path, opts);
   return json as T;
+}
+
+/** The error for a non-2xx response (redirecting to sign-in on 401 unless allowed). */
+function failure(status: number, json: unknown, path: string, opts: RequestOptions): ApiRequestError {
+  const apiError =
+    json && typeof json === "object" && "error" in json && isApiError((json as { error: unknown }).error)
+      ? (json as { error: ApiError }).error
+      : {
+          code: status === 401 ? "unauthenticated" : "http_error",
+          message: status >= 500 ? "The server ran into a problem. Try again in a moment." : `The request failed (${status}).`,
+        };
+  if (status === 401 && !opts.allow401) redirectToSignIn(path);
+  return new ApiRequestError(status, apiError);
+}
+
+/**
+ * A GET that answers with a file (CSV export): the session cookie is enough,
+ * no CSRF header. Returns the body and the server's suggested file name.
+ */
+export async function download(path: string, fallbackName: string): Promise<{ blob: Blob; filename: string }> {
+  let res: Response;
+  try {
+    res = await transport(`${API_BASE}${path}`, { method: "GET", credentials: "same-origin" });
+  } catch {
+    throw new ApiRequestError(0, { code: "network", message: "Couldn't reach the server. Check your connection and try again." });
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    let json: unknown;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+    throw failure(res.status, json, path, {});
+  }
+  const name = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(res.headers.get("Content-Disposition") ?? "")?.[1];
+  return { blob: await res.blob(), filename: name ? decodeURIComponent(name) : fallbackName };
 }
 
 function isApiError(v: unknown): v is ApiError {
@@ -199,6 +227,9 @@ export const api = {
     request<ResetPasswordResponse>("POST", `/mailboxes/${id(mailboxId)}/password`, password ? { password } : {}),
   inviteMailbox: (mailboxId: string) => request<InviteLink>("POST", `/mailboxes/${id(mailboxId)}/invite`, {}),
   deleteMailbox: (mailboxId: string) => request<void>("DELETE", `/mailboxes/${id(mailboxId)}`),
+  /** CSV of every mailbox (no passwords), as a file to save. */
+  exportMailboxes: () => download("/mailboxes/export", "mailboxes.csv"),
+  importMailboxes: (body: ImportMailboxesRequest) => request<ImportMailboxesResponse>("POST", "/mailboxes/import", body),
 
   aliases: () => request<Alias[]>("GET", "/aliases"),
   createAlias: (body: CreateAliasRequest) => request<Alias>("POST", "/aliases", body),
@@ -232,4 +263,6 @@ export const portalApi = {
   acceptInvite: (body: InviteAcceptRequest) =>
     request<PortalMe>("POST", "/portal/invite/accept", body, { allow401: true }),
   appleProfile: (body: AppleProfileRequest) => request<AppleProfileResponse>("POST", "/portal/devices/apple", body),
+  rules: () => request<MailRules>("GET", "/portal/rules"),
+  saveRules: (body: MailRules) => request<MailRules>("PUT", "/portal/rules", body),
 };
