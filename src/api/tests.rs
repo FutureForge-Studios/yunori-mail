@@ -1074,3 +1074,5 @@ async fn mailboxes_export_and_import_as_csv() {
 mod dns_provider;
 // Alerts (settings, test send, check now): src/api/tests/alerts_tests.rs
 mod alerts_tests;
+// The browser onboarding (identity, sending, reverse DNS, first mailbox): src/api/tests/onboarding_tests.rs
+mod onboarding_tests;

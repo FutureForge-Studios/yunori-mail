@@ -51,6 +51,8 @@ export interface ServerInfo {
   installComplete: boolean;
   /** Origin of the Yunori client used for "Open in Yunori" deep links. */
   clientOrigin: string;
+  /** Where the console is opened (the mail hostname on installs from before the browser onboarding). */
+  consoleHost?: string;
 }
 
 export interface AdminUser {
@@ -142,6 +144,48 @@ export interface InstallLogLine {
 export interface InstallState {
   steps: InstallStep[];
   logs: InstallLogLine[];
+}
+
+// ── Browser onboarding (GET /onboarding, PUT /onboarding/identity, POST /onboarding/check, PUT /onboarding/ptr) ──
+// The terminal only prepares the server; these are the steps it used to ask and wait for. Every gate is still
+// decided by the server (public DNS, the CA); the browser only answers and asks for a re-check.
+
+export type PanelKind = "domain" | "sslip" | "ip";
+
+export interface OnboardingState {
+  /** Setup is finished (then the console's overview takes over). */
+  complete: boolean;
+  /** The terminal part (engine, units, edge) is done; false means `sudo yunori-mail install` still has work. */
+  terminalDone: boolean;
+  /** Every step, terminal ones first (see InstallStep ids: …, "inputs", "sending", "host_record", "certificate", "dns", "ptr", "first_mailbox", "done"). */
+  steps: InstallStep[];
+  logs: InstallLogLine[];
+  /** Where the console is opened (chosen in the terminal). */
+  panel: { host: string; kind: PanelKind; url: string };
+  /** The mail domain answer, once given. */
+  identity: { domain: string; hostname: string; adminEmail: string } | null;
+  suggested: { domain: string | null; hostname: string | null; adminEmail: string | null };
+  sending: {
+    /** The sending step has been answered (PUT /sending during setup answers it). */
+    confirmed: boolean;
+    mode: "direct" | "relay";
+    /** From the outbound port-25 check. */
+    suggested: "direct" | "relay";
+    port25: Check;
+  };
+  server: { ipv4: string | null; ipv6: string | null };
+  mailHostname: string;
+  primaryDomain: string;
+  primaryDomainId: string | null;
+  /** Reverse DNS was skipped for now (PUT /onboarding/ptr). */
+  ptrSkipped: boolean;
+}
+
+/** PUT /onboarding/identity → OnboardingState; 400 field: domain | hostname | adminEmail. */
+export interface OnboardingIdentityRequest {
+  domain: string;
+  hostname: string;
+  adminEmail: string;
 }
 
 // ── Domains ──────────────────────────────────────────────────────────────
@@ -329,6 +373,8 @@ export interface InviteLink {
 export interface FirstMailboxRequest {
   local: string;
   displayName?: string;
+  /** Send an invite link (the person chooses their password) instead of showing a generated one. */
+  invite?: boolean;
 }
 /** POST /mailboxes → CreateMailboxResponse (the password is shown once, never again).
  *  With `invite: true` the response carries `invite` instead of `password`. */
@@ -340,7 +386,9 @@ export interface CreateMailboxResponse {
 /** POST /install/first-mailbox → the first mailbox and its generated password (shown once). */
 export interface FirstMailboxResponse {
   mailbox: Mailbox;
-  password: string;
+  /** Absent when an invite link was asked for. */
+  password?: string;
+  invite?: InviteLink;
 }
 /** POST /mailboxes/:id/invite → InviteLink (replaces an unused one; a password reset withdraws it). */
 /** PATCH /mailboxes/:id → Mailbox */

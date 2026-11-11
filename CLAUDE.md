@@ -40,10 +40,10 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
 | `src/rules.rs` | Portal auto-reply + forwarding → one user-owned Sieve script (settings embedded, strings escaped) |
 | `src/csv.rs` | RFC 4180 CSV for mailbox import/export (formula-safe export) |
 | `src/relay.rs` | Relay provider rules (Amazon SES region→host, Easy DKIM, MAIL FROM; Resend DKIM + `send.`) |
-| `src/installer/` | 12 resumable steps + OS operations (pinned engine download, systemd, firewall) |
-| `src/cli.rs` | Terminal wizard (preflight first, re-asks bad answers, summary card) and day-two commands |
+| `src/installer/` | 14 resumable steps (`state.rs`): 6 terminal steps as root, then the browser onboarding the service runs (`mod.rs`); the console's address and sslip.io naming (`panel.rs`); OS operations (pinned engine download, systemd, firewall) |
+| `src/cli.rs` | Terminal install (preflight, then one question: where the console opens; old answers still accepted as flags) and day-two commands |
 | `src/edge/` | rustls, automatic HTTPS (`certs.rs`: when/why/backoff/staging rehearsal; `acme.rs`: the CA), allowlisted JMAP/DAV proxy, autoconfig (mail + DAV), Apple profiles (`mobileconfig.rs`), embedded console |
-| `src/api/` | Console + `/account` portal REST API |
+| `src/api/` | Console + `/account` portal REST API; `onboarding.rs` is the browser setup wizard's state and answers |
 | `src/alerts/` | Proactive alerts: conditions + de-dup state machine (`mod.rs`), email/webhook/ntfy channels, minimal SMTP submission client |
 | `src/updates.rs` | Daily check against `yunori.email/server/latest.json`; `yunori-mail update` runs the hosted installer |
 | `src/store/` | SQLite, AES-256-GCM vault, hash-chained audit log, mailbox invites |
@@ -63,7 +63,14 @@ Console checks: `npm --prefix console run typecheck`, `npm --prefix console run 
   (`dns_provider.<domain>.token`) and never returned, logged or audited.
 - **Certificates only go through `edge::certs::ensure`** (never `acme::order` directly): it holds the cross-process
   lock, the backoff and the staging rehearsal that keep Let's Encrypt's production rate limits safe. Every failure
-  becomes a `CertProblem` with a summary and a remedy a person can act on.
+  becomes a `CertProblem` with a summary and a remedy a person can act on. The names it must cover come from
+  `certs::required_names`: the console's address (unless a bare IP), plus the mail hostname once the `host_record`
+  gate passed, so a mail hostname that doesn't point here yet never holds the console's certificate back.
+- **The terminal asks one question** (where the console opens) and runs only root steps (`state::TERMINAL_STEPS`).
+  Everything after them is the browser onboarding, run by the unprivileged service: no root-only operation may be
+  needed after the terminal. The engine starts with placeholder names (Stalwart needs a hostname and a domain at
+  first run and refuses `.invalid`); `installer::apply_identity` renames the domain in place and sets the hostname
+  through the management API, and the sealed engine admin (`admin@<domain>`) follows the rename.
 - **The setup token travels in the URL fragment** (`/console/setup#token=…`) and is shown once; never log it. Mailbox
   invites follow the same rule (`/account/welcome#invite=…`, hash stored, single use, 7 days).
 - **Device profiles carry an app password**: built in memory, served once (`/account/profile/<token>`, 10 minutes),

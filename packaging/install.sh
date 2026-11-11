@@ -3,10 +3,15 @@
 #
 #   curl -fsSL https://yunori.email/server/install.sh | sudo sh
 #
+# The terminal asks one question (where the console opens: a domain that points here, or this
+# server's address), prepares the server and prints a one-time link; the rest of the setup
+# happens in your browser.
+#
 # (yunori.email serves this repository's releases; the GitHub release URL works the same:
 #  https://github.com/FutureForge-Studios/yunori-mail/releases/latest/download/install.sh)
 #
-# Unattended (every answer as a flag; see `yunori-mail install --help`):
+# Unattended (see `yunori-mail install --help`): --panel ip answers the question; the old
+# answers as flags are applied by the terminal and shown done in the browser:
 #   curl -fsSL …/install.sh | sudo sh -s -- --domain example.com --admin-email you@gmail.com
 #
 # Check a server first, installing nothing but the binary:

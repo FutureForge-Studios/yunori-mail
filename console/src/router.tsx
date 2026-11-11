@@ -9,6 +9,7 @@ import { NotFound } from "./pages/not-found";
 // Heavier / less-visited screens are split out; the portal and the first-run
 // setup (QR code) never load for an admin who's already signed in.
 const SetupPage = lazy(() => import("./console/pages/setup"));
+const OnboardingPage = lazy(() => import("./console/pages/onboarding"));
 const DomainsPage = lazy(() => import("./console/pages/domains"));
 const DomainDetailPage = lazy(() => import("./console/pages/domain-detail"));
 const MailboxesPage = lazy(() => import("./console/pages/mailboxes"));
@@ -40,6 +41,17 @@ export const router = createBrowserRouter([
         ),
       },
       { path: "login", element: <LoginPage /> },
+      {
+        // The browser onboarding: full-page, outside the shell.
+        path: "onboarding",
+        element: (
+          <RequireAdmin>
+            <Suspense fallback={<Splash label="Setup" />}>
+              <OnboardingPage />
+            </Suspense>
+          </RequireAdmin>
+        ),
+      },
       {
         element: (
           <RequireAdmin>

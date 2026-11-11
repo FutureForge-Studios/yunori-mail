@@ -246,11 +246,29 @@ pub async fn serve(app: AppState, opts: EdgeOptions) -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let hostname = app
-        .config()
-        .map(|c| c.hostname)
-        .unwrap_or_else(|| "localhost".into());
-    let hot = tls::HotCert::new(tls::load_or_self_signed(&app.paths, &hostname)?);
+    // Until a CA issues one: a self-signed certificate for every name and
+    // address the console may be opened at (the bare IP is the fallback when
+    // no name can get a certificate yet).
+    let names: Vec<String> = match app.config() {
+        Some(c) => {
+            let mut n = vec![c.hostname.clone()];
+            for extra in [
+                c.panel_host.clone(),
+                c.public_ipv4.clone(),
+                c.public_ipv6.clone(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if !n.contains(&extra) {
+                    n.push(extra);
+                }
+            }
+            n
+        }
+        None => vec!["localhost".into()],
+    };
+    let hot = tls::HotCert::new(tls::load_or_self_signed(&app.paths, &names)?);
     let mut server_cfg = rustls::ServerConfig::builder_with_provider(tls::provider())
         .with_safe_default_protocol_versions()?
         .with_no_client_auth()

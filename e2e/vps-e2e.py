@@ -521,7 +521,7 @@ def mail_rules(host, domain, run, alice, pw_alice, bob, pw_bob, carol, carol_pw)
 
 def console_routes(edge, host, domain, dom, run, bob, pw_bob):
     step("console: every route")
-    for path in ("/overview", "/install", "/preflight", "/certificate", "/sending", "/deliverability",
+    for path in ("/overview", "/install", "/onboarding", "/preflight", "/certificate", "/sending", "/deliverability",
                  "/system", "/admins", f"/domains/{dom['id']}"):
         st, r = edge.api("GET", path)
         check(f"GET {path}", st == 200, st if st == 200 else (st, r))

@@ -77,19 +77,36 @@ impl InstallState {
     }
 }
 
+/// Every step, in order. The first six run in the terminal, as root
+/// ([`TERMINAL_STEPS`]); the rest are the browser onboarding, which the
+/// service drives (it re-checks every gate every minute) and the console's
+/// wizard shows. Ids of steps an older release also had keep their meaning,
+/// so an install started with the old terminal flow resumes where it was.
 pub const STEPS: &[(&str, &str)] = &[
     ("preflight", "Check this server"),
-    ("inputs", "Your domain"),
-    ("host_record", "Point the mail hostname here"),
+    ("panel", "Choose where the console opens"),
     ("firewall", "Open mail ports"),
     ("install_engine", "Install the mail engine"),
     ("bootstrap_engine", "Configure the mail engine"),
     ("edge_tls", "Start the console and HTTPS edge"),
+    ("inputs", "Your mail domain"),
+    ("sending", "How mail goes out"),
+    ("host_record", "Point the mail hostname here"),
     ("certificate", "Get a trusted TLS certificate"),
     ("dns", "Publish DNS records"),
     ("ptr", "Set reverse DNS"),
     ("first_mailbox", "Create your first mailbox"),
     ("done", "Finish"),
+];
+
+/// Steps that need root: only `yunori-mail install` runs them.
+pub const TERMINAL_STEPS: &[&str] = &[
+    "preflight",
+    "panel",
+    "firewall",
+    "install_engine",
+    "bootstrap_engine",
+    "edge_tls",
 ];
 
 const MAX_LOG_LINES: i64 = 800;
@@ -114,7 +131,34 @@ impl Db {
                 params![id, i as i64, title],
             )?;
         }
+        drop(conn);
+        // An install begun before the browser onboarding that already got
+        // past its terminal phase never chose a console address: the console
+        // is on its mail hostname. Without this the service would wait for a
+        // terminal step forever.
+        if self.step_status("panel")? == StepStatus::Pending
+            && self.step_status("edge_tls")? == StepStatus::Done
+        {
+            self.set_step(
+                "panel",
+                StepStatus::Done,
+                Some("The console opens on the mail hostname."),
+            )?;
+        }
         Ok(())
+    }
+
+    /// Did the terminal finish its part (every root step done)?
+    pub fn terminal_done(&self) -> Result<bool> {
+        for id in TERMINAL_STEPS {
+            if !matches!(
+                self.step_status(id)?,
+                StepStatus::Done | StepStatus::Skipped
+            ) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     pub fn set_step(&self, id: &str, status: StepStatus, detail: Option<&str>) -> Result<()> {

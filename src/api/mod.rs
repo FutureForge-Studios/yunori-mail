@@ -8,6 +8,7 @@ pub(crate) mod admin;
 mod alerts;
 mod dns_provider;
 mod migrate;
+mod onboarding;
 mod portal;
 mod queue;
 mod session;
@@ -175,7 +176,9 @@ where
 }
 
 /// Origin people reach this server at: `https://<mail hostname>` in
-/// production; in `--dev` the address the browser used (plain HTTP on loopback).
+/// production (the console's address while onboarding has not yet given the
+/// mail hostname its certificate); in `--dev` the address the browser used
+/// (plain HTTP on loopback).
 pub fn public_base(app: &App, headers: &HeaderMap) -> String {
     if app.dev {
         let host = headers
@@ -188,7 +191,7 @@ pub fn public_base(app: &App, headers: &HeaderMap) -> String {
             .unwrap_or("127.0.0.1:8787");
         return format!("http://{host}");
     }
-    let host = app.config().map(|c| c.hostname).unwrap_or_default();
+    let host = crate::installer::public_host(app).unwrap_or_default();
     format!("https://{host}")
 }
 
@@ -231,6 +234,10 @@ pub fn router(app: AppState) -> Router {
         .route("/overview", get(admin::overview))
         .route("/install", get(admin::install_state))
         .route("/install/first-mailbox", post(admin::install_first_mailbox))
+        .route("/onboarding", get(onboarding::get_state))
+        .route("/onboarding/identity", put(onboarding::put_identity))
+        .route("/onboarding/check", post(onboarding::check))
+        .route("/onboarding/ptr", put(onboarding::skip_ptr))
         .route("/preflight", get(admin::preflight))
         .route("/certificate", get(admin::certificate))
         .route("/certificate/renew", post(admin::certificate_renew))

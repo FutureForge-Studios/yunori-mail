@@ -34,6 +34,8 @@ import type {
   MigrateSource,
   MigrateStatusResponse,
   MigrateTestResponse,
+  OnboardingIdentityRequest,
+  OnboardingState,
   OverviewResponse,
   PortalLoginRequest,
   PortalMe,
@@ -218,6 +220,11 @@ export const api = {
   overview: () => request<OverviewResponse>("GET", "/overview"),
   install: () => request<InstallState>("GET", "/install"),
   createFirstMailbox: (body: FirstMailboxRequest) => request<FirstMailboxResponse>("POST", "/install/first-mailbox", body),
+  onboarding: () => request<OnboardingState>("GET", "/onboarding"),
+  saveIdentity: (body: OnboardingIdentityRequest) => request<OnboardingState>("PUT", "/onboarding/identity", body),
+  /** Run the onboarding's checks now (DNS, certificate, reverse DNS) and return the new state. */
+  checkOnboarding: () => request<OnboardingState>("POST", "/onboarding/check"),
+  skipPtr: (skip: boolean) => request<OnboardingState>("PUT", "/onboarding/ptr", { skip }),
   certificate: () => request<CertificateInfo>("GET", "/certificate"),
   /** "Try now": starts an attempt in the background; poll certificate() while inProgress. */
   renewCertificate: () => request<CertificateInfo>("POST", "/certificate/renew"),

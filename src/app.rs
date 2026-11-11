@@ -46,6 +46,9 @@ pub struct App {
     /// Keyed by the SHA-256 of the download token.
     pub profiles: Mutex<HashMap<String, PendingProfile>>,
     pub throttle: Mutex<HashMap<String, Vec<Instant>>>,
+    /// One installer run at a time in this process (the 60-second gate check,
+    /// a console "Check now", a wizard answer).
+    pub install_run: tokio::sync::Mutex<()>,
 }
 
 impl App {
@@ -71,6 +74,7 @@ impl App {
             portal_sessions: Mutex::new(HashMap::new()),
             profiles: Mutex::new(HashMap::new()),
             throttle: Mutex::new(HashMap::new()),
+            install_run: tokio::sync::Mutex::new(()),
         });
         app.reload_engine()?;
         Ok(app)
@@ -104,6 +108,47 @@ impl App {
             portal_sessions: Mutex::new(HashMap::new()),
             profiles: Mutex::new(HashMap::new()),
             throttle: Mutex::new(HashMap::new()),
+            install_run: tokio::sync::Mutex::new(()),
+        })
+    }
+
+    /// For tests of the browser onboarding: what the terminal leaves behind
+    /// when it chose `panel` as the console's address — an engine with only
+    /// the placeholder domain (named like the panel), its administrator
+    /// `admin@<placeholder>`, and setup not complete.
+    #[cfg(test)]
+    pub fn for_tests_fresh(panel: &str) -> Arc<Self> {
+        let db = Db::open_memory().unwrap();
+        let (hostname, domain) = crate::installer::panel::placeholders(panel, None);
+        let cfg = ServerConfig {
+            hostname: hostname.clone(),
+            primary_domain: domain.clone(),
+            admin_email: String::new(),
+            client_origin: DEFAULT_CLIENT_ORIGIN.into(),
+            engine_url: format!("http://127.0.0.1:{ENGINE_HTTP_PORT}"),
+            sending_mode: SendingMode::Direct,
+            public_ipv4: Some("203.0.113.10".into()),
+            public_ipv6: None,
+            stalwart_version: Some("1.0.3".into()),
+            install_complete: false,
+            panel_host: Some(panel.to_string()),
+        };
+        db.set_json(ServerConfig::KEY, &cfg).unwrap();
+        db.put_secret("engine.admin", &format!("admin@{domain}:engine-secret"))
+            .unwrap();
+        let mock = Arc::new(MockEngine::fresh(&hostname, &domain));
+        Arc::new(Self {
+            paths: Paths::with_root(
+                std::env::temp_dir().join(format!("yunori-test-{}", crate::util::random_token(9))),
+            ),
+            db,
+            dev: true,
+            engine: RwLock::new(Some(mock.clone() as Arc<dyn Engine>)),
+            mock: Some(mock),
+            portal_sessions: Mutex::new(HashMap::new()),
+            profiles: Mutex::new(HashMap::new()),
+            throttle: Mutex::new(HashMap::new()),
+            install_run: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -122,6 +167,7 @@ impl App {
             public_ipv6: None,
             stalwart_version: Some("1.0.3".into()),
             install_complete: true,
+            panel_host: None,
         };
         db.set_json(ServerConfig::KEY, &cfg)?;
         Ok(cfg)

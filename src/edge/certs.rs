@@ -81,12 +81,42 @@ fn staging_conclusive(p: &CertProblem) -> bool {
     !matches!(p.kind, ProblemKind::CaUnreachable | ProblemKind::Other)
 }
 
-/// CA-issued, covering the hostname, not near expiry, and not a test certificate.
-fn healthy(disk: Option<&tls::CertInfo>, hostname: &str, directory: &str) -> bool {
+/// The names the certificate must cover, most important first. Installs from
+/// before the browser onboarding: the mail hostname. Otherwise the console's
+/// own address (unless it is a bare IP), plus the mail hostname once its host
+/// record has been verified (the onboarding's `host_record` gate): until then a
+/// mail hostname that does not point here yet must not hold the console's
+/// certificate back. Empty while there is nothing a CA could issue for.
+pub fn required_names(app: &App, cfg: &crate::model::ServerConfig) -> Vec<String> {
+    let panel = cfg
+        .panel_host
+        .as_deref()
+        .filter(|p| p.parse::<std::net::IpAddr>().is_err());
+    let mail_ready = cfg.install_complete
+        || cfg.panel_host.is_none()
+        || panel == Some(cfg.hostname.as_str())
+        || matches!(
+            app.db.step_status("host_record"),
+            Ok(crate::installer::state::StepStatus::Done)
+        );
+    let mut names = Vec::new();
+    if mail_ready {
+        names.push(cfg.hostname.clone());
+    }
+    if let Some(p) = panel
+        && !names.iter().any(|n| n == p)
+    {
+        names.push(p.to_string());
+    }
+    names
+}
+
+/// CA-issued, covering every required name, not near expiry, and not a test certificate.
+fn healthy(disk: Option<&tls::CertInfo>, required: &[String], directory: &str) -> bool {
     disk.is_some_and(|c| {
         !c.self_signed
             && c.days_left >= RENEW_DAYS
-            && c.hostnames.iter().any(|h| h == hostname)
+            && required.iter().all(|r| c.hostnames.iter().any(|h| h == r))
             && (directory == acme::LE_STAGING
                 || !c
                     .issuer
@@ -140,8 +170,22 @@ pub struct Plan {
 }
 
 /// Is the certificate on disk one a browser would trust for long enough?
+#[cfg(test)]
 pub fn plan_for(
     hostname: &str,
+    wanted: &[String],
+    disk: Option<&tls::CertInfo>,
+    directory: &str,
+    st: &AcmeState,
+    now: DateTime<Utc>,
+) -> Plan {
+    plan_for_names(&[hostname.to_string()], wanted, disk, directory, st, now)
+}
+
+/// [`plan_for`] with several names that must be covered (the mail hostname
+/// and the console's address); helper names may be left out, these never.
+pub fn plan_for_names(
+    required: &[String],
     wanted: &[String],
     disk: Option<&tls::CertInfo>,
     directory: &str,
@@ -151,21 +195,29 @@ pub fn plan_for(
     let mut names: Vec<String> = wanted
         .iter()
         .filter(|n| {
-            n.as_str() == hostname
+            required.contains(n)
                 || parse_time(&st.excluded.get(n.as_str()).cloned())
                     .is_none_or(|until| until <= now)
         })
         .cloned()
         .collect();
-    if !names.iter().any(|n| n == hostname) {
-        names.insert(0, hostname.to_string());
+    for (i, r) in required.iter().enumerate() {
+        if !names.contains(r) {
+            names.insert(i.min(names.len()), r.clone());
+        }
     }
+    let uncovered = disk.and_then(|c| {
+        required
+            .iter()
+            .find(|r| !c.hostnames.iter().any(|h| h == *r))
+    });
     let reason = match disk {
         None => Some("there is no certificate yet".to_string()),
         Some(c) if c.self_signed => Some("a temporary self-signed certificate is in use".into()),
-        Some(c) if !c.hostnames.iter().any(|h| h == hostname) => {
-            Some(format!("the certificate does not cover {hostname}"))
-        }
+        Some(_) if uncovered.is_some() => Some(format!(
+            "the certificate does not cover {}",
+            uncovered.map(String::as_str).unwrap_or_default()
+        )),
         Some(c) if c.days_left < RENEW_DAYS => Some(format!(
             "the certificate expires in {} day{}",
             c.days_left.max(0),
@@ -498,9 +550,13 @@ pub async fn ensure(app: &App, force: bool) -> Outcome {
     let Some(cfg) = app.config() else {
         return Outcome::NotConfigured;
     };
+    let required = required_names(app, &cfg);
+    let Some(first) = required.first() else {
+        return Outcome::NotConfigured;
+    };
     // The zone's own servers: a record just fixed counts at once, not after a
     // public resolver's cached copy of the old one expires.
-    let dns = crate::dns::Truth::for_name(&cfg.hostname).await;
+    let dns = crate::dns::Truth::for_name(first).await;
     let issuer = AcmeIssuer {
         app,
         contact: cfg.admin_email.clone(),
@@ -523,6 +579,10 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
     let Some(cfg) = app.config() else {
         return Outcome::NotConfigured;
     };
+    let required = required_names(app, &cfg);
+    let Some(primary) = required.first().cloned() else {
+        return Outcome::NotConfigured;
+    };
     let Some(_lock) = Lock::try_acquire(&app.paths) else {
         return Outcome::Busy;
     };
@@ -531,7 +591,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
     let ca = acme::ca_name(&directory);
     let mut st = load_state(app);
     let disk = tls::disk_certificate_info(&app.paths);
-    let fine = healthy(disk.as_ref(), &cfg.hostname, &directory);
+    let fine = healthy(disk.as_ref(), &required, &directory);
     // A healthy certificate only needs the (DNS-costly) coverage look-up hourly.
     if fine
         && !force
@@ -549,17 +609,27 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
             .unwrap_or_else(|_| vec![cfg.primary_domain.clone()]),
         Err(_) => vec![cfg.primary_domain.clone()],
     };
-    let wanted = acme::wanted_names(
-        &cfg.hostname,
-        &domains,
-        cfg.public_ipv4.as_deref(),
-        deps.dns,
-    )
-    .await;
+    // Helper names (autoconfig., mta-sts., …) only once the mail hostname is
+    // part of the certificate: before that the domains are still placeholders.
+    let mut wanted = required.clone();
+    if required.contains(&cfg.hostname) {
+        for n in acme::wanted_names(
+            &cfg.hostname,
+            &domains,
+            cfg.public_ipv4.as_deref(),
+            deps.dns,
+        )
+        .await
+        {
+            if !wanted.contains(&n) {
+                wanted.push(n);
+            }
+        }
+    }
     if fine {
         st.coverage_checked = Some(stamp(now));
     }
-    let plan = plan_for(&cfg.hostname, &wanted, disk.as_ref(), &directory, &st, now);
+    let plan = plan_for_names(&required, &wanted, disk.as_ref(), &directory, &st, now);
     let Some(reason) = plan.reason.clone() else {
         st.problem = None;
         st.failures = 0;
@@ -597,7 +667,9 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
         .await
         {
             Ok(()) => names.push(n.clone()),
-            Err(p) if n == &cfg.hostname => return record_failure(app, st, *p, &plan.names, now),
+            Err(p) if required.contains(n) => {
+                return record_failure(app, st, *p, &plan.names, now);
+            }
             Err(p) => {
                 exclude(&mut st, n, now);
                 let _ = app.db.install_log(
@@ -614,7 +686,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
         return Outcome::Current;
     }
     if let Some(port) = deps.self_test_port
-        && let Err(p) = self_test(&app.paths, &cfg.hostname, port).await
+        && let Err(p) = self_test(&app.paths, &primary, port).await
     {
         return record_failure(app, st, *p, &names, now);
     }
@@ -625,7 +697,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
             match deps.issuer.issue(acme::LE_STAGING, &names).await {
                 Ok(_) => {}
                 Err(f) if staging_conclusive(&f.problem) => {
-                    if attempt == 0 && drop_helpers(&mut st, &mut names, &f, &cfg.hostname, now) {
+                    if attempt == 0 && drop_helpers(&mut st, &mut names, &f, &required, now) {
                         if fine && adds_nothing(disk.as_ref(), &names) {
                             save_state(app, &st);
                             return Outcome::Current;
@@ -702,7 +774,7 @@ pub async fn ensure_with(app: &App, force: bool, deps: &Deps<'_>) -> Outcome {
                 return Outcome::Issued(names);
             }
             Err(f) => {
-                if attempt == 0 && drop_helpers(&mut st, &mut names, &f, &cfg.hostname, now) {
+                if attempt == 0 && drop_helpers(&mut st, &mut names, &f, &required, now) {
                     if fine && adds_nothing(disk.as_ref(), &names) {
                         save_state(app, &st);
                         return Outcome::Current;
@@ -721,10 +793,10 @@ fn drop_helpers(
     st: &mut AcmeState,
     names: &mut Vec<String>,
     f: &Failure,
-    hostname: &str,
+    required: &[String],
     now: DateTime<Utc>,
 ) -> bool {
-    if f.failed_names.is_empty() || f.failed_names.iter().any(|n| n == hostname) {
+    if f.failed_names.is_empty() || f.failed_names.iter().any(|n| required.contains(n)) {
         return false;
     }
     for n in &f.failed_names {

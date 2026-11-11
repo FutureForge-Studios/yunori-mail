@@ -107,18 +107,21 @@ Idle footprint target: under 256 MB RAM for the whole box (Stalwart ~100 MB, `yu
 | OS | Debian 12/13 or Ubuntu 22.04/24.04/26.04, with systemd, on a fresh server |
 | CPU | x86-64-v2 or ARM64 (on Proxmox, use CPU type `host`, not `kvm64`) |
 | RAM / disk | 1 GB+ / 10 GB+ |
-| Network | A static public IPv4, and the A record `mail.<your-domain>` pointed at it **before** installing. IPv6-only servers install too (AAAA instead of A), but servers that speak only IPv4 cannot reach them; preflight says so |
+| Network | A static public IPv4. Nothing to set up in DNS before installing: the console can open on this server's own address, and the onboarding tells you which records to add (and checks them). IPv6-only servers install too (AAAA instead of A), but servers that speak only IPv4 cannot reach them; preflight says so |
 | Sending directly | Outbound port 25 open and reverse DNS (PTR) settable at your VPS provider; otherwise use relay mode |
 
 ## Install
 
 ```bash
-# One line, interactive
+# One line: one question in the terminal, everything else in your browser
 curl -fsSL https://yunori.email/server/install.sh | sudo sh
 
-# One line, unattended: every answer as a flag after `-s --` (--yes never asks)
+# No question: open the console on this server's address (or --panel panel.example.com)
+curl -fsSL https://yunori.email/server/install.sh | sudo sh -s -- --panel ip
+
+# Unattended: the old answers as flags after `-s --` (the browser then shows those steps done)
 curl -fsSL https://yunori.email/server/install.sh \
-  | sudo sh -s -- --domain example.com --admin-email you@gmail.com --first-mailbox hello --yes
+  | sudo sh -s -- --domain example.com --admin-email you@gmail.com --sending direct --first-mailbox hello --yes
 
 # Read it first, or pin a version
 curl -fsSLO https://yunori.email/server/install.sh
@@ -178,48 +181,52 @@ newest release.
 
 ### What the installer does
 
-The terminal wizard checks the server **before asking anything**: OS, CPU, memory, disk, free ports, other mail
-software, clock, outbound port 25, public address, blocklists and hosting provider. A server that can't work stops
-here, with the fix for each problem. Then it asks a few questions with sensible suggestions:
+The terminal does only what needs root, and asks one question. Everything else happens in your browser.
 
-- the domain;
-- the mail hostname (`mail.<domain>`);
-- an alerts address on another provider;
-- the first mailbox;
-- direct or relay sending. Relay is suggested when port 25 is blocked, and the provider, region, username and
-  hidden password are asked next.
+**In the terminal** (`yunori-mail install`, run by the one-line script):
 
-A wrong answer is asked again with a hint, not a crash. It shows a summary to confirm, then runs 12 resumable steps:
+1. **Check this server** before asking anything: OS, CPU, memory, disk, free ports, other mail software, clock,
+   outbound port 25, public address, blocklists and hosting provider. A server that can't work stops here, with the
+   fix for each problem.
+2. **One question: where will you open the console?**
+   - *A domain name* that already points here, e.g. `mail.example.com` or `panel.example.com`. It is checked against
+     the zone's own nameservers. If it doesn't point here yet, you see the record to add, and you can check again or
+     go on with the server's address.
+   - *No domain yet: this server's address.* Yunori uses the free name `203-0-113-10.sslip.io` (IPv6: every group
+     written out, `2a01-4f8-c17-b8f-0-0-0-2.sslip.io`), which already resolves to the server, so the console gets a
+     real Let's Encrypt certificate and the browser shows no warning. If that name can't get a certificate (port 80
+     blocked, say), the console falls back to the bare IP with a temporary self-signed certificate.
+3. Open the mail ports, install the pinned and checksum-verified mail engine, configure it, start the console and
+   HTTPS edge, and get the console's certificate.
+4. Print the **one-time setup link** (`https://<console>/console/setup#token=…`; the token rides the URL fragment, so
+   it never reaches a server log) and exit.
 
-1. Check this server
-2. Your domain
-3. **Point the mail hostname here** (verified on public DNS; it also catches a Cloudflare proxy, a stale IPv6 record
-   or a CAA record that would block the certificate)
-4. Open mail ports
-5. Install the mail engine (pinned, checksum-verified)
-6. Configure the mail engine
-7. Start the console and HTTPS edge
-8. **Get a trusted TLS certificate** (automatic; see below)
-9. **Publish DNS records** (verified on public DNS)
-10. **Set reverse DNS** (verified, forward-confirmed)
-11. Create your first mailbox
-12. Finish
+Running the line again is safe. A paused install picks up where it stopped. Once the terminal's part is done, it just
+prints where the console is (and `sudo yunori-mail setup-token` gives a new link while no owner exists). A finished
+install is updated in place.
 
-As soon as the console is up (step 7), the wizard prints a **one-time setup link**:
-`https://mail.<domain>/console/setup#token=…`. The token is in the URL fragment, so it never reaches a server log.
-Open it to create the console owner (two-factor authentication is mandatory) and carry on in the browser.
+**In the browser**, after you create the console owner (two-factor authentication is mandatory), a guided setup
+covers what the terminal used to ask and wait for:
 
-From there the console shows the same checklist live:
+1. **Your mail domain**: the domain, the mail hostname (suggested from the console's name) and an address on another
+   provider for alerts. The engine already runs; it is renamed to your domain in place.
+2. **How mail goes out**: directly, or through a relay provider (Amazon SES, Resend, Postmark, Mailgun, SMTP2GO,
+   Brevo or any SMTP relay). The outbound port-25 check suggests one. The relay password is write-only.
+3. **Point the mail hostname here**: the record to add, checked against public DNS.
+4. **A trusted certificate** for the mail hostname. It is automatic; when it can't be issued, you see why, with
+   **Try now**.
+5. **DNS records**: connect Cloudflare and they are published for you (preview first, never deleting anything), or
+   copy them. Optional records are listed apart, each with what it does.
+6. **Reverse DNS**: what to set at your VPS provider. You can skip it for now, and the page says what that breaks
+   (Gmail and Outlook will likely reject mail sent directly). Relay sending doesn't need it.
+7. **Your first mailbox**: an invite link (the person chooses their password) or a password shown once.
+8. **Done**: "Open in Yunori", mail-app settings, and the overview.
 
-- what to fix for the certificate, with a **Try now** button;
-- the DNS records to publish, with copy buttons and a zone file;
-- reverse-DNS instructions for your provider;
-- a form for the first mailbox. It shows the password once, with "Open in Yunori" and the mail-app settings.
-
-The server re-checks every minute and moves on by itself. The terminal can also wait at each gate with a countdown.
-When you stop it or pass `--no-wait`, it prints a summary of what you have and what is left. To pick up from the
-terminal again, run `sudo yunori-mail install --resume`. Lost the link? `sudo yunori-mail setup-token` prints a new
-one.
+Every step is checked for real, never self-attested. The server re-checks every minute, also with the page closed, and
+the page shows where setup stands each time you come back. With the answers given as flags (`--domain`,
+`--admin-email`, `--sending`, `--relay-*`, `--dns-provider`, `--first-mailbox`, `--skip-ptr`), the terminal applies
+them and the browser shows those steps done. `--no-wait` and `--resume` are still accepted; the terminal never waits
+at a DNS or certificate check any more.
 
 ### Certificates (automatic HTTPS)
 
@@ -298,7 +305,7 @@ Ports:
 ```bash
 npm --prefix console install && npm --prefix console run build   # the SPA gets embedded at compile time
 cargo run -- serve --dev --mock-engine                           # prints a one-time setup link for http://127.0.0.1:8787/console
-npm --prefix console run dev:mock                                # console only, in-memory API; scenarios incl. "Certificate pending"
+npm --prefix console run dev:mock                                # console only, in-memory API; scenarios incl. "Onboarding" (the browser setup wizard) and "Certificate pending"
 cargo test                                                       # unit + API integration tests (mock engine)
 cargo test -- --ignored                                          # live DNS tests (needs real outbound DNS)
 YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_engine -- --ignored --nocapture --test-threads=1

@@ -1,9 +1,10 @@
-import { ArrowUpRight, PartyPopper } from "lucide-react";
+import { ArrowUpRight, Link2, PartyPopper } from "lucide-react";
 import { Button } from "@/design/vendor/ui/button";
 import { Card, KV, SectionLabel } from "@/design/vendor/admin/ui";
 import type { FirstMailboxResponse } from "@/api/types";
+import { CopyButton } from "@/components/copy-button";
 import { SecretReveal } from "@/components/secret-reveal";
-import { openInYunoriUrl } from "@/lib/format";
+import { fmtDateTime, openInYunoriUrl } from "@/lib/format";
 import { useSession } from "../session";
 
 /**
@@ -15,10 +16,12 @@ export function SetupComplete({
   created,
   finished,
   onDismiss,
+  dismissLabel = "Done",
 }: {
   created: FirstMailboxResponse | null;
   finished: boolean;
   onDismiss: () => void;
+  dismissLabel?: string;
 }) {
   const { session } = useSession();
   const { hostname, clientOrigin } = session.server;
@@ -40,13 +43,30 @@ export function SetupComplete({
           </p>
         </div>
         <Button variant="outline" size="sm" onClick={onDismiss}>
-          Done
+          {dismissLabel}
         </Button>
       </div>
 
-      {created && (
+      {created?.password && (
         <div className="mt-4">
           <SecretReveal label={`Password for ${created.mailbox.address}`} value={created.password} />
+        </div>
+      )}
+      {created?.invite && (
+        <div className="mt-4 rounded-lg bg-muted/50 p-4">
+          <p className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <Link2 aria-hidden className="h-3.5 w-3.5" />
+            Invite link for {created.mailbox.address}
+          </p>
+          <div className="mt-2 flex items-center gap-2">
+            <code className="min-w-0 flex-1 select-all break-all rounded-md border border-border bg-card px-3 py-2 font-mono text-[13px] text-foreground">
+              {created.invite.url}
+            </code>
+            <CopyButton value={created.invite.url} label="invite link" />
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+            Whoever opens it chooses the mailbox's password. It works once, until {fmtDateTime(created.invite.expiresAt)}; share it privately.
+          </p>
         </div>
       )}
 

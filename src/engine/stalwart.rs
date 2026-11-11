@@ -333,6 +333,47 @@ impl Engine for StalwartEngine {
             .ok_or(EngineError::NotFound)
     }
 
+    async fn rename_domain(&self, id: &str, name: &str) -> EngineResult<EDomain> {
+        let r = self
+            .admin_call(vec![Call::new(
+                "x:Domain/set",
+                json!({ "update": { id: { "name": name } } }),
+            )])
+            .await?;
+        set_outcome(&r[0], SetOp::Update, id)?;
+        self.list_domains()
+            .await?
+            .into_iter()
+            .find(|d| d.id == id)
+            .ok_or(EngineError::NotFound)
+    }
+
+    async fn set_hostname(&self, hostname: &str) -> EngineResult<()> {
+        // Stored at once, but the SMTP greeting only changes after a settings
+        // reload (verified on 1.0.3); listeners and certificates are untouched.
+        self.update_singleton("x:SystemSettings", json!({ "defaultHostname": hostname }))
+            .await?;
+        self.reload_settings().await
+    }
+
+    async fn hostname(&self) -> EngineResult<String> {
+        let r = self
+            .admin_call(vec![Call::new(
+                "x:SystemSettings/get",
+                json!({ "ids": [SINGLETON], "properties": ["defaultHostname"] }),
+            )])
+            .await?;
+        get_list(&r[0])
+            .into_iter()
+            .next()
+            .and_then(|v| {
+                v.get("defaultHostname")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .ok_or(EngineError::NotFound)
+    }
+
     async fn delete_domain(&self, id: &str) -> EngineResult<()> {
         // DKIM keys the engine generated for the domain link to it; retire them first
         // (otherwise the destroy fails with objectIsLinked — seen on a live engine).

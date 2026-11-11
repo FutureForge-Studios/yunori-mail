@@ -2,7 +2,8 @@
 //! colour only when attached to a terminal (and never if NO_COLOR is set).
 
 use crate::app::App;
-use crate::installer::{InstallInputs, Installer, Mode, RelayInput, RunResult, Ui, os};
+use crate::installer::panel::{self, PanelChoice};
+use crate::installer::{InstallInputs, Installer, Mode, RelayInput, Ui, os};
 use crate::model::{Check, DnsRecord, SendingMode, Status};
 use crate::paths::Paths;
 use crate::{edge, ops};
@@ -97,20 +98,28 @@ pub enum Command {
 
 #[derive(Args)]
 pub struct InstallArgs {
-    /// Your mail domain, e.g. example.com
+    /// Where the console opens: a domain name that points at this server
+    /// (e.g. panel.example.com), or `ip` for this server's address. The one
+    /// question the terminal asks when it is not given.
+    #[arg(long, value_name = "DOMAIN|ip")]
+    panel: Option<String>,
+    /// Your mail domain, e.g. example.com (otherwise chosen in the browser).
+    /// With it, the terminal applies the answers below and the browser shows
+    /// those steps done.
     #[arg(long)]
     domain: Option<String>,
     /// Mail server hostname (default: mail.<domain>)
     #[arg(long)]
     hostname: Option<String>,
-    /// An address on ANOTHER provider for certificates and alerts.
+    /// An address on ANOTHER provider for certificates and alerts (needed with --domain).
     #[arg(long)]
     admin_email: Option<String>,
-    /// First mailbox to create (local part).
+    /// With --domain: first mailbox the terminal creates once every check passes (local part).
     #[arg(long, default_value = "hello")]
     first_mailbox: String,
     /// direct (this server delivers) or relay (an email provider delivers).
-    /// Asked when not given; the suggestion follows the outbound port-25 check.
+    /// Otherwise chosen in the browser, where the suggestion follows the
+    /// outbound port-25 check.
     #[arg(long, value_enum)]
     sending: Option<SendingArg>,
     #[arg(long)]
@@ -138,10 +147,12 @@ pub struct InstallArgs {
     /// Name of an environment variable holding the DNS provider's API token.
     #[arg(long, requires = "dns_provider", value_name = "VAR")]
     dns_token_env: Option<String>,
-    /// Continue a previous install with its saved answers.
+    /// Continue a previous install with its saved answers (what running the
+    /// command again always does).
     #[arg(long)]
     resume: bool,
-    /// Do not wait at DNS / reverse-DNS gates; exit and resume later.
+    /// Kept for scripts: the terminal never waits at DNS, reverse-DNS or
+    /// certificate checks any more (the browser onboarding does).
     #[arg(long)]
     no_wait: bool,
     /// Continue past blocking preflight failures (not recommended).
@@ -343,18 +354,15 @@ fn fmt_duration(secs: u64) -> String {
 
 impl Ui for Term {
     fn step(&mut self, id: &str, title: &str) {
-        let n = crate::installer::state::STEPS
-            .iter()
-            .position(|(s, _)| *s == id)
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        let total = crate::installer::state::STEPS.len();
+        // The terminal's own steps are numbered; the browser's (run here only
+        // when their answers came as flags) are not.
+        let terminal = crate::installer::state::TERMINAL_STEPS;
+        let tag = match terminal.iter().position(|s| *s == id) {
+            Some(i) => format!("[{}/{}]", i + 1, terminal.len()),
+            None => "[ ·· ]".to_string(),
+        };
         self.step_started = Some(std::time::Instant::now());
-        println!(
-            "\n{} {}",
-            self.paint("2", &format!("[{n:>2}/{total}]")),
-            self.paint("1", title)
-        );
+        println!("\n{} {}", self.paint("2", &tag), self.paint("1", title));
     }
     fn done(&mut self, _id: &str, detail: &str) {
         let t = self.elapsed();
@@ -492,16 +500,6 @@ fn ask(
     }
 }
 
-fn confirm(label: &str, default_yes: bool) -> Result<bool> {
-    let hint = if default_yes { "Y/n" } else { "y/N" };
-    let v = prompt(&format!("  {label} ({hint})"), None)?;
-    Ok(match v.to_ascii_lowercase().as_str() {
-        "" => default_yes,
-        "y" | "yes" => true,
-        _ => false,
-    })
-}
-
 fn open_app(dev: bool, mock: bool) -> Result<Arc<App>> {
     App::open(Paths::from_env(), dev, mock)
 }
@@ -571,15 +569,6 @@ fn preflight_verdict(results: &[Check]) -> (bool, String) {
 async fn install_dry_run(args: &InstallArgs) -> Result<()> {
     let p = Paths::from_env();
     let t = Term::new();
-    let domain = args
-        .domain
-        .as_deref()
-        .and_then(crate::util::normalize_domain)
-        .unwrap_or_else(|| "<your domain>".into());
-    let hostname = args
-        .hostname
-        .clone()
-        .unwrap_or_else(|| format!("mail.{domain}"));
     let (engine_url, engine_sha) = os::engine_asset()?;
     let firewall = match os::detect_firewall() {
         os::Firewall::Ufw { active: true } => "ufw is active: allow TCP {ports} (and your SSH port).",
@@ -594,33 +583,53 @@ async fn install_dry_run(args: &InstallArgs) -> Result<()> {
             .collect::<Vec<_>>()
             .join(", "),
     );
+    let (v4, v6) = crate::checks::public_ips().await;
+    let ip: Option<std::net::IpAddr> = v4.as_deref().or(v6.as_deref()).and_then(|s| s.parse().ok());
+    let address = match ip {
+        Some(ip) => format!(
+            "{} (resolves to {ip} with no DNS work; the bare {ip} with a self-signed certificate if no certificate can be issued)",
+            panel::sslip_name(ip)
+        ),
+        None => "this server's address".into(),
+    };
+    let domain = args
+        .domain
+        .as_deref()
+        .and_then(crate::util::normalize_domain);
+    let hostname = args
+        .hostname
+        .clone()
+        .or_else(|| domain.as_ref().map(|d| format!("mail.{d}")));
+    let console = match args.panel.as_deref() {
+        Some("ip") => address.clone(),
+        Some(d) => format!("{d} (must already point here)"),
+        None => match &hostname {
+            Some(h) => format!("{h} if it points here, else {address}"),
+            None => format!("asked: a domain name that points here, or {address}"),
+        },
+    };
     let sending = match args.sending {
         Some(SendingArg::Relay) => format!(
             "relay through {}",
             args.relay_provider.as_deref().unwrap_or("your provider")
         ),
         Some(SendingArg::Direct) => "direct (this server delivers)".into(),
-        None => "asked (suggested from the outbound port-25 check)".into(),
+        None => "asked in the browser (suggested from the outbound port-25 check)".into(),
     };
     println!(
         "{}",
         t.paint("1", "Yunori Mail Server · install plan (dry run)")
     );
-    println!("{}", t.paint("2", "Nothing is changed. A real install does this, in order, and can be resumed at any step:\n"));
-    let steps = [
+    println!(
+        "{}",
+        t.paint(
+            "2",
+            "Nothing is changed. In the terminal, as root (run the same command again to resume at any step):\n"
+        )
+    );
+    let terminal = [
         "Check this server: the read-only preflight below.".to_string(),
-        format!(
-            "Your domain: {domain}, mail hostname {hostname}, first mailbox {}@{domain}, sending {sending}.",
-            args.first_mailbox
-        ),
-        match &args.dns_provider {
-            Some(prov) => format!(
-                "Check the {prov} token (read-only), publish {hostname}'s A record through it, and wait until public resolvers see it."
-            ),
-            None => format!(
-                "Wait until {hostname} points at this server (checked against public resolvers)."
-            ),
-        },
+        format!("One question, where the console opens: {console}."),
         format!("Firewall: {firewall}"),
         format!(
             "Download Stalwart {} from {engine_url}\n       verify SHA-256 {engine_sha}, install as {}; apt install unbound dns-root-data; create users stalwart and yunori.",
@@ -628,31 +637,85 @@ async fn install_dry_run(args: &InstallArgs) -> Result<()> {
             p.stalwart_bin().display()
         ),
         format!(
-            "Configure the engine: {} and its store in {}. Its first-run management port is limited to loopback while it runs.",
+            "Configure the engine: {} and its store in {}. Its first-run management port is limited to loopback while it runs.{}",
             p.stalwart_config().display(),
-            p.stalwart_data().display()
+            p.stalwart_data().display(),
+            if domain.is_none() {
+                " It starts with names derived from the console's address; the browser renames them to your mail domain (no restart)."
+            } else {
+                ""
+            }
         ),
         format!(
-            "Write {}/stalwart.service and yunori-mail.service (sandboxed), start the console and HTTPS edge on ports 80 and 443.",
+            "Write {}/stalwart.service and yunori-mail.service (sandboxed), start the console and HTTPS edge on ports 80 and 443, get the console's certificate, print the one-time setup link (shown, never logged) and exit.",
             p.systemd_dir().display()
         ),
+    ];
+    for (i, s) in terminal.iter().enumerate() {
+        println!("  {:>2}. {s}", i + 1);
+    }
+    println!(
+        "\n{}",
+        t.paint(
+            "2",
+            "Then in your browser (owner account and authenticator first). Every step is checked for real and re-checked every minute:\n"
+        )
+    );
+    let given = |what: String| {
+        if domain.is_some() {
+            format!("{what} (given as flags: the terminal applies it)")
+        } else {
+            what
+        }
+    };
+    let mail_domain = domain.clone().unwrap_or_else(|| "<your domain>".into());
+    let mail_host = hostname
+        .clone()
+        .unwrap_or_else(|| "mail.<your domain>".into());
+    let browser = [
+        given(format!(
+            "Your mail domain {mail_domain}, the mail hostname {mail_host}, and an address on another provider for alerts."
+        )),
+        format!("How mail goes out: {sending}."),
+        match &args.dns_provider {
+            Some(prov) => format!(
+                "{mail_host} points here: published through {prov} (token checked read-only first), verified against the zone's own nameservers."
+            ),
+            None => format!(
+                "{mail_host} points here, verified against the zone's own nameservers (or connect Cloudflare and it is published for you)."
+            ),
+        },
         format!(
-            "Get a Let's Encrypt certificate for {hostname} (rehearsed on staging first, with backoff)."
+            "A Let's Encrypt certificate for {mail_host} (rehearsed on staging after a failure, with backoff)."
         ),
         format!(
-            "Publish DNS records for {domain} (MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT, autoconfig){}: each one is verified, never assumed.",
+            "DNS records for {mail_domain} (MX, SPF, DKIM, DMARC, MTA-STS, TLS-RPT, autoconfig){}: each one verified, never assumed.",
             if args.dns_provider.is_some() {
                 " through the provider's API, only those missing or wrong, never deleting any"
             } else {
                 ""
             }
         ),
-        format!("Reverse DNS: this server's IP must point back to {hostname}."),
-        format!("Create the first mailbox {}@{domain}.", args.first_mailbox),
-        "Finish: print the one-time console setup link (it is shown, never logged).".into(),
+        format!(
+            "Reverse DNS: this server's IP must point back to {mail_host}{}.",
+            if args.skip_ptr {
+                " (skipped: --skip-ptr)"
+            } else {
+                " (\"skip for now\" is offered, with what it breaks)"
+            }
+        ),
+        if domain.is_some() {
+            format!(
+                "The first mailbox {}@{mail_domain} (the terminal creates it once every check above passes; else the browser does).",
+                args.first_mailbox
+            )
+        } else {
+            "The first mailbox: an invite link, or a password shown once.".into()
+        },
+        "Done: the console's overview.".into(),
     ];
-    for (i, s) in steps.iter().enumerate() {
-        println!("  {:>2}. {s}", i + 1);
+    for (i, s) in browser.iter().enumerate() {
+        println!("  {:>2}. {s}", terminal.len() + i + 1);
     }
     println!(
         "\n  State: {} (SQLite, audit log), secrets sealed with {} (0600). Generated secrets are never printed.\n",
@@ -660,9 +723,10 @@ async fn install_dry_run(args: &InstallArgs) -> Result<()> {
         p.master_key().display()
     );
     preflight_cmd(
-        args.hostname
+        args.panel
             .clone()
-            .or_else(|| args.domain.as_ref().map(|_| hostname.clone())),
+            .filter(|p| p != "ip")
+            .or(hostname.clone()),
         false,
     )
     .await
@@ -731,13 +795,6 @@ async fn install(args: InstallArgs) -> Result<()> {
         term.paint("1", "Yunori Mail Server"),
         term.paint("2", crate::app::VERSION)
     );
-    println!(
-        "{}",
-        term.paint(
-            "2",
-            "Installs a real mail server on this machine. Every step can be resumed: if anything stops,\nfix it and run `sudo yunori-mail install --resume`."
-        )
-    );
 
     // Re-running the one-line installer is always safe: a finished install is
     // updated in place, a paused one picks up where it stopped.
@@ -751,75 +808,21 @@ async fn install(args: InstallArgs) -> Result<()> {
     if let Some(dir) = &args.acme_directory {
         crate::edge::acme::save_directory(&app.db, dir)?;
     }
+    if args.skip_ptr {
+        app.db.set_kv(crate::installer::KV_SKIP_PTR, "true")?;
+    }
+    // `--resume` and `--no-wait` are what every run does now.
+    let _ = (args.resume, args.no_wait);
+    app.db.init_steps()?;
     let mut inst = Installer::new(app.clone(), Mode::Cli);
     inst.force = args.force;
     inst.skip_ptr = args.skip_ptr;
-    let has_saved = app.db.get_kv("install.inputs")?.is_some();
-    let resume = has_saved && (args.resume || args.domain.is_none());
-    if has_saved && !args.resume && args.domain.is_none() {
-        println!("\nResuming the install that was started here before.");
-    }
-    if !resume {
-        let ask_questions = interactive() && !args.yes;
-        // Preflight first: nothing is asked, or installed, on a server that can't work.
-        println!("\n{}", term.paint("1", "Checking this server…"));
-        let results = crate::checks::preflight(&app.paths, None).await;
-        print_checks(&term, &results);
-        let (ok, sentence) = preflight_verdict(&results);
-        println!(
-            "\n  {}",
-            term.paint(if ok { "32;1" } else { "31;1" }, &sentence)
-        );
-        if !ok && !args.force {
-            println!(
-                "  Fix the problems marked above, then run the installer again (or pass --force to continue anyway)."
-            );
-            std::process::exit(2);
-        }
-        let port25_open = results
-            .iter()
-            .any(|c| c.id == "port25" && c.status == Status::Pass);
-        let ipv4 = results
-            .iter()
-            .find(|c| c.id == "public_ip")
-            .and_then(|c| c.detail.strip_prefix("IPv4 "))
-            .map(|s| s.split(',').next().unwrap_or(s).trim().to_string());
-        inst.preflight_results = Some(results);
-
-        let inputs = gather_inputs(&args, &term, ask_questions, port25_open, ipv4.as_deref())?;
-        // A DNS provider token is checked now (read-only), before anything is installed.
-        if let Some(provider) = &args.dns_provider {
-            let token = read_token_env(args.dns_token_env.as_deref())?;
-            let l = crate::dns_publish::connect(
-                &app,
-                &inputs.domain,
-                provider,
-                Some(&token),
-                "install",
-            )
-            .await
-            .map_err(|e| anyhow!("DNS provider: {e}"))?;
-            println!(
-                "  {} DNS: {} zone {} is connected; the installer publishes the records itself.",
-                term.paint("32", "✓"),
-                provider_label(&l.provider),
-                l.zone_name
-            );
-        }
-        if ask_questions {
-            print_summary(&term, &inputs, ipv4.as_deref());
-            if !confirm("Install with these settings?", true)? {
-                println!("Nothing was installed. Run the installer again to start over.");
-                return Ok(());
-            }
-        }
-        inst.save_inputs(&inputs)?;
-    }
+    // Without answers given as flags the terminal stops after its own steps.
+    inst.terminal_only = args.domain.is_none();
 
     // The one-line script swapped the binary of a paused install: the running
     // console/edge must pick it up too, or it keeps the old code.
-    if resume
-        && app.paths.is_production()
+    if app.paths.is_production()
         && std::env::var("YUNORI_BINARY_REPLACED").is_ok_and(|v| v == "1")
         && matches!(
             app.db.step_status("edge_tls")?,
@@ -834,223 +837,292 @@ async fn install(args: InstallArgs) -> Result<()> {
         );
     }
 
-    let outcome = loop {
-        match inst.run(&mut term).await {
-            Ok(RunResult::Complete) => break Ok(None),
-            Ok(RunResult::Waiting { step, .. }) => {
-                if args.no_wait || !interactive() {
-                    break Ok(Some(step));
-                }
-                let secs = wait_seconds(&app, &step);
-                if !countdown(&term, secs).await {
-                    break Ok(Some(step));
-                }
-                app.db
-                    .set_step(&step, crate::installer::state::StepStatus::Pending, None)?;
-            }
-            Err(e) => break Err(e),
-        }
-    };
-    final_summary(
-        &app,
-        &term,
-        outcome.as_ref().ok().cloned().flatten().as_deref(),
-        outcome.as_ref().err(),
+    let flags = args.domain.is_some();
+    if app.db.terminal_done()? && !flags {
+        println!("\nThe server part is done here; setting up continues in your browser.");
+        console_card(&app, &term);
+        return Ok(());
+    }
+    println!(
+        "{}",
+        term.paint(
+            "2",
+            "Prepares this machine to run your mail server, then hands over to your browser for\nyour domain, DNS and first mailbox. If anything stops, fix it and run the same command again."
+        )
     );
+
+    // Preflight first: nothing is asked, or installed, on a server that can't work.
+    if app.db.step_status("preflight")? != crate::installer::state::StepStatus::Done {
+        println!("\n{}", term.paint("1", "Checking this server…"));
+        let results = crate::checks::preflight(&app.paths, None).await;
+        print_checks(&term, &results);
+        let (ok, sentence) = preflight_verdict(&results);
+        println!(
+            "\n  {}",
+            term.paint(if ok { "32;1" } else { "31;1" }, &sentence)
+        );
+        if !ok && !args.force {
+            println!(
+                "  Fix the problems marked above, then run the installer again (or pass --force to continue anyway)."
+            );
+            std::process::exit(2);
+        }
+        inst.preflight_results = Some(results);
+    }
+
+    // Answers given as flags (automation): the terminal applies them and the
+    // browser shows those steps done.
+    let flag_inputs = if flags {
+        let inputs = inputs_from_flags(&args, &term)?;
+        // A DNS provider token is checked now (read-only), before anything is installed.
+        if let Some(provider) = &args.dns_provider {
+            let token = read_token_env(args.dns_token_env.as_deref())?;
+            let l = crate::dns_publish::connect(
+                &app,
+                &inputs.domain,
+                provider,
+                Some(&token),
+                "install",
+            )
+            .await
+            .map_err(|e| anyhow!("DNS provider: {e}"))?;
+            println!(
+                "  {} DNS: {} zone {} is connected; the records are published for you.",
+                term.paint("32", "✓"),
+                provider_label(&l.provider),
+                l.zone_name
+            );
+        }
+        inst.save_inputs(&inputs)?;
+        Some(inputs)
+    } else {
+        if args.dns_provider.is_some() {
+            bail!("--dns-provider needs --domain (or connect your DNS provider in the browser)");
+        }
+        None
+    };
+
+    // The one question.
+    if app.db.step_status("panel")? != crate::installer::state::StepStatus::Done {
+        let choice = choose_panel(&args, &term, &app, flag_inputs.as_ref()).await?;
+        app.db.set_json(panel::KV, &choice)?;
+    }
+
+    // Every root step, then one pass over the browser's steps (they only
+    // complete here when the answers came as flags and the checks pass).
+    let outcome = inst.run(&mut term).await;
+    let edge_up = matches!(
+        app.db.step_status("edge_tls"),
+        Ok(crate::installer::state::StepStatus::Done)
+    );
+    if edge_up && outcome.is_ok() {
+        inst.console_certificate(&mut term).await?;
+        inst.offer_setup_link(&mut term)?;
+    }
+    final_summary(&app, &term, outcome.as_ref().err());
     if outcome.is_err() {
         std::process::exit(1);
     }
     Ok(())
 }
 
-/// How long to wait before re-checking a gate.
-fn wait_seconds(app: &App, step: &str) -> u64 {
-    match step {
-        "host_record" => 15,
-        "certificate" => {
-            let st = crate::edge::certs::load_state(app);
-            st.next_attempt
-                .as_deref()
-                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-                .map(|t| (t.with_timezone(&chrono::Utc) - chrono::Utc::now()).num_seconds())
-                .unwrap_or(30)
-                .clamp(10, 600) as u64
-        }
-        "ptr" => 60,
-        _ => 30,
-    }
-}
-
-/// A one-line countdown. Returns false if the user pressed Ctrl-C.
-async fn countdown(t: &Term, secs: u64) -> bool {
-    let started = std::time::Instant::now();
-    let total = Duration::from_secs(secs);
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
-    loop {
-        let left = total.saturating_sub(started.elapsed()).as_secs();
-        if left == 0 {
-            if t.color {
-                print!("\r\x1b[2K");
-            }
-            return true;
-        }
-        let line = format!(
-            "  Checking again in {} · Ctrl-C to pause (resume later with --resume)",
-            fmt_duration(left)
-        );
-        if t.color {
-            print!("\r\x1b[2K{}", t.paint("2", &line));
-            let _ = std::io::stdout().flush();
-        } else if left == secs {
-            println!("{line}");
-        }
-        tokio::select! {
-            _ = &mut ctrl_c => {
-                println!();
-                return false;
-            }
-            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
-        }
-    }
-}
-
-fn gather_inputs(
+/// The one question: where the console opens. A domain must already point
+/// here (checked against the zone's own nameservers); if it does not yet, the
+/// person sees what record to add and may go on with this server's address.
+async fn choose_panel(
     args: &InstallArgs,
     t: &Term,
-    ask_questions: bool,
-    port25_open: bool,
-    ipv4: Option<&str>,
-) -> Result<InstallInputs> {
-    if ask_questions {
-        println!(
-            "\n{}",
-            t.paint("1", "A few questions (Enter accepts the [suggestion]):")
-        );
-    }
-    let domain = match &args.domain {
-        Some(d) => crate::util::normalize_domain(d)
-            .ok_or_else(|| anyhow!("'{d}' is not a valid domain"))?,
-        None => {
-            let d = ask(
-                t,
-                "Mail domain, the part after @ (e.g. example.com)",
-                None,
-                |v| {
-                    crate::util::normalize_domain(v).ok_or_else(|| {
-                        format!("'{v}' doesn't look like a domain. Try something like example.com.")
-                    })
-                },
-            )?;
-            if let Some(parent) = d.strip_prefix("mail.").filter(|p| p.contains('.'))
-                && confirm(
-                    &format!("Addresses would look like you@{d}. Use {parent} instead?"),
-                    true,
-                )?
-            {
-                parent.to_string()
-            } else {
-                d
+    app: &App,
+    inputs: Option<&InstallInputs>,
+) -> Result<PanelChoice> {
+    let (v4, v6) = crate::checks::public_ips().await;
+    let ip: Option<std::net::IpAddr> = v4.as_deref().or(v6.as_deref()).and_then(|s| s.parse().ok());
+    // A mail hostname given as a flag, or saved by an earlier release (whose
+    // console lived there).
+    let earlier = inputs
+        .map(|i| i.hostname.clone())
+        .or_else(|| {
+            args.hostname
+                .as_deref()
+                .and_then(crate::util::normalize_domain)
+        })
+        .or_else(|| app.config().map(|c| c.hostname));
+    let explicit = args
+        .panel
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    let ask_it = interactive() && !args.yes && explicit.is_none();
+    println!("\n{}", t.paint("1", "Where will you open the console?"));
+
+    if !ask_it {
+        let want = match explicit.as_deref() {
+            Some("ip") => None,
+            Some(d) => Some(
+                crate::util::normalize_domain(d)
+                    .ok_or_else(|| anyhow!("--panel: '{d}' is not a domain name (or use `ip`)"))?,
+            ),
+            None => earlier,
+        };
+        if let Some(d) = want {
+            let c = crate::checks::host_record_now(&d, v4.as_deref(), v6.as_deref()).await;
+            if c.status == Status::Pass {
+                println!("  {} {}", t.paint("32", "✓"), c.detail);
+                return Ok(PanelChoice {
+                    host: d,
+                    requested: None,
+                });
             }
+            println!("  {} {}", t.paint("33", "…"), c.detail);
+            if let Some(r) = &c.remedy {
+                println!("    {}", t.paint("2", &format!("→ {r}")));
+            }
+            println!("  Using this server's address for the console for now.");
+            return address_choice(t, ip, v4.as_deref(), v6.as_deref(), Some(d)).await;
         }
-    };
-    let suggested_host = format!("mail.{domain}");
+        return address_choice(t, ip, v4.as_deref(), v6.as_deref(), None).await;
+    }
+
+    let shown_ip = ip
+        .map(|i| i.to_string())
+        .unwrap_or_else(|| "this server".into());
+    println!(
+        "    1) A domain name for the console, e.g. mail.example.com or panel.example.com\n       {}",
+        t.paint("2", &format!("(its A record must point at {shown_ip})"))
+    );
+    println!(
+        "    2) No domain yet: this server's address{}\n       {}",
+        ip.map(|i| format!(" ({})", panel::sslip_name(i)))
+            .unwrap_or_default(),
+        t.paint(
+            "2",
+            "a free name that already resolves here and gets a real certificate: nothing to set up"
+        )
+    );
+    let pick = ask(
+        t,
+        "Choose",
+        Some(if earlier.is_some() { "1" } else { "2" }),
+        |v| match v.trim() {
+            "1" => Ok("1".to_string()),
+            "2" | "ip" => Ok("2".to_string()),
+            _ => Err("Type 1 or 2.".into()),
+        },
+    )?;
+    if pick == "2" {
+        return address_choice(t, ip, v4.as_deref(), v6.as_deref(), None).await;
+    }
+    let domain = ask(t, "Console domain", earlier.as_deref(), |v| {
+        crate::util::normalize_domain(v).ok_or_else(|| {
+            format!("'{v}' doesn't look like a domain name. Try something like panel.example.com.")
+        })
+    })?;
+    loop {
+        let c = crate::checks::host_record_now(&domain, v4.as_deref(), v6.as_deref()).await;
+        if c.status == Status::Pass {
+            println!("    {} {}", t.paint("32", "✓"), c.detail);
+            return Ok(PanelChoice {
+                host: domain,
+                requested: None,
+            });
+        }
+        println!("    {} {}", t.paint("33", "…"), c.detail);
+        if let Some(r) = &c.remedy {
+            println!("      {}", t.paint("2", &format!("→ {r}")));
+        }
+        let next = ask(
+            t,
+            "Enter checks again; 2 continues with this server's address for now",
+            Some("check"),
+            |v| match v.trim() {
+                "" | "check" | "1" => Ok("check".to_string()),
+                "2" | "ip" => Ok("2".to_string()),
+                _ => Err("Press Enter, or type 2.".into()),
+            },
+        )?;
+        if next == "2" {
+            return address_choice(t, ip, v4.as_deref(), v6.as_deref(), Some(domain)).await;
+        }
+    }
+}
+
+/// This server's address as the console's: its sslip.io name when that
+/// resolves here (a real certificate is possible), else the bare IP.
+async fn address_choice(
+    t: &Term,
+    ip: Option<std::net::IpAddr>,
+    v4: Option<&str>,
+    v6: Option<&str>,
+    requested: Option<String>,
+) -> Result<PanelChoice> {
+    let ip = ip.ok_or_else(|| {
+        anyhow!(
+            "could not find this server's public address; pass --panel <a domain that points here>"
+        )
+    })?;
+    let name = panel::sslip_name(ip);
+    let c = crate::checks::host_record_now(&name, v4, v6).await;
+    if c.status == Status::Pass {
+        println!(
+            "  {} {name} resolves to this server, so the console can get a real certificate.",
+            t.paint("32", "✓")
+        );
+        return Ok(PanelChoice {
+            host: name,
+            requested,
+        });
+    }
+    println!(
+        "  {} {name} does not resolve here ({}). Using {ip} with a temporary self-signed certificate.",
+        t.paint("33", "…"),
+        c.detail
+    );
+    Ok(PanelChoice {
+        host: ip.to_string(),
+        requested,
+    })
+}
+
+/// The old wizard's answers, from flags only (no questions: the browser asks
+/// whatever is missing, except what --domain needs).
+fn inputs_from_flags(args: &InstallArgs, t: &Term) -> Result<InstallInputs> {
+    let d = args.domain.as_deref().unwrap_or_default();
+    let domain =
+        crate::util::normalize_domain(d).ok_or_else(|| anyhow!("'{d}' is not a valid domain"))?;
     let hostname = match &args.hostname {
         Some(h) => crate::util::normalize_domain(h)
             .ok_or_else(|| anyhow!("'{h}' is not a valid hostname"))?,
-        None if ask_questions => ask(t, "Mail server hostname", Some(&suggested_host), |v| {
-            crate::util::normalize_domain(v)
-                .ok_or_else(|| format!("'{v}' is not a valid hostname."))
-        })?,
-        None => suggested_host,
+        None => format!("mail.{domain}"),
     };
-    let check_admin = |v: &str| {
-        let v = v.trim().to_ascii_lowercase();
-        if !crate::util::valid_email(&v) {
-            Err(format!("'{v}' is not an email address."))
-        } else if v.ends_with(&format!("@{domain}")) {
-            Err(format!(
-                "Use an address that does not depend on this server (not @{domain}): certificate and alert mail must reach you even if this server is down."
-            ))
-        } else {
-            Ok(v)
-        }
-    };
-    let admin_email = match &args.admin_email {
-        Some(e) => check_admin(e).map_err(|m| anyhow!(m))?,
-        None => ask(
-            t,
-            "Your email on another provider, for certificates and alerts",
-            None,
-            check_admin,
-        )?,
-    };
-    let first_mailbox = if ask_questions && args.first_mailbox == "hello" {
-        ask(
-            t,
-            &format!("First mailbox (…@{domain})"),
-            Some("hello"),
-            |v| {
-                let v = v.trim().to_ascii_lowercase();
-                if crate::util::valid_local_part(&v) {
-                    Ok(v)
-                } else {
-                    Err("Use letters, digits, dots, dashes or underscores.".into())
-                }
-            },
-        )?
-    } else {
-        args.first_mailbox.trim().to_ascii_lowercase()
-    };
-
+    let admin_email = args.admin_email.as_deref().ok_or_else(|| {
+        anyhow!("--admin-email is required with --domain (or leave both out and choose them in the browser)")
+    })?;
+    let (domain, hostname, admin_email) =
+        crate::installer::check_identity(&domain, &hostname, admin_email)
+            .map_err(|e| anyhow!("{e}"))?;
+    let first_mailbox = args.first_mailbox.trim().to_ascii_lowercase();
+    if !crate::util::valid_local_part(&first_mailbox) {
+        bail!("'{first_mailbox}' is not a valid mailbox name");
+    }
     let sending = match args.sending {
-        Some(SendingArg::Direct) => SendingMode::Direct,
         Some(SendingArg::Relay) => SendingMode::Relay,
-        None if ask_questions => {
-            if port25_open {
-                println!(
-                    "    This server can reach other mail servers on port 25, so it can deliver mail itself."
-                );
-            } else {
-                println!(
-                    "    {}",
-                    t.paint("33", "Outbound port 25 looks blocked here, so mail should go out through a relay provider (receiving works either way).")
-                );
-            }
-            let default = if port25_open { "1" } else { "2" };
-            let pick = ask(
-                t,
-                "Send mail 1) directly  2) through a relay provider",
-                Some(default),
-                |v| match v.trim() {
-                    "1" | "direct" => Ok("direct".into()),
-                    "2" | "relay" => Ok("relay".into()),
-                    _ => Err("Type 1 or 2.".into()),
-                },
-            )?;
-            if pick == "relay" {
-                SendingMode::Relay
-            } else {
-                SendingMode::Direct
-            }
-        }
-        None => SendingMode::Direct,
+        _ => SendingMode::Direct,
     };
-
     let relay = if sending == SendingMode::Relay {
-        Some(gather_relay(args, t, ask_questions)?)
+        Some(gather_relay(args, t, false)?)
     } else {
         None
     };
-    let _ = ipv4;
     Ok(InstallInputs {
         domain,
-        hostname: hostname.trim().to_ascii_lowercase(),
+        hostname,
         admin_email,
         first_mailbox,
         sending,
         relay,
         client_origin: args.client_origin.trim_end_matches('/').to_string(),
+        // Without --sending (and without --yes) the browser asks.
+        sending_confirmed: args.sending.is_some() || args.yes,
     })
 }
 
@@ -1141,50 +1213,60 @@ fn gather_relay(args: &InstallArgs, t: &Term, ask_questions: bool) -> Result<Rel
     })
 }
 
-fn print_summary(t: &Term, i: &InstallInputs, ipv4: Option<&str>) {
-    let row = |k: &str, v: String| println!("    {:<16} {v}", t.paint("2", k));
-    println!("\n  {}", t.paint("1", "Summary"));
-    row("Domain", i.domain.clone());
-    row(
-        "Mail hostname",
-        match ipv4 {
-            Some(ip) => format!("{} → {ip}", i.hostname),
-            None => i.hostname.clone(),
-        },
-    );
-    row("Alerts go to", i.admin_email.clone());
-    row("First mailbox", format!("{}@{}", i.first_mailbox, i.domain));
-    row(
-        "Sending",
-        match (&i.sending, &i.relay) {
-            (SendingMode::Relay, Some(r)) => format!(
-                "through {}",
-                crate::model::relay_provider(&r.provider)
-                    .map(|p| p.label)
-                    .unwrap_or("a relay")
-            ),
-            _ => "directly from this server (needs reverse DNS)".into(),
-        },
-    );
-    row(
-        "Certificate",
-        format!(
-            "{}, automatic",
-            crate::edge::acme::ca_name(
-                &crate::edge::acme::env_directory()
-                    .unwrap_or_else(|| crate::edge::acme::LE_PRODUCTION.into())
-            )
-        ),
-    );
-    println!();
+/// Where the console is, and how to claim it: for a re-run after the
+/// terminal's part is done.
+fn console_card(app: &App, t: &Term) {
+    let Some(cfg) = app.config() else { return };
+    let rule = t.paint("2", &"─".repeat(64));
+    let row = |k: &str, v: &str| println!("  {} {v}", t.paint("2", &format!("{k:<14}")));
+    println!("\n{rule}");
+    row("Console", &panel::console_url(cfg.console_host()));
+    if app.db.admin_count_active().unwrap_or(0) == 0 {
+        row(
+            "Finish setup",
+            "run `sudo yunori-mail setup-token` for a one-time link",
+        );
+    }
+    browser_steps(app, t);
+    println!("{rule}");
 }
 
-/// What the person gets, and what is left — printed when the run ends or pauses.
-fn final_summary(app: &App, t: &Term, paused_at: Option<&str>, error: Option<&anyhow::Error>) {
+/// The onboarding steps the browser still has to do, in one line.
+fn browser_steps(app: &App, t: &Term) {
+    use crate::installer::state::{StepStatus as S, TERMINAL_STEPS};
+    let Ok(st) = crate::installer::state::load(&app.db) else {
+        return;
+    };
+    let left: Vec<&str> = st
+        .steps
+        .iter()
+        .filter(|s| !TERMINAL_STEPS.contains(&s.id.as_str()) && s.id != "done")
+        .filter(|s| !matches!(s.status, S::Done | S::Skipped))
+        .map(|s| s.title.as_str())
+        .collect();
+    if !left.is_empty() {
+        println!(
+            "  {} {}",
+            t.paint("2", &format!("{:<14}", "In the browser")),
+            left.join(" → ")
+        );
+        println!(
+            "  {:<14} {}",
+            "",
+            t.paint(
+                "2",
+                "Each step is checked for real (public DNS, the CA) and re-checked every minute."
+            )
+        );
+    }
+}
+
+/// What the person gets, and what is left — printed when the terminal's part ends.
+fn final_summary(app: &App, t: &Term, error: Option<&anyhow::Error>) {
     let Some(cfg) = app.config() else {
         if let Some(e) = error {
             println!(
-                "\nThe install stopped: {e:#}\nFix the problem, then run: sudo yunori-mail install --resume"
+                "\nThe install stopped: {e:#}\nFix the problem, then run the same command again (sudo yunori-mail install)."
             );
         }
         return;
@@ -1195,57 +1277,46 @@ fn final_summary(app: &App, t: &Term, paused_at: Option<&str>, error: Option<&an
         app.db.step_status("edge_tls"),
         Ok(crate::installer::state::StepStatus::Done)
     );
-    let paused_title = paused_at.and_then(|id| {
-        crate::installer::state::STEPS
-            .iter()
-            .find(|(s, _)| *s == id)
-            .map(|(_, t)| *t)
-    });
-    let headline = match (error, paused_title) {
-        (Some(_), _) => t.paint("31;1", "The install stopped."),
-        (None, Some(_)) if edge_up => t.paint(
-            "33;1",
-            "Paused. The server finishes the remaining steps by itself once you have done the one below.",
+    let complete = app.config().is_some_and(|c| c.install_complete);
+    let headline = match error {
+        Some(_) => t.paint("31;1", "The install stopped."),
+        None if complete => t.paint("32;1", "Yunori Mail Server is ready."),
+        None if edge_up => t.paint(
+            "32;1",
+            "This server is ready. Continue in your browser: the rest of the setup happens there.",
         ),
-        (None, Some(title)) => t.paint("33;1", &format!("Paused at “{title}”.")),
-        (None, None) => t.paint("32;1", "Yunori Mail Server is ready."),
+        None => t.paint("33;1", "Paused."),
     };
     println!("  {headline}");
     if let Some(e) = error {
         println!("  {e:#}");
-        println!("  Fix the problem, then run: sudo yunori-mail install --resume");
+        println!("  Fix the problem, then run the same command again (sudo yunori-mail install).");
     }
-    let row = |k: &str, v: &str| println!("  {:<14} {v}", t.paint("2", k));
+    let row = |k: &str, v: &str| println!("  {} {v}", t.paint("2", &format!("{k:<14}")));
     if edge_up {
         println!();
-        row("Console", &format!("https://{}/console", cfg.hostname));
+        row("Console", &panel::console_url(cfg.console_host()));
         if let Some(url) = &t.setup_url {
             row("Finish setup", url);
+            if let Some(n) = &t.setup_note {
+                row("", &t.paint("33", n));
+            }
         } else if app.db.admin_count_active().unwrap_or(0) == 0 {
             row(
                 "Finish setup",
                 "run `sudo yunori-mail setup-token` for a new link",
             );
         }
-        row(
-            "Mailbox portal",
-            &format!("https://{}/account", cfg.hostname),
-        );
+        if complete {
+            row(
+                "Mailbox portal",
+                &format!("https://{}/account", cfg.hostname),
+            );
+        } else {
+            browser_steps(app, t);
+        }
     }
-    let mailbox = t.mailbox.clone().or_else(|| {
-        app.db
-            .get_json::<InstallInputs>("install.inputs")
-            .ok()
-            .flatten()
-            .filter(|_| {
-                matches!(
-                    app.db.step_status("first_mailbox"),
-                    Ok(crate::installer::state::StepStatus::Done)
-                )
-            })
-            .map(|i| format!("{}@{}", i.first_mailbox, i.domain))
-    });
-    if let Some(m) = &mailbox {
+    if let Some(m) = &t.mailbox {
         row("Mailbox", m);
         row(
             "Mail apps",
@@ -1258,52 +1329,6 @@ fn final_summary(app: &App, t: &Term, paused_at: Option<&str>, error: Option<&an
             "Yunori",
             &format!("{}/welcome?connect={m}", cfg.client_origin),
         );
-    }
-    if let Ok(st) = crate::installer::state::load(&app.db) {
-        use crate::installer::state::StepStatus as S;
-        let now: Vec<_> = st
-            .steps
-            .iter()
-            .filter(|s| matches!(s.status, S::Waiting | S::Failed))
-            .collect();
-        let later = st
-            .steps
-            .iter()
-            .filter(|s| matches!(s.status, S::Pending | S::Running))
-            .count();
-        if !now.is_empty() && error.is_none() {
-            println!("\n  {}", t.paint("1", "Your turn"));
-            for s in &now {
-                match &s.detail {
-                    Some(d) if !d.is_empty() => println!("    · {}: {d}", s.title),
-                    _ => println!("    · {}", s.title),
-                }
-            }
-            if later > 0 {
-                println!(
-                    "    {}",
-                    t.paint(
-                        "2",
-                        &format!(
-                            "{later} more step{} follow{} after that.",
-                            if later == 1 { "" } else { "s" },
-                            if later == 1 { "s" } else { "" }
-                        )
-                    )
-                );
-            }
-            if edge_up {
-                println!(
-                    "  {}",
-                    t.paint("2", "The console shows the same list and re-checks every minute; or run: sudo yunori-mail install --resume")
-                );
-            } else {
-                println!(
-                    "  {}",
-                    t.paint("2", "Then run: sudo yunori-mail install --resume")
-                );
-            }
-        }
     }
     println!("{rule}");
 }
@@ -1324,6 +1349,7 @@ pub async fn serve(args: ServeArgs) -> Result<()> {
             public_ipv6: None,
             stalwart_version: Some(os::ENGINE.version.into()),
             install_complete: true,
+            panel_host: None,
         });
         cfg.engine_url = url.clone();
         app.save_config(&cfg)?;
@@ -1499,11 +1525,12 @@ fn setup_token() -> Result<()> {
     let token = app.db.issue_setup_token()?;
     let host = app
         .config()
-        .map(|c| c.hostname)
+        .map(|c| c.console_host().to_string())
         .unwrap_or_else(|| "this-server".into());
     println!(
-        "Open this one-time link to create the console owner (valid 24 hours; any earlier link stops working):\n\n  {}\n\nOr open https://{host}/console/setup and paste the token: {token}\n",
-        crate::installer::setup_link(&host, &token)
+        "Open this one-time link to create the console owner (valid 24 hours; any earlier link stops working):\n\n  {}\n\nOr open https://{}/console/setup and paste the token: {token}\n",
+        crate::installer::setup_link(&host, &token),
+        panel::url_host(&host)
     );
     Ok(())
 }
@@ -2001,7 +2028,7 @@ async fn cert_cmd(c: CertCmd) -> Result<()> {
     match c {
         CertCmd::Status => {
             let s = certs::status(&app);
-            let row = |k: &str, v: &str| println!("  {:<14} {v}", t.paint("2", k));
+            let row = |k: &str, v: &str| println!("  {} {v}", t.paint("2", &format!("{k:<14}")));
             match s.state {
                 "missing" => row("Certificate", "none yet"),
                 _ => {

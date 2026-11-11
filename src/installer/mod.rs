@@ -1,9 +1,23 @@
-//! The resumable installer (plan §7.4). Steps 1–7 need root and run from
-//! `yunori-mail install`; the verified gates (DNS, PTR) and the finishing
-//! steps also run inside `serve`, so a user who switched to the browser sees
-//! the install advance on its own once their records propagate.
+//! The resumable installer (plan §7.4).
+//!
+//! Two phases over one persisted step list ([`state::STEPS`]):
+//!
+//! - **Terminal** ([`state::TERMINAL_STEPS`], root, `yunori-mail install`):
+//!   preflight, the one question (where the console opens), firewall, the
+//!   pinned engine, its first run, the units and the HTTPS edge. Then it
+//!   prints the one-time setup link and exits.
+//! - **Browser onboarding** (everything else): mail domain and hostname, how
+//!   mail goes out, and the verified gates (host record, certificate, DNS,
+//!   reverse DNS), then the first mailbox. The service runs these steps (no
+//!   root: nothing here needs it) every minute and whenever the console's
+//!   wizard submits an answer, so every gate is checked for real, never
+//!   self-attested.
+//!
+//! Installs started with the older all-in-the-terminal flow keep their saved
+//! answers and step states and continue from where they are.
 
 pub mod os;
+pub mod panel;
 pub mod state;
 pub mod upgrade;
 
@@ -17,13 +31,20 @@ use crate::engine::stalwart::StalwartProvisioner;
 use crate::model::{RelaySettings, SendingMode, ServerConfig, Status, relay_provider};
 use crate::ops;
 use anyhow::{Context, Result, anyhow, bail};
+use panel::{PanelChoice, PanelKind};
 use serde::{Deserialize, Serialize};
-use state::{STEPS, StepStatus};
+use state::{STEPS, StepStatus, TERMINAL_STEPS};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 const BOOTSTRAP_PORT: u16 = 18081;
+/// Set when the host-record gate passes: the next certificate attempt skips
+/// any backoff left from before the record pointed here.
+const KV_CERT_NOW: &str = "install.certificate_now";
+/// "Skip for now" on reverse DNS (the console's button, or `--skip-ptr`).
+pub const KV_SKIP_PTR: &str = "install.skip_ptr";
+pub const KV_INPUTS: &str = "install.inputs";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,16 +60,40 @@ pub struct RelayInput {
     pub password: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+fn yes() -> bool {
+    true
+}
+
+/// The answers the old terminal wizard asked for. Now: given as flags (the
+/// terminal applies them), or entered in the console's onboarding.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct InstallInputs {
     pub domain: String,
     pub hostname: String,
     pub admin_email: String,
+    /// Local part of the first mailbox the terminal creates (`--first-mailbox`);
+    /// empty when the console creates it.
+    #[serde(default)]
     pub first_mailbox: String,
     pub sending: SendingMode,
+    /// Relay given as flags (the console's relay lives in kv `relay`).
     pub relay: Option<RelayInput>,
     pub client_origin: String,
+    /// The sending mode has been chosen (always, for answers from flags or an
+    /// older release; in the browser, once its sending step is answered).
+    #[serde(default = "yes")]
+    pub sending_confirmed: bool,
+}
+
+impl PartialEq for RelayInput {
+    fn eq(&self, o: &Self) -> bool {
+        self.provider == o.provider
+            && self.host == o.host
+            && self.port == o.port
+            && self.username == o.username
+            && self.region == o.region
+    }
 }
 
 impl RelayInput {
@@ -71,23 +116,78 @@ impl RelayInput {
     }
 }
 
+/// Why an identity answer was refused, and which field to point at.
+#[derive(Debug)]
+pub struct IdentityError {
+    pub field: &'static str,
+    pub message: String,
+}
+
+impl std::fmt::Display for IdentityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// Domain, hostname and the outside address, normalised. Shared by the flags
+/// and the console so both say the same thing about the same mistake.
+pub fn check_identity(
+    domain: &str,
+    hostname: &str,
+    admin_email: &str,
+) -> std::result::Result<(String, String, String), IdentityError> {
+    let err = |field, message: String| IdentityError { field, message };
+    let domain = crate::util::normalize_domain(domain).ok_or_else(|| {
+        err(
+            "domain",
+            format!(
+                "'{}' doesn't look like a domain. Try something like example.com.",
+                domain.trim()
+            ),
+        )
+    })?;
+    let hostname = crate::util::normalize_domain(hostname).ok_or_else(|| {
+        err(
+            "hostname",
+            format!("'{}' is not a valid hostname.", hostname.trim()),
+        )
+    })?;
+    if hostname != domain && !hostname.ends_with(&format!(".{domain}")) {
+        // Allowed (a shared mail host), but the usual mistake is a typo.
+        tracing::debug!("mail hostname {hostname} is outside {domain}");
+    }
+    let admin_email = admin_email.trim().to_ascii_lowercase();
+    if !crate::util::valid_email(&admin_email) {
+        return Err(err(
+            "adminEmail",
+            format!("'{admin_email}' is not an email address."),
+        ));
+    }
+    if admin_email.ends_with(&format!("@{domain}")) {
+        return Err(err(
+            "adminEmail",
+            format!(
+                "Use an address that does not depend on this server (not @{domain}): certificate and alert mail must reach you even if this server is down."
+            ),
+        ));
+    }
+    Ok((domain, hostname, admin_email))
+}
+
 impl InstallInputs {
-    pub fn validate(&self) -> Result<()> {
-        crate::util::normalize_domain(&self.domain)
-            .ok_or_else(|| anyhow!("'{}' is not a valid domain", self.domain))?;
-        crate::util::normalize_domain(&self.hostname)
-            .ok_or_else(|| anyhow!("'{}' is not a valid hostname", self.hostname))?;
-        if !crate::util::valid_email(&self.admin_email) {
-            bail!("'{}' is not a valid email address", self.admin_email);
-        }
-        if self.admin_email.ends_with(&format!("@{}", self.domain)) {
-            bail!(
-                "use an address on another provider for alerts and certificates — not one hosted on this new server"
-            );
-        }
-        if !crate::util::valid_local_part(&self.first_mailbox) {
+    /// Domain, hostname, outside address and first mailbox (what every flow has).
+    pub fn validate_identity(&self) -> Result<()> {
+        check_identity(&self.domain, &self.hostname, &self.admin_email)
+            .map_err(|e| anyhow!("{e}"))?;
+        if !self.first_mailbox.is_empty() && !crate::util::valid_local_part(&self.first_mailbox) {
             bail!("'{}' is not a valid mailbox name", self.first_mailbox);
         }
+        Ok(())
+    }
+
+    /// Everything, as given on the command line.
+    pub fn validate(&self) -> Result<()> {
+        self.validate_identity()?;
         if self.sending == SendingMode::Relay {
             let r = self.relay.as_ref().ok_or_else(|| {
                 anyhow!(
@@ -130,7 +230,7 @@ impl Ui for NullUi {}
 pub enum Mode {
     /// `yunori-mail install` as root.
     Cli,
-    /// The background gate checker inside `serve` (no root, no secrets on screen).
+    /// The service (`serve`): the browser onboarding. No root, no secrets on screen.
     Service,
 }
 
@@ -146,15 +246,8 @@ pub enum RunResult {
     Waiting { step: String, detail: String },
 }
 
-const ROOT_STEPS: &[&str] = &[
-    "preflight",
-    "inputs",
-    "host_record",
-    "firewall",
-    "install_engine",
-    "bootstrap_engine",
-    "edge_tls",
-];
+/// What the service says about a terminal step it cannot run.
+pub const RUN_IN_TERMINAL: &str = "Run `sudo yunori-mail install` on the server.";
 
 pub struct Installer {
     pub app: Arc<App>,
@@ -163,9 +256,11 @@ pub struct Installer {
     pub skip_ptr: bool,
     /// Preflight results the wizard already showed (so step 1 doesn't run them twice).
     pub preflight_results: Option<Vec<crate::model::Check>>,
+    /// Terminal runs without answers given as flags stop after the root
+    /// steps: everything else is answered in the browser.
+    pub terminal_only: bool,
     /// The first certificate attempt of a terminal run skips the backoff.
     force_certificate: AtomicBool,
-    setup_link_shown: AtomicBool,
 }
 
 impl Installer {
@@ -176,18 +271,19 @@ impl Installer {
             force: false,
             skip_ptr: false,
             preflight_results: None,
+            terminal_only: false,
             force_certificate: AtomicBool::new(mode == Mode::Cli),
-            setup_link_shown: AtomicBool::new(false),
         }
     }
 
-    fn inputs(&self) -> Result<InstallInputs> {
+    fn inputs(&self) -> Result<Option<InstallInputs>> {
+        self.app.db.get_json::<InstallInputs>(KV_INPUTS)
+    }
+
+    fn config(&self) -> Result<ServerConfig> {
         self.app
-            .db
-            .get_json::<InstallInputs>("install.inputs")?
-            .ok_or_else(|| {
-                anyhow!("no saved install inputs — run `yunori-mail install` with --domain")
-            })
+            .config()
+            .ok_or_else(|| anyhow!("missing config — run `sudo yunori-mail install`"))
     }
 
     fn log(&self, level: &str, step: &str, msg: &str) {
@@ -202,29 +298,48 @@ impl Installer {
         }
     }
 
-    /// Save inputs (fresh install). The relay password goes to the vault, never into kv.
+    /// Save answers given as flags. The relay password goes to the vault, never into kv.
     pub fn save_inputs(&self, inputs: &InstallInputs) -> Result<()> {
         inputs.validate()?;
         if let Some(r) = &inputs.relay {
             self.app.db.put_secret("relay.password", &r.password)?;
         }
-        self.app.db.set_json("install.inputs", inputs)?;
+        self.app.db.set_json(KV_INPUTS, inputs)?;
         self.app.db.init_steps()?;
         Ok(())
     }
 
     /// Run every remaining step in order; stops at the first waiting gate.
     pub async fn run(&self, ui: &mut dyn Ui) -> Result<RunResult> {
+        let _turn = match self.mode {
+            Mode::Cli => self.app.install_run.lock().await,
+            Mode::Service => match self.app.install_run.try_lock() {
+                Ok(g) => g,
+                // Another check is running right now; it does the same work.
+                Err(_) => {
+                    return Ok(RunResult::Waiting {
+                        step: String::new(),
+                        detail: "A check is already running.".into(),
+                    });
+                }
+            },
+        };
         self.app.db.init_steps()?;
         for (id, title) in STEPS {
             let status = self.app.db.step_status(id)?;
             if matches!(status, StepStatus::Done | StepStatus::Skipped) {
                 continue;
             }
-            if self.mode == Mode::Service && ROOT_STEPS.contains(id) {
+            if self.terminal_only && !TERMINAL_STEPS.contains(id) {
                 return Ok(RunResult::Waiting {
                     step: id.to_string(),
-                    detail: "Run `yunori-mail install --resume` on the server.".into(),
+                    detail: "Continue in the browser.".into(),
+                });
+            }
+            if self.mode == Mode::Service && TERMINAL_STEPS.contains(id) {
+                return Ok(RunResult::Waiting {
+                    step: id.to_string(),
+                    detail: RUN_IN_TERMINAL.into(),
                 });
             }
             ui.step(id, title);
@@ -238,9 +353,6 @@ impl Installer {
                     self.app.db.set_step(id, StepStatus::Done, Some(&detail))?;
                     self.log("info", id, &detail);
                     ui.done(id, &detail);
-                    if *id == "certificate" {
-                        self.offer_setup_link(ui, None)?;
-                    }
                 }
                 Ok(Outcome::Skipped(detail)) => {
                     self.app
@@ -254,14 +366,6 @@ impl Installer {
                         .db
                         .set_step(id, StepStatus::Waiting, Some(&detail))?;
                     ui.waiting(id, &detail);
-                    if *id == "certificate" {
-                        self.offer_setup_link(
-                            ui,
-                            Some("Until the certificate is issued your browser will warn about this page; the console switches to the real certificate by itself."),
-                        )?;
-                    } else if self.edge_running()? {
-                        self.offer_setup_link(ui, None)?;
-                    }
                     return Ok(RunResult::Waiting {
                         step: id.to_string(),
                         detail,
@@ -282,12 +386,14 @@ impl Installer {
     async fn run_step(&self, id: &str, ui: &mut dyn Ui) -> Result<Outcome> {
         match id {
             "preflight" => self.preflight(ui).await,
-            "inputs" => self.apply_inputs().await,
-            "host_record" => self.host_record().await,
+            "panel" => self.panel().await,
             "firewall" => Ok(Outcome::Done(os::open_firewall()?)),
             "install_engine" => self.install_engine().await,
             "bootstrap_engine" => self.bootstrap_engine().await,
             "edge_tls" => self.edge_tls().await,
+            "inputs" => self.identity().await,
+            "sending" => self.sending().await,
+            "host_record" => self.host_record().await,
             "certificate" => self.certificate().await,
             "dns" => self.dns_gate(ui).await,
             "ptr" => self.ptr_gate().await,
@@ -297,11 +403,12 @@ impl Installer {
         }
     }
 
+    // ── terminal ─────────────────────────────────────────────────────────
+
     async fn preflight(&self, ui: &mut dyn Ui) -> Result<Outcome> {
         if !os::is_root() {
             bail!("the installer must run as root (try: sudo yunori-mail install)");
         }
-        let inputs = self.inputs()?;
         let results = match &self.preflight_results {
             // Already on screen from the wizard.
             Some(r) => r.clone(),
@@ -320,13 +427,6 @@ impl Installer {
                 .collect();
             bail!("this server is not ready: {}", failed.join("; "));
         }
-        if inputs.sending == SendingMode::Direct
-            && results
-                .iter()
-                .any(|c| c.id == "port25" && c.status != Status::Pass)
-        {
-            ui.info("Outbound port 25 looks blocked. You can continue — receiving works — but consider `--sending relay`.");
-        }
         Ok(Outcome::Done(if warnings == 0 {
             "All checks passed.".into()
         } else {
@@ -337,74 +437,63 @@ impl Installer {
         }))
     }
 
-    async fn apply_inputs(&self) -> Result<Outcome> {
-        let inputs = self.inputs()?;
+    /// Where the console opens (decided by the terminal's one question), and
+    /// the configuration the engine starts from: the answers given as flags,
+    /// an earlier release's answers, or names derived from the console's
+    /// address that the browser onboarding replaces.
+    async fn panel(&self) -> Result<Outcome> {
+        let choice = self
+            .app
+            .db
+            .get_json::<PanelChoice>(panel::KV)?
+            .ok_or_else(|| {
+                anyhow!("choose where the console opens: run `sudo yunori-mail install`")
+            })?;
         let (v4, v6) = checks::public_ips().await;
         let previous = self.app.config();
-        let cfg = ServerConfig {
-            hostname: inputs.hostname.clone(),
-            primary_domain: inputs.domain.clone(),
-            admin_email: inputs.admin_email.clone(),
-            client_origin: inputs.client_origin.clone(),
-            engine_url: format!("http://127.0.0.1:{ENGINE_HTTP_PORT}"),
-            sending_mode: inputs.sending,
-            public_ipv4: v4.or_else(|| previous.as_ref().and_then(|p| p.public_ipv4.clone())),
-            public_ipv6: v6.or_else(|| previous.as_ref().and_then(|p| p.public_ipv6.clone())),
-            stalwart_version: previous.as_ref().and_then(|p| p.stalwart_version.clone()),
-            install_complete: false,
+        let mut cfg = match (&previous, self.inputs()?) {
+            (Some(c), _) => c.clone(),
+            (None, Some(i)) => config_from_inputs(&i),
+            (None, None) => {
+                let ip = v4.as_deref().or(v6.as_deref()).and_then(|s| s.parse().ok());
+                let (hostname, domain) = panel::placeholders(&choice.host, ip);
+                ServerConfig {
+                    hostname,
+                    primary_domain: domain,
+                    admin_email: String::new(),
+                    client_origin: crate::app::DEFAULT_CLIENT_ORIGIN.into(),
+                    engine_url: format!("http://127.0.0.1:{ENGINE_HTTP_PORT}"),
+                    sending_mode: SendingMode::Direct,
+                    public_ipv4: None,
+                    public_ipv6: None,
+                    stalwart_version: None,
+                    install_complete: false,
+                    panel_host: None,
+                }
+            }
         };
+        cfg.public_ipv4 = v4.or_else(|| previous.as_ref().and_then(|p| p.public_ipv4.clone()));
+        cfg.public_ipv6 = v6.or_else(|| previous.as_ref().and_then(|p| p.public_ipv6.clone()));
+        cfg.panel_host = Some(choice.host.clone());
         self.app.save_config(&cfg)?;
         if let Some(dir) = crate::edge::acme::env_directory() {
             // The service starts without this environment: remember the CA.
             crate::edge::acme::save_directory(&self.app.db, &dir)?;
         }
-        self.app
+        if self
+            .app
             .db
-            .set_kv(&format!("dmarc_policy:{}", inputs.domain), "none")?;
-        Ok(Outcome::Done(format!(
-            "{} on {} ({}).",
-            inputs.domain,
-            inputs.hostname,
-            cfg.public_ipv4.as_deref().unwrap_or("no public IPv4 found")
-        )))
-    }
-
-    async fn host_record(&self) -> Result<Outcome> {
-        let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
-        // With a connected DNS provider, publish the host record first.
-        match crate::dns_publish::publish_host_record(&self.app, "install").await {
-            Ok(Some(msg)) => self.log("info", "host_record", &msg),
-            Ok(None) => {}
-            Err(e) => self.log("warn", "host_record", &format!("DNS provider: {e}")),
-        }
-        let c = checks::host_record_now(
-            &cfg.hostname,
-            cfg.public_ipv4.as_deref(),
-            cfg.public_ipv6.as_deref(),
-        )
-        .await;
-        if c.status != Status::Pass {
-            return Ok(Outcome::Waiting(
-                format!("{} {}", c.detail, c.remedy.unwrap_or_default())
-                    .trim()
-                    .to_string(),
-            ));
-        }
-        // The same checks the certificate step makes (stale IPv6, CAA), now,
-        // while the person is still at their DNS provider.
-        let directory = crate::edge::acme::directory(&self.app.db);
-        if let Err(p) = certs::precheck(
-            &cfg.hostname,
-            cfg.public_ipv4.as_deref(),
-            cfg.public_ipv6.as_deref(),
-            &crate::dns::Truth::for_name(&cfg.hostname).await,
-            crate::edge::acme::caa_identity(&directory),
-        )
-        .await
+            .get_kv(&dmarc_key(&cfg.primary_domain))?
+            .is_none()
         {
-            return Ok(Outcome::Waiting(p.sentence()));
+            self.app
+                .db
+                .set_kv(&dmarc_key(&cfg.primary_domain), "none")?;
         }
-        Ok(Outcome::Done(c.detail))
+        Ok(Outcome::Done(format!(
+            "The console opens at {}.",
+            panel::console_url(&choice.host)
+        )))
     }
 
     async fn install_engine(&self) -> Result<Outcome> {
@@ -442,8 +531,7 @@ impl Installer {
 
     async fn bootstrap_engine(&self) -> Result<Outcome> {
         let p = &self.app.paths;
-        let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
-        let inputs = self.inputs()?;
+        let cfg = self.config()?;
         let base = format!("http://127.0.0.1:{BOOTSTRAP_PORT}");
 
         // A first run interrupted after the engine wrote its config but before
@@ -485,6 +573,8 @@ impl Installer {
             prov.wait_ready(Duration::from_secs(60))
                 .await
                 .context("the engine did not start")?;
+            // The hostname and domain may be placeholders until the browser
+            // onboarding names them (it renames the domain in place).
             let result = prov
                 .bootstrap(
                     &cfg.hostname,
@@ -565,28 +655,6 @@ impl Installer {
                 "Addresses with 20 failed sign-ins in an hour are blocked for a day",
             );
         }
-
-        if inputs.sending == SendingMode::Relay
-            && let Some(r) = &inputs.relay
-        {
-            let password = self
-                .app
-                .db
-                .get_secret("relay.password")?
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            let settings = r.settings().map_err(|e| anyhow!("{}", e.message))?;
-            engine
-                .set_relay(Some(&RelayConfig {
-                    host: settings.host.clone(),
-                    port: settings.port,
-                    implicit_tls: settings.port == 465,
-                    username: settings.username.clone(),
-                    password,
-                }))
-                .await?;
-            self.app.db.set_json("relay", &settings)?;
-        }
         self.app.db.audit(
             "installer",
             "engine.bootstrap",
@@ -625,11 +693,199 @@ impl Installer {
         ))
     }
 
-    /// Automatic HTTPS. Runs from the terminal and from `serve`, so a
-    /// certificate that could not be issued yet (firewall, DNS still
-    /// spreading) arrives on its own once the cause is fixed.
+    /// The console's own certificate, asked for once by the terminal right
+    /// after the edge starts (through `certs::ensure`, like every other
+    /// certificate). With an sslip.io name that the CA cannot validate (port
+    /// 80 blocked), the console falls back to the bare IP address and its
+    /// temporary self-signed certificate; the browser onboarding gets the
+    /// mail certificate once the cause is fixed.
+    pub async fn console_certificate(&self, ui: &mut dyn Ui) -> Result<()> {
+        let mut cfg = self.config()?;
+        let host = cfg.console_host().to_string();
+        if panel::kind(&host) == PanelKind::Ip {
+            ui.info(&format!(
+                "The console uses a temporary self-signed certificate at {}: your browser asks once whether to continue.",
+                panel::url_host(&host)
+            ));
+            return Ok(());
+        }
+        ui.step(
+            "console_certificate",
+            &format!("Get a certificate for {host}"),
+        );
+        let outcome = certs::ensure(&self.app, true).await;
+        match outcome {
+            certs::Outcome::Current | certs::Outcome::Issued(_) => {
+                ui.done(
+                    "certificate",
+                    &format!("{host} has a trusted certificate; the browser shows no warning."),
+                );
+                wait_until_served(&self.app.paths, &host).await;
+            }
+            certs::Outcome::Failed { problem, .. }
+            | certs::Outcome::Later {
+                problem: Some(problem),
+                ..
+            } => {
+                ui.waiting("certificate", &problem.sentence());
+                let ip = cfg.public_ipv4.clone().or_else(|| cfg.public_ipv6.clone());
+                match (panel::kind(&host), ip) {
+                    (PanelKind::Sslip, Some(ip)) => {
+                        cfg.panel_host = Some(ip.clone());
+                        self.app.save_config(&cfg)?;
+                        self.app
+                            .db
+                            .set_step("panel", StepStatus::Done, Some(&format!(
+                                "The console opens at {} (temporary self-signed certificate: {host} could not get one yet).",
+                                panel::console_url(&ip)
+                            )))?;
+                        ui.info(&format!(
+                            "Using this server's address instead: {}. Your browser asks once whether to continue (temporary self-signed certificate).",
+                            panel::console_url(&ip)
+                        ));
+                    }
+                    _ => ui.info(
+                        "Until the certificate is issued your browser will warn about the console; it switches to the real certificate by itself.",
+                    ),
+                }
+            }
+            certs::Outcome::Later { .. } | certs::Outcome::Busy => {}
+            certs::Outcome::NotConfigured => {}
+        }
+        Ok(())
+    }
+
+    /// Print the console's one-time setup link (terminal only, while nobody
+    /// has claimed the console yet). The token is shown once, never logged.
+    pub fn offer_setup_link(&self, ui: &mut dyn Ui) -> Result<bool> {
+        if self.mode != Mode::Cli || self.app.db.admin_count_active()? > 0 {
+            return Ok(false);
+        }
+        let cfg = self.config()?;
+        let token = self.app.db.issue_setup_token()?;
+        let note = (panel::kind(cfg.console_host()) == PanelKind::Ip).then_some(
+            "The console uses a temporary self-signed certificate on this address: your browser asks once whether to continue.",
+        );
+        ui.setup_link(&setup_link(cfg.console_host(), &token), note);
+        Ok(true)
+    }
+
+    // ── browser onboarding ───────────────────────────────────────────────
+
+    /// The mail domain, the mail hostname and the outside address for
+    /// certificates and alerts, applied to the engine.
+    async fn identity(&self) -> Result<Outcome> {
+        let Some(inputs) = self.inputs()? else {
+            return Ok(Outcome::Waiting(
+                "Choose your mail domain and the mail server's hostname in the console.".into(),
+            ));
+        };
+        let detail = apply_identity(&self.app, &inputs, "installer").await?;
+        Ok(Outcome::Done(detail))
+    }
+
+    async fn sending(&self) -> Result<Outcome> {
+        let Some(inputs) = self.inputs()? else {
+            return Ok(Outcome::Waiting("Choose your mail domain first.".into()));
+        };
+        if !inputs.sending_confirmed {
+            return Ok(Outcome::Waiting(
+                "Choose how this server sends mail: directly, or through a relay provider.".into(),
+            ));
+        }
+        let mut cfg = self.config()?;
+        // A relay given as flags: apply it once (the console's relay form
+        // applies its own as it is saved).
+        if inputs.sending == SendingMode::Relay
+            && self.app.db.get_json::<RelaySettings>("relay")?.is_none()
+            && let Some(r) = &inputs.relay
+        {
+            let password = self
+                .app
+                .db
+                .get_secret("relay.password")?
+                .map(|s| s.to_string())
+                .unwrap_or_default();
+            let settings = r.settings().map_err(|e| anyhow!("{}", e.message))?;
+            self.app
+                .engine()?
+                .set_relay(Some(&RelayConfig {
+                    host: settings.host.clone(),
+                    port: settings.port,
+                    implicit_tls: settings.port == 465,
+                    username: settings.username.clone(),
+                    password,
+                }))
+                .await?;
+            self.app.db.set_json("relay", &settings)?;
+            cfg.sending_mode = SendingMode::Relay;
+            self.app.save_config(&cfg)?;
+        }
+        Ok(Outcome::Done(match cfg.sending_mode {
+            SendingMode::Relay => format!(
+                "Mail goes out through {}.",
+                ops::relay_settings(&self.app)
+                    .and_then(|r| relay_provider(&r.provider).map(|p| p.label.to_string()))
+                    .unwrap_or_else(|| "a relay provider".into())
+            ),
+            SendingMode::Direct => "This server delivers mail itself.".into(),
+        }))
+    }
+
+    async fn host_record(&self) -> Result<Outcome> {
+        let cfg = self.config()?;
+        // With a connected DNS provider, publish the host record first.
+        match crate::dns_publish::publish_host_record(&self.app, "install").await {
+            Ok(Some(msg)) => self.log("info", "host_record", &msg),
+            Ok(None) => {}
+            Err(e) => self.log("warn", "host_record", &format!("DNS provider: {e}")),
+        }
+        let c = checks::host_record_now(
+            &cfg.hostname,
+            cfg.public_ipv4.as_deref(),
+            cfg.public_ipv6.as_deref(),
+        )
+        .await;
+        if c.status != Status::Pass {
+            return Ok(Outcome::Waiting(
+                format!("{} {}", c.detail, c.remedy.unwrap_or_default())
+                    .trim()
+                    .to_string(),
+            ));
+        }
+        // The same checks the certificate step makes (stale IPv6, CAA), now,
+        // while the person is still at their DNS provider.
+        let directory = crate::edge::acme::directory(&self.app.db);
+        if let Err(p) = certs::precheck(
+            &cfg.hostname,
+            cfg.public_ipv4.as_deref(),
+            cfg.public_ipv6.as_deref(),
+            &crate::dns::Truth::for_name(&cfg.hostname).await,
+            crate::edge::acme::caa_identity(&directory),
+        )
+        .await
+        {
+            return Ok(Outcome::Waiting(p.sentence()));
+        }
+        // Attempts made before the record pointed here may have left a long
+        // backoff: the certificate step starts fresh.
+        self.app.db.set_kv(KV_CERT_NOW, "true")?;
+        Ok(Outcome::Done(c.detail))
+    }
+
+    /// Automatic HTTPS for the mail hostname. Runs from the terminal and from
+    /// `serve`, so a certificate that could not be issued yet (firewall, DNS
+    /// still spreading) arrives on its own once the cause is fixed.
     async fn certificate(&self) -> Result<Outcome> {
-        let force = self.force_certificate.swap(false, Ordering::SeqCst);
+        let fresh = self
+            .app
+            .db
+            .get_kv(KV_CERT_NOW)?
+            .is_some_and(|v| v == "true");
+        if fresh {
+            self.app.db.set_kv(KV_CERT_NOW, "false")?;
+        }
+        let force = self.force_certificate.swap(false, Ordering::SeqCst) || fresh;
         let ca = crate::edge::acme::ca_name(&crate::edge::acme::directory(&self.app.db));
         Ok(match certs::ensure(&self.app, force).await {
             certs::Outcome::Current | certs::Outcome::Issued(_) => {
@@ -676,30 +932,8 @@ impl Installer {
         })
     }
 
-    fn edge_running(&self) -> Result<bool> {
-        Ok(matches!(
-            self.app.db.step_status("edge_tls")?,
-            StepStatus::Done | StepStatus::Skipped
-        ))
-    }
-
-    /// Show the console's one-time setup link (terminal runs only, once per
-    /// run, and only while nobody has claimed the console yet).
-    fn offer_setup_link(&self, ui: &mut dyn Ui, note: Option<&str>) -> Result<()> {
-        if self.mode != Mode::Cli
-            || self.app.db.admin_count_active()? > 0
-            || self.setup_link_shown.swap(true, Ordering::SeqCst)
-        {
-            return Ok(());
-        }
-        let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
-        let token = self.app.db.issue_setup_token()?;
-        ui.setup_link(&setup_link(&cfg.hostname, &token), note);
-        Ok(())
-    }
-
     async fn dns_gate(&self, ui: &mut dyn Ui) -> Result<Outcome> {
-        let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
+        let cfg = self.config()?;
         let engine = self.app.engine()?;
         let domain = engine
             .list_domains()
@@ -765,7 +999,7 @@ impl Installer {
     }
 
     async fn ptr_gate(&self) -> Result<Outcome> {
-        let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
+        let cfg = self.config()?;
         let relayed = cfg.sending_mode == SendingMode::Relay;
         // An IPv6-only server's reverse DNS is the IPv6 address's.
         let Some(ip) = cfg.public_ipv4.clone().or_else(|| cfg.public_ipv6.clone()) else {
@@ -781,10 +1015,14 @@ impl Installer {
                 "Sending is relayed, so reverse DNS is recommended but not required.".into(),
             ));
         }
-        if self.skip_ptr {
-            return Ok(Outcome::Skipped(
-                "Skipped at your request. Gmail and Outlook will likely reject mail sent directly until reverse DNS is set.".into(),
-            ));
+        if self.skip_ptr
+            || self
+                .app
+                .db
+                .get_kv(KV_SKIP_PTR)?
+                .is_some_and(|v| v == "true")
+        {
+            return Ok(Outcome::Skipped(PTR_SKIPPED.into()));
         }
         let names = public.ptr(ip.parse()?).await.unwrap_or_default();
         let g = crate::dns::reputation::guidance(crate::dns::reputation::detect_provider(&names));
@@ -795,28 +1033,25 @@ impl Installer {
     }
 
     async fn first_mailbox(&self, ui: &mut dyn Ui) -> Result<Outcome> {
-        let cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
+        let cfg = self.config()?;
         let engine = self.app.engine()?;
         let accounts = engine.list_accounts().await?;
         if let Some(a) = accounts.iter().find(|a| !a.is_admin) {
             return Ok(Outcome::Done(format!("{} exists.", a.address)));
         }
-        if self.mode == Mode::Service {
+        // The terminal creates it only when it was named on the command line.
+        let local = self
+            .inputs()?
+            .map(|i| i.first_mailbox)
+            .filter(|l| !l.is_empty());
+        let (Mode::Cli, Some(local)) = (self.mode, local) else {
             return Ok(Outcome::Waiting(
-                "Create your first mailbox: right here, or with `sudo yunori-mail install --resume` on the server."
-                    .into(),
+                "Create your first mailbox in the console.".into(),
             ));
-        }
-        let inputs = self.inputs()?;
+        };
         let password = crate::util::generate_password(20);
-        let acct = ops::create_first_mailbox(
-            &self.app,
-            &inputs.first_mailbox,
-            None,
-            &password,
-            "installer",
-        )
-        .await?;
+        let acct =
+            ops::create_first_mailbox(&self.app, &local, None, &password, "installer").await?;
         ui.secret(&format!("Password for {}", acct.address), &password);
         ui.mailbox(&acct.address);
         ui.info(&format!(
@@ -830,10 +1065,9 @@ impl Installer {
     }
 
     async fn finish(&self, ui: &mut dyn Ui) -> Result<Outcome> {
-        let mut cfg = self.app.config().ok_or_else(|| anyhow!("missing config"))?;
+        let mut cfg = self.config()?;
         cfg.install_complete = true;
         self.app.save_config(&cfg)?;
-        self.offer_setup_link(ui, None)?;
         ui.info(&format!(
             "Console: https://{}/console   ·   Mailbox portal: https://{}/account",
             cfg.hostname, cfg.hostname
@@ -845,11 +1079,153 @@ impl Installer {
     }
 }
 
+pub const PTR_SKIPPED: &str = "Skipped for now. Gmail and Outlook will likely reject mail sent directly from this server until reverse DNS is set (receiving is not affected).";
+
+fn dmarc_key(domain: &str) -> String {
+    format!("dmarc_policy:{domain}")
+}
+
+/// The configuration answers given as flags describe.
+pub fn config_from_inputs(i: &InstallInputs) -> ServerConfig {
+    ServerConfig {
+        hostname: i.hostname.clone(),
+        primary_domain: i.domain.clone(),
+        admin_email: i.admin_email.clone(),
+        client_origin: i.client_origin.clone(),
+        engine_url: format!("http://127.0.0.1:{ENGINE_HTTP_PORT}"),
+        sending_mode: i.sending,
+        public_ipv4: None,
+        public_ipv6: None,
+        stalwart_version: None,
+        install_complete: false,
+        panel_host: None,
+    }
+}
+
+/// Make the engine and the configuration carry the chosen domain and
+/// hostname. The engine started with placeholder names (it needs both at its
+/// first run): its domain is renamed in place (DKIM keys and the
+/// administrator follow it), its hostname set through the management API.
+/// Idempotent; refuses to rename a domain that already holds mailboxes.
+pub async fn apply_identity(app: &App, inputs: &InstallInputs, actor: &str) -> Result<String> {
+    inputs.validate_identity()?;
+    let mut cfg = app
+        .config()
+        .ok_or_else(|| anyhow!("missing config — run `sudo yunori-mail install`"))?;
+    let engine = app.engine()?;
+    let domains = engine.list_domains().await?;
+    if !domains.iter().any(|d| d.name == inputs.domain) {
+        let current = domains
+            .iter()
+            .find(|d| d.name == cfg.primary_domain)
+            .filter(|_| !cfg.install_complete);
+        match current {
+            Some(old) => {
+                let accounts = engine.list_accounts().await?;
+                if accounts
+                    .iter()
+                    .any(|a| a.domain_id == old.id && !a.is_admin)
+                {
+                    bail!(
+                        "{} already has mailboxes, so it cannot be renamed; add {} under Domains instead",
+                        old.name,
+                        inputs.domain
+                    );
+                }
+                engine.rename_domain(&old.id, &inputs.domain).await?;
+                follow_admin_rename(app, &old.name, &inputs.domain)?;
+                app.db.audit(
+                    actor,
+                    "domain.rename",
+                    Some(&inputs.domain),
+                    Some(&format!("was {}", old.name)),
+                )?;
+            }
+            None => {
+                engine.create_domain(&inputs.domain).await?;
+                app.db
+                    .audit(actor, "domain.create", Some(&inputs.domain), None)?;
+            }
+        }
+    }
+    let engine = app.engine()?;
+    if engine.hostname().await.ok().as_deref() != Some(inputs.hostname.as_str()) {
+        engine.set_hostname(&inputs.hostname).await?;
+        app.db
+            .audit(actor, "engine.hostname", Some(&inputs.hostname), None)?;
+    }
+    if app.db.get_kv(&dmarc_key(&inputs.domain))?.is_none() {
+        app.db.set_kv(&dmarc_key(&inputs.domain), "none")?;
+    }
+    cfg.hostname = inputs.hostname.clone();
+    cfg.primary_domain = inputs.domain.clone();
+    cfg.admin_email = inputs.admin_email.clone();
+    cfg.client_origin = inputs.client_origin.clone();
+    app.save_config(&cfg)?;
+    Ok(format!(
+        "{} on {}; alerts go to {}.",
+        inputs.domain, inputs.hostname, inputs.admin_email
+    ))
+}
+
+/// The engine's administrator signs in as `admin@<domain>`: after a rename
+/// only the new name works once the engine restarts (verified on 1.0.3), so
+/// the sealed credential follows at once.
+fn follow_admin_rename(app: &App, old: &str, new: &str) -> Result<()> {
+    let Some(creds) = app.db.get_secret("engine.admin")? else {
+        return Ok(());
+    };
+    let (user, pass) = creds.split_once(':').unwrap_or((creds.as_str(), ""));
+    if let Some(local) = user.strip_suffix(&format!("@{old}")) {
+        app.db
+            .put_secret("engine.admin", &format!("{local}@{new}:{pass}"))?;
+        app.reload_engine()?;
+    }
+    Ok(())
+}
+
+/// Wait (briefly) until the edge serves the certificate on disk for `host`,
+/// so the link printed next does not open on the old self-signed one.
+async fn wait_until_served(paths: &crate::paths::Paths, host: &str) {
+    let Some(want) = crate::edge::tls::disk_fingerprint(paths) else {
+        return;
+    };
+    for _ in 0..20 {
+        if crate::edge::tls::served_fingerprint(443, host, false)
+            .await
+            .is_ok_and(|fp| fp == want)
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
 /// The console's first-run page with the setup token in the URL fragment: the
 /// fragment never reaches the server's logs or a Referer header, and the page
 /// removes it from the address bar as soon as it has read it.
-pub fn setup_link(hostname: &str, token: &str) -> String {
-    format!("https://{hostname}/console/setup#token={token}")
+pub fn setup_link(host: &str, token: &str) -> String {
+    format!(
+        "https://{}/console/setup#token={token}",
+        panel::url_host(host)
+    )
+}
+
+/// The host links to this server should use (invites, device profiles): the
+/// mail hostname once it has its certificate, the console's address before.
+pub fn public_host(app: &App) -> Option<String> {
+    let cfg = app.config()?;
+    let mail_ready = cfg.install_complete
+        || cfg.panel_host.is_none()
+        || matches!(
+            app.db.step_status("certificate"),
+            Ok(StepStatus::Done | StepStatus::Skipped)
+        );
+    Some(if mail_ready {
+        cfg.hostname
+    } else {
+        panel::url_host(cfg.console_host())
+    })
 }
 
 /// Let the unprivileged service read/write what the root installer created.
@@ -875,7 +1251,8 @@ pub fn fix_permissions(paths: &crate::paths::Paths) {
     }
 }
 
-/// Called periodically by `serve`: advance verified gates without root.
+/// Called periodically by `serve`, and after every onboarding answer:
+/// advance the onboarding's verified gates without root.
 pub async fn advance_gates(app: Arc<App>) {
     if app.config().is_none_or(|c| c.install_complete) {
         return;
@@ -887,87 +1264,4 @@ pub async fn advance_gates(app: Arc<App>) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn inputs() -> InstallInputs {
-        InstallInputs {
-            domain: "example.com".into(),
-            hostname: "mail.example.com".into(),
-            admin_email: "me@gmail.com".into(),
-            first_mailbox: "hello".into(),
-            sending: SendingMode::Direct,
-            relay: None,
-            client_origin: crate::app::DEFAULT_CLIENT_ORIGIN.into(),
-        }
-    }
-
-    #[test]
-    fn input_validation() {
-        assert!(inputs().validate().is_ok());
-        let mut i = inputs();
-        i.admin_email = "me@example.com".into();
-        assert!(
-            i.validate()
-                .unwrap_err()
-                .to_string()
-                .contains("another provider")
-        );
-        let mut i = inputs();
-        i.sending = SendingMode::Relay;
-        assert!(i.validate().is_err());
-        i.relay = Some(RelayInput {
-            provider: "postmark".into(),
-            host: "smtp.postmarkapp.com".into(),
-            port: 587,
-            username: "u".into(),
-            region: None,
-            password: "p".into(),
-        });
-        assert!(i.validate().is_ok());
-        // Amazon SES: the host comes from the region, never typed.
-        i.relay = Some(RelayInput {
-            provider: "ses".into(),
-            host: String::new(),
-            port: 587,
-            username: "AKIAEXAMPLE".into(),
-            region: Some("eu-west-1".into()),
-            password: "p".into(),
-        });
-        assert!(i.validate().is_ok());
-        assert_eq!(
-            i.relay.as_ref().unwrap().settings().unwrap().host,
-            "email-smtp.eu-west-1.amazonaws.com"
-        );
-        i.relay.as_mut().unwrap().region = Some("nowhere".into());
-        assert!(i.validate().is_err());
-    }
-
-    #[tokio::test]
-    async fn service_mode_never_runs_root_steps() {
-        let app = App::for_tests();
-        let inst = Installer::new(app.clone(), Mode::Service);
-        let r = inst.run(&mut NullUi).await.unwrap();
-        assert_eq!(
-            r,
-            RunResult::Waiting {
-                step: "preflight".into(),
-                detail: "Run `yunori-mail install --resume` on the server.".into()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn first_mailbox_waits_in_service_mode_and_creates_in_cli() {
-        let app = App::for_tests();
-        // Mark root steps done and the gates done, leaving first_mailbox.
-        app.db.init_steps().unwrap();
-        for (id, _) in STEPS.iter().take_while(|(id, _)| *id != "first_mailbox") {
-            app.db.set_step(id, StepStatus::Done, None).unwrap();
-        }
-        // The seeded mock already has user mailboxes, so the step is satisfied.
-        let inst = Installer::new(app.clone(), Mode::Service);
-        assert_eq!(inst.run(&mut NullUi).await.unwrap(), RunResult::Complete);
-        assert!(app.config().unwrap().install_complete);
-    }
-}
+mod tests;

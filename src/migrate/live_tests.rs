@@ -260,6 +260,7 @@ async fn live_migrate_between_two_accounts() {
         public_ipv6: None,
         stalwart_version: Some("1.0.3".into()),
         install_complete: true,
+        panel_host: None,
     })
     .unwrap();
     app.db

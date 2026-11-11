@@ -45,20 +45,23 @@ export default function SetupPage() {
   const [email, setEmail] = useState("");
   const [linkTokenValue] = useState(tokenFromLink);
 
-  if (!session.setupRequired) return <Navigate to={session.authenticated ? "/console" : "/console/login"} replace />;
+  // Owner just created (or already there): the onboarding wizard until setup is complete.
+  if (!session.setupRequired)
+    return <Navigate to={!session.authenticated ? "/console/login" : session.server.installComplete ? "/console" : "/console/onboarding"} replace />;
 
   return totp ? (
     <TotpStep
       totp={totp}
       email={email}
       onDone={async () => {
-        await refresh();
-        navigate("/console", { replace: true });
+        const s = await refresh();
+        // Setup not finished yet: the browser onboarding takes over from the terminal.
+        navigate(s.server.installComplete ? "/console" : "/console/onboarding", { replace: true });
       }}
     />
   ) : (
     <OwnerStep
-      hostname={session.server.hostname}
+      hostname={session.server.consoleHost ?? session.server.hostname}
       initialToken={linkTokenValue}
       onDone={(r, e) => {
         setEmail(e);

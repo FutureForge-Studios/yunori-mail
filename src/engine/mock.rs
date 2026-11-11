@@ -25,7 +25,7 @@ struct State {
 
 pub struct MockEngine {
     state: Mutex<State>,
-    hostname: String,
+    hostname: Mutex<String>,
     mail: super::mail::MemoryMail,
 }
 
@@ -33,9 +33,27 @@ impl MockEngine {
     pub fn new(hostname: &str) -> Self {
         Self {
             state: Mutex::new(State::default()),
-            hostname: hostname.to_string(),
+            hostname: Mutex::new(hostname.to_string()),
             mail: super::mail::MemoryMail::new(),
         }
+    }
+
+    /// An engine as it is right after its first run: one domain, no mailboxes.
+    #[cfg(test)]
+    pub fn fresh(hostname: &str, domain: &str) -> Self {
+        let e = Self::new(hostname);
+        {
+            let mut s = e.state.lock().unwrap();
+            s.seq = 1;
+            s.domains.push(EDomain {
+                id: "d1".into(),
+                name: domain.into(),
+                enabled: true,
+                catch_all: None,
+                created_at: None,
+            });
+        }
+        e
     }
 
     /// A believable demo dataset for console development.
@@ -230,6 +248,36 @@ impl Engine for MockEngine {
         Ok(d.clone())
     }
 
+    async fn rename_domain(&self, id: &str, name: &str) -> EngineResult<EDomain> {
+        let mut s = self.state.lock().unwrap();
+        if s.domains.iter().any(|d| d.name == name && d.id != id) {
+            return Err(EngineError::Rejected(
+                "A domain with this name already exists.".into(),
+            ));
+        }
+        let d = s
+            .domains
+            .iter_mut()
+            .find(|d| d.id == id)
+            .ok_or(EngineError::NotFound)?;
+        d.name = name.to_string();
+        let out = d.clone();
+        // Addresses follow the domain, as on Stalwart.
+        for (a, _) in s.accounts.iter_mut().filter(|(a, _)| a.domain_id == id) {
+            a.address = format!("{}@{name}", a.local);
+        }
+        Ok(out)
+    }
+
+    async fn set_hostname(&self, hostname: &str) -> EngineResult<()> {
+        *self.hostname.lock().unwrap() = hostname.to_string();
+        Ok(())
+    }
+
+    async fn hostname(&self) -> EngineResult<String> {
+        Ok(self.hostname.lock().unwrap().clone())
+    }
+
     async fn delete_domain(&self, id: &str) -> EngineResult<()> {
         let mut s = self.state.lock().unwrap();
         if s.accounts.iter().any(|(a, _)| a.domain_id == id) {
@@ -252,7 +300,7 @@ impl Engine for MockEngine {
             .find(|d| d.id == id)
             .ok_or(EngineError::NotFound)?;
         let n = &d.name;
-        let h = &self.hostname;
+        let h = &self.hostname.lock().unwrap().clone();
         Ok(format!(
             "{n}. IN MX 10 {h}.\n\
              {n}. IN TXT \"v=spf1 mx ra=postmaster -all\"\n\

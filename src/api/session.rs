@@ -16,6 +16,8 @@ use std::time::Duration;
 pub struct ServerInfo {
     hostname: String,
     primary_domain: Option<String>,
+    /// Where the console is opened (the mail hostname on older installs).
+    console_host: String,
     version: &'static str,
     engine_version: Option<String>,
     install_complete: bool,
@@ -39,6 +41,10 @@ pub(super) async fn server_info(app: &AppState) -> ServerInfo {
             .map(|c| c.hostname.clone())
             .unwrap_or_else(|| "this server".into()),
         primary_domain: cfg.as_ref().map(|c| c.primary_domain.clone()),
+        console_host: cfg
+            .as_ref()
+            .map(|c| crate::installer::panel::url_host(c.console_host()))
+            .unwrap_or_else(|| "this server".into()),
         version: crate::app::VERSION,
         engine_version: cfg.as_ref().and_then(|c| c.stalwart_version.clone()),
         install_complete: cfg.as_ref().is_some_and(|c| c.install_complete),

@@ -5,6 +5,8 @@
 
 pub mod jmap;
 #[cfg(test)]
+mod live_onboarding_tests;
+#[cfg(test)]
 mod live_queue_tests;
 #[cfg(test)]
 pub(crate) mod live_tests;
@@ -184,6 +186,15 @@ pub trait Engine: Send + Sync {
     async fn delete_domain(&self, id: &str) -> EngineResult<()>;
     /// BIND-style zone data the engine expects to be published for the domain.
     async fn zone_file(&self, id: &str) -> EngineResult<String>;
+    /// Rename a domain in place. Its DKIM keys and accounts follow it, so the
+    /// administrator's sign-in becomes `admin@<new name>` (verified on 1.0.3:
+    /// the old name keeps signing in only until the engine restarts).
+    async fn rename_domain(&self, id: &str, name: &str) -> EngineResult<EDomain>;
+    /// The engine's own name (SMTP greeting, MX and SRV targets in the zone
+    /// file). Applied at once, without a restart.
+    async fn set_hostname(&self, hostname: &str) -> EngineResult<()>;
+    /// The engine's own name as it is configured now.
+    async fn hostname(&self) -> EngineResult<String>;
 
     // accounts
     async fn list_accounts(&self) -> EngineResult<Vec<EAccount>>;

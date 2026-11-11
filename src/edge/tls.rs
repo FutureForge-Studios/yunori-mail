@@ -164,13 +164,13 @@ impl ResolvesServerCert for HotCert {
 }
 
 /// Load the disk certificate, creating a self-signed one if none exists yet.
-pub fn load_or_self_signed(paths: &Paths, hostname: &str) -> Result<Arc<CertifiedKey>> {
+pub fn load_or_self_signed(paths: &Paths, names: &[String]) -> Result<Arc<CertifiedKey>> {
     if let Some((c, k)) = read_cert_files(paths)
         && let Ok(ck) = certified_key(&c, &k)
     {
         return Ok(ck);
     }
-    let (c, k) = self_signed(&[hostname.to_string()])?;
+    let (c, k) = self_signed(names)?;
     write_cert_files(paths, &c, &k).context("writing self-signed certificate")?;
     certified_key(&c, &k)
 }
@@ -323,7 +323,7 @@ mod tests {
     fn disk_files_are_private() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::with_root(dir.path());
-        let ck = load_or_self_signed(&paths, "mail.example.test").unwrap();
+        let ck = load_or_self_signed(&paths, &["mail.example.test".into()]).unwrap();
         assert!(!ck.cert.is_empty());
         assert!(disk_fingerprint(&paths).is_some());
         #[cfg(unix)]

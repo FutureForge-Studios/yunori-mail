@@ -109,10 +109,20 @@ pub struct ServerConfig {
     pub public_ipv6: Option<String>,
     pub stalwart_version: Option<String>,
     pub install_complete: bool,
+    /// Where the console is opened (chosen in the terminal): a domain name, a
+    /// `<ip>.sslip.io` name, or the bare IP address. `None` on installs made
+    /// before the browser onboarding: the console lives on `hostname`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel_host: Option<String>,
 }
 
 impl ServerConfig {
     pub const KEY: &'static str = "config";
+
+    /// The address the console is opened at.
+    pub fn console_host(&self) -> &str {
+        self.panel_host.as_deref().unwrap_or(&self.hostname)
+    }
 }
 
 /// Relay settings (kv `relay`; the password lives in the vault as `relay.password`).

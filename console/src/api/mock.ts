@@ -54,8 +54,9 @@ import type {
 } from "./types";
 import { routeAlerts, seedAlerts, type MockAlerts } from "./mock-alerts";
 import { migrateRoute, type MockMigration } from "./mock-migrate";
+import { advance as advanceOnboarding, freshSteps, onboardingRoute, sendingAnswered, type MockOnboarding, type OnboardingHooks } from "./mock-onboarding";
 
-export type Scenario = "setup" | "signedout" | "certificate" | "installing" | "healthy" | "degraded";
+export type Scenario = "setup" | "onboarding" | "signedout" | "certificate" | "installing" | "healthy" | "degraded";
 
 export const SCENARIOS: { key: Scenario; label: string; hint: string; path: string }[] = [
   { key: "setup", label: "First run", hint: "setupRequired — any token ≥ 8 chars; code: any 6 digits but 000000", path: "/console/setup" },
@@ -64,11 +65,16 @@ export const SCENARIOS: { key: Scenario; label: string; hint: string; path: stri
   { key: "installing", label: "Installing", hint: "DNS step waiting — “Check now”, then create the first mailbox inline", path: "/console" },
   { key: "healthy", label: "Healthy", hint: "Everything passes · portal signed in as aiko@example.com", path: "/console" },
   { key: "degraded", label: "Port 25 blocked", hint: "Direct sending fails → relay recommended", path: "/console" },
+  { key: "onboarding", label: "Onboarding", hint: "Terminal done (console on an sslip.io name): the browser wizard from the mail domain to the first mailbox", path: "/console/onboarding" },
 ];
 
 // ── constants ────────────────────────────────────────────────────────────────
 
-const HOST = "mail.example.com";
+const DEFAULT_HOST = "mail.example.com";
+/** The mail hostname: the onboarding renames it (set per request from the mock DB). */
+let HOST = DEFAULT_HOST;
+/** The console's sslip.io name in the "setup" and "onboarding" scenarios. */
+const PANEL_HOST = "203-0-113-24.sslip.io";
 const IPV4 = "203.0.113.24";
 const IPV6 = "2001:db8:5::24";
 const CLIENT_ORIGIN = "https://yunori.email";
@@ -156,6 +162,8 @@ interface DB {
   alerts?: MockAlerts;
   /** "Move your mail here" imports per mailbox address (./mock-migrate.ts). */
   migrations?: Record<string, MockMigration>;
+  /** The browser onboarding (./mock-onboarding.ts); absent on installs that are complete. */
+  onboarding?: MockOnboarding;
   seq: number;
 }
 
@@ -237,19 +245,28 @@ function seed(scenario: Scenario): DB {
     seq: 100,
   };
 
-  if (scenario === "setup") {
-    return {
+  if (scenario === "setup" || scenario === "onboarding") {
+    // The terminal is done: the console opened on this server's sslip.io name
+    // (its certificate is real), the engine still carries placeholder names,
+    // and the browser asks for everything else.
+    const fresh: DB = {
       ...base,
-      setupRequired: true,
-      authenticated: false,
-      admins: [],
-      adminId: null,
       installComplete: false,
-      domains: [primaryDomain("installing")],
+      domains: [
+        {
+          ...primaryDomain("installing"),
+          name: PANEL_HOST,
+          createdAt: iso(5 * MIN),
+          published: Object.fromEntries(Object.keys(primaryDomain("installing").published).map((k) => [k, "missing" as const])),
+        },
+      ],
       mailboxes: [],
-      install: installingState("dns"),
+      install: freshSteps(PANEL_HOST),
+      cert: { state: "missing", problem: null, attemptUntil: null, lastAttempt: iso(5 * MIN), nextAttempt: null, failures: 0 },
+      onboarding: { panelHost: PANEL_HOST, identity: null, sendingConfirmed: false, ptrSkipped: false, hostRecordAt: null, certAt: null, ptrAt: null },
       audit: installerAudit(),
     };
+    return scenario === "setup" ? { ...fresh, setupRequired: true, authenticated: false, admins: [], adminId: null } : fresh;
   }
 
   if (scenario === "installing" || scenario === "certificate") {
@@ -263,6 +280,16 @@ function seed(scenario: Scenario): DB {
       cert: cert
         ? { state: "self_signed", problem: port80Problem(), attemptUntil: null, lastAttempt: iso(2 * MIN), nextAttempt: new Date(now() + 4 * MIN).toISOString(), failures: 3 }
         : base.cert,
+      // An install from the older terminal flow: the console is on the mail hostname.
+      onboarding: {
+        panelHost: HOST,
+        identity: { domain: "example.com", hostname: HOST, adminEmail: "aiko.tanaka@fastmail.example" },
+        sendingConfirmed: true,
+        ptrSkipped: false,
+        hostRecordAt: 0,
+        certAt: null,
+        ptrAt: null,
+      },
       audit: [...adminAudit().slice(-1), ...installerAudit()],
     };
   }
@@ -384,12 +411,14 @@ function installingState(stage: "certificate" | "dns"): InstallRow {
     ptrStartedAt: null,
     steps: [
       step("preflight", "Check this server", "done", "Ready, with 1 warning to review.", 19, 19),
-      step("inputs", "Your domain", "done", `example.com on ${HOST} (${IPV4}).`, 18, 18),
-      step("host_record", "Point the mail hostname here", "done", `${HOST} → ${IPV4}.`, 18, 16),
+      step("panel", "Choose where the console opens", "done", "The console opens on the mail hostname.", 18, 18),
       step("firewall", "Open mail ports", "done", "Opened 25, 80, 443, 465, 587, 993, 4190 in ufw.", 16, 16),
       step("install_engine", "Install the mail engine", "done", `Stalwart ${ENGINE} downloaded and verified; local resolver installed.`, 16, 14),
       step("bootstrap_engine", "Configure the mail engine", "done", `Stalwart ${ENGINE} is running.`, 14, 12),
       step("edge_tls", "Start the console and HTTPS edge", "done", "The console and HTTPS edge are running on ports 80 and 443.", 12, 12),
+      step("inputs", "Your mail domain", "done", `example.com on ${HOST}; alerts go to aiko.tanaka@fastmail.example.`, 18, 18),
+      step("sending", "How mail goes out", "done", "This server delivers mail itself.", 12, 12),
+      step("host_record", "Point the mail hostname here", "done", `${HOST} → ${IPV4}.`, 18, 16),
       cert
         ? step(
             "certificate",
@@ -769,12 +798,68 @@ function session(db: DB): SessionResponse {
     admin: db.authenticated ? db.admins.find((a) => a.id === db.adminId) ?? null : null,
     server: {
       hostname: HOST,
-      primaryDomain: "example.com",
+      primaryDomain: db.domains.find((d) => d.isPrimary)?.name ?? "example.com",
       version: VERSION,
       engineVersion: ENGINE,
       installComplete: db.installComplete,
       clientOrigin: CLIENT_ORIGIN,
+      consoleHost: db.onboarding?.panelHost ?? HOST,
     },
+  };
+}
+
+/** What the onboarding module needs from this mock (./mock-onboarding.ts). */
+function onboardingHooks(db: DB): OnboardingHooks {
+  const ob = db.onboarding;
+  const primary = () => db.domains.find((d) => d.isPrimary) ?? null;
+  return {
+    install: () => db.install,
+    complete: () => db.installComplete,
+    fail,
+    audit: (action, target, detail) => audit(db, action, target, detail ?? null),
+    ownerEmail: () => db.admins.find((a) => a.id === db.adminId)?.email ?? OWNER.email,
+    ipv4: IPV4,
+    ipv6: IPV6,
+    sendingMode: () => db.sending.mode,
+    port25: () => port25Check(db),
+    primary: () => {
+      const p = primary();
+      return p ? { id: p.id, name: p.name } : null;
+    },
+    applyIdentity: (domain, hostname) => {
+      const p = primary();
+      if (p && p.name !== domain) {
+        audit(db, "domain.rename", domain, `was ${p.name}`);
+        p.name = domain;
+      }
+      if (HOST !== hostname) audit(db, "engine.hostname", hostname);
+      HOST = hostname;
+    },
+    hostPublished: () => primary()?.published.a === "ok",
+    hostPointsHere: () => {
+      const p = primary();
+      if (p) p.published.a = "ok";
+    },
+    dnsReady: () => {
+      const p = primary();
+      if (!p) return { ready: false, missing: [] };
+      const missing = dnsFor(db, p)
+        .filter((r) => r.required && r.id !== "ptr" && r.status !== "pass")
+        .map((r) => `${r.type} ${r.name}`);
+      return { ready: missing.length === 0, missing };
+    },
+    cert: () => {
+      advanceCert(db);
+      const waiting = db.install?.steps.find((s) => s.id === "certificate")?.status === "waiting";
+      const p = db.cert.problem;
+      return { valid: db.cert.state === "valid", problem: waiting && p ? `${p.summary} ${p.remedy}` : null };
+    },
+    issueCert: () => {
+      db.cert = { state: "valid", problem: null, attemptUntil: null, lastAttempt: iso(), nextAttempt: null, failures: 0 };
+      audit(db, "certificate.issue", `${HOST}, ${ob?.panelHost ?? HOST}`, "Let's Encrypt: there is no certificate yet");
+    },
+    hasMailbox: () => db.mailboxes.some((m) => m.role === "user"),
+    finish: () => finishInstall(db),
   };
 }
 
@@ -884,7 +969,7 @@ function advanceInstall(db: DB) {
   if (!ins || ins.ptrStartedAt === null) return;
   if (now() - ins.ptrStartedAt < 6000) return;
   setStep(ins, "ptr", { status: "done", detail: `${IPV4} → ${HOST}`, finishedAt: iso() });
-  setStep(ins, "first_mailbox", { status: "waiting", detail: "Create your first mailbox: right here, or with `sudo yunori-mail install --resume` on the server.", startedAt: iso() });
+  setStep(ins, "first_mailbox", { status: "waiting", detail: "Create your first mailbox: right here, or with `sudo yunori-mail install` on the server.", startedAt: iso() });
   ins.logs = [...ins.logs, log(0, "info", "ptr", `${IPV4} → ${HOST}`)];
   ins.ptrStartedAt = null;
 }
@@ -1256,8 +1341,14 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     if (r) return r;
   }
   if (is("POST", "/updates/check")) return [200, { ...updateStatus(), checkedAt: iso() }];
+  if (seg[0] === "onboarding") {
+    if (!db.onboarding) fail(409, "conflict", "Setup is already complete; change this under Domains, Sending or System.");
+    const r = onboardingRoute(db.onboarding!, onboardingHooks(db), method, path, body);
+    if (r) return r;
+  }
   if (is("GET", "/install")) {
-    advanceInstall(db);
+    if (db.onboarding) advanceOnboarding(db.onboarding, onboardingHooks(db));
+    else advanceInstall(db);
     const st: InstallState = db.install ? { steps: db.install.steps, logs: db.install.logs } : { steps: [], logs: [] };
     return [200, st];
   }
@@ -1296,6 +1387,12 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
     ins!.logs = [...ins!.logs, log(0, "info", "first_mailbox", `${address} created (postmaster@ and abuse@ deliver to it).`)];
     audit(db, "mailbox.create", address, "first mailbox; postmaster+abuse aliases");
     finishInstall(db);
+    if (body.invite === true) {
+      row.password = null;
+      const invite = createInvite(db, row.id);
+      audit(db, "mailbox.invite", address);
+      return [201, { mailbox: toMailbox(db, row), invite }];
+    }
     return [201, { mailbox: toMailbox(db, row), password }];
   }
 
@@ -1537,6 +1634,8 @@ function route(db: DB, method: string, path: string, query: URLSearchParams, bod
       db.sending = { ...db.sending, mode: "direct" };
       audit(db, "sending.update", "direct", null);
     }
+    // During setup this answers the onboarding's sending step.
+    sendingAnswered(db.onboarding, onboardingHooks(db));
     return [200, sendingView(db)];
   }
 
@@ -1812,6 +1911,7 @@ export async function mockFetch(input: RequestInfo | URL, init: RequestInit = {}
   }
 
   const db = load();
+  HOST = db.onboarding?.identity?.hostname ?? db.onboarding?.panelHost ?? DEFAULT_HOST;
   try {
     const [status, payload] = route(db, method, path, url.searchParams, body);
     save(db);

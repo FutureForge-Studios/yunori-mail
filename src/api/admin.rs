@@ -105,7 +105,7 @@ fn unknown(id: &str, label: &str) -> Check {
 }
 
 /// Kick off a background refresh of host checks if none are cached.
-fn ensure_host_checks(app: &AppState) -> Option<ops::HostChecks> {
+pub(super) fn ensure_host_checks(app: &AppState) -> Option<ops::HostChecks> {
     let cached = ops::cached_host_checks(app);
     if cached.is_none() && !app.dev {
         let app = app.clone();
@@ -295,13 +295,19 @@ pub async fn certificate_renew(State(app): State<AppState>, a: AdminAuth) -> Api
 pub struct FirstMailbox {
     local: String,
     display_name: Option<String>,
+    /// Send the person an invite link to choose their own password instead
+    /// of showing a generated one.
+    #[serde(default)]
+    invite: bool,
 }
 
-/// The onboarding checklist's "Create your first mailbox": the same mailbox
-/// the terminal installer would create (with postmaster@ and abuse@).
+/// The onboarding's "Create your first mailbox": the same mailbox the
+/// terminal installer would create (with postmaster@ and abuse@), with a
+/// one-time password shown once, or an invite link.
 pub async fn install_first_mailbox(
     State(app): State<AppState>,
     a: AdminAuth,
+    headers: HeaderMap,
     Json(req): Json<FirstMailbox>,
 ) -> ApiResult<Response> {
     let cfg = app
@@ -344,6 +350,23 @@ pub async fn install_first_mailbox(
     let domains = e.list_domains().await?;
     let bg = app.clone();
     tokio::spawn(async move { crate::installer::advance_gates(bg).await });
+    if req.invite {
+        let (token, expires_at) = app
+            .db
+            .create_invite(&acct.id, &acct.address, &a.admin.email)?;
+        app.db
+            .audit(&a.admin.email, "mailbox.invite", Some(&acct.address), None)?;
+        let mut out = mailbox_out(&acct, &domains);
+        out.invite_expires_at = Some(expires_at.clone());
+        return Ok((
+            StatusCode::CREATED,
+            Json(json!({
+                "mailbox": out,
+                "invite": { "url": invite_link(&app, &headers, &token), "expiresAt": expires_at },
+            })),
+        )
+            .into_response());
+    }
     Ok((
         StatusCode::CREATED,
         Json(json!({ "mailbox": mailbox_out(&acct, &domains), "password": password })),
@@ -1354,6 +1377,8 @@ pub async fn put_sending(
         }
     }
     app.save_config(&cfg)?;
+    // During setup this answers the onboarding's sending step.
+    super::onboarding::sending_answered(&app, cfg.sending_mode)?;
     // SPF include, provider records and the PTR requirement changed — refresh in the background.
     let bg = app.clone();
     tokio::spawn(async move {

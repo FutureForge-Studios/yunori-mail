@@ -287,15 +287,27 @@ yunori-mail/
 
 | Phase | Entry point | Who it is for |
 |---|---|---|
-| P1 | **Built.** `curl -fsSL https://yunori.email/server/install.sh \| sudo sh` on the VPS (yunori.email serves the GitHub release; the release URL works too) → verifies and installs the static `yunori-mail` binary → runs `yunori-mail install` (guided terminal wizard; every answer also a flag after `sh -s --`). Re-running it resumes a paused install or updates a finished one | Anyone with SSH to a fresh VPS |
+| P1 | **Built.** `curl -fsSL https://yunori.email/server/install.sh \| sudo sh` on the VPS (yunori.email serves the GitHub release; the release URL works too) → verifies and installs the static `yunori-mail` binary → runs `yunori-mail install`: the read-only preflight, **one question** (where the console opens: a domain that points here, or this server's address as `<ip>.sslip.io`), the root-only steps, the one-time setup link. Everything else is the **browser onboarding** (§7.4). The old answers still work as flags after `sh -s --`. Re-running it resumes a paused install, prints the console address once the terminal's part is done, or updates a finished install | Anyone with SSH to a fresh VPS |
 | P2 | `.deb` / `.rpm` packages + apt/dnf repo; cloud-init snippet to paste into the provider's "user data" box | Repeatable installs |
 | P4 | **Install from Yunori Desktop**: the desktop app connects over SSH and runs the same script, streaming progress in Yunori's UI; marketplace one-click images (Hetzner, Vultr) | Non-terminal users |
 
 The script is short, readable, and pins a version; it never pipes further remote code into a shell.
 
-### 7.2 One honest prerequisite before anything installs
+### 7.2 No prerequisite before installing (revised 2026-11-11)
 
-The only thing the user must do first: **point `mail.<domain>` (A, and AAAA if they have IPv6) at the server.** The installer checks it against public resolvers and waits with a live countdown. This makes ACME work on the first try and means the console opens at a real HTTPS URL — no self-signed certificates, no setup page on a bare IP.
+Originally the one thing to do first was to point `mail.<domain>` at the server, and the terminal waited for it with a
+countdown. Now nothing is required up front. The terminal asks where the console opens:
+
+- **A domain name that already points here.** It is checked against the zone's own nameservers. If it doesn't point
+  here yet, the terminal shows the record to add and offers to go on with the server's address.
+- **This server's address.** The console opens at `203-0-113-10.sslip.io`, a free wildcard-DNS name that resolves to
+  the IP with no setup. It gets a real Let's Encrypt certificate over HTTP-01, so there is no browser warning. IPv6
+  uses every group with dashes (`2a01-4f8-c17-b8f-0-0-0-2.sslip.io`), so a label never starts or ends with `-`.
+  sslip.io is not on the Public Suffix List; Let's Encrypt raised its limit instead. If ACME can't validate the name
+  (port 80 blocked) or it doesn't resolve here, the console falls back to the bare IP with the temporary self-signed
+  certificate.
+
+The mail hostname's own A record is then the onboarding's first gate, with Cloudflare automation if connected.
 
 ### 7.3 Preflight (fails before installing anything; every result in plain language)
 
@@ -317,23 +329,34 @@ The only thing the user must do first: **point `mail.<domain>` (A, and AAAA if t
 
 `probe.yunori.email` is a tiny Rust service FutureForge runs: what's-my-IP, connect-back port checks, and an **auth-results reflector** (send a message to `check@probe.yunori.email`, it replies with SPF/DKIM/DMARC/TLS results and a spam score). It stores nothing beyond rate-limit counters, is documented on the privacy page, and every check degrades gracefully when it is unreachable. It replaces Openship's reliance on third-party `portquiz.net` and `ipify`.
 
-### 7.4 Steps (resumable state machine; per-step timeouts; logs persisted; every step idempotent)
+### 7.4 Steps (resumable state machine; logs persisted; every step idempotent)
 
-| # | Step | Detail | Verify before moving on |
-|---|---|---|---|
-| 1 | Preflight | §7.3 | Blocking checks pass |
-| 2 | Inputs | Primary domain, mail hostname (default `mail.<domain>`), an **external** admin email (ACME + alerts), sending mode (direct / relay — pre-selected from the port-25 and provider results), optional DNS-provider token | Domain syntax; DNS provider token works (read-only test call) |
-| 3 | Host record gate | §7.2 | A/AAAA resolve to this box on public resolvers |
-| 4 | Install engine | Create users; download pinned Stalwart + verify checksum; write `config.json` (RocksDB + filesystem blobs); install `unbound`; hardened systemd units | Binary checksum; units load |
-| 5 | Bootstrap engine | Start in recovery mode bound to 127.0.0.1 → apply plan: listeners, domain, DKIM (Ed25519 + RSA-2048), admin role, scoped API key, resolver → 127.0.0.1, spam-filter defaults, **DMARC `p=none`** (Stalwart defaults to `reject`), relay route if chosen → remove recovery variables → normal start | JMAP session OK; SMTP banner, IMAP CAPABILITY and submission AUTH on loopback |
-| 6 | Edge + TLS | Start edge on :80/:443, issue certificate, push into Stalwart, reload | Served certificate on 465/587/993/443 matches disk |
-| 7 | Firewall | ufw / firewalld, or a persistent `/etc/nftables.d` file; cloud firewall reminder with provider-specific steps | Local listeners + probe connect-back |
-| 8 | **DNS gate** | Full record set (§8.1) from Stalwart's `dnsZoneFile` + our additions. With a provider token → applied automatically (plan → apply, showing a diff); otherwise copy-cards + a zone file | Required records pass on public resolvers (polled); optional ones may be skipped with a stated consequence |
-| 9 | **PTR gate** | Exact per-provider instructions ("this is in your VPS panel, not your DNS provider") | PTR → mail host and FCrDNS match. If the provider can't or won't: "continue — receiving works, sending will be relayed" |
-| 10 | First mailbox + outside-in test | Create the admin's mailbox; send a message to the reflector; show the auth-results report | SPF/DKIM/DMARC pass, TLS used |
-| 11 | Done | Print the console URL + **one-time setup link** (set console password + second factor) + **recovery kit** (encryption key for backups, shown once) + "Open in Yunori" for the new mailbox + warm-up guidance | — |
+As built (2026-11-11). One persisted step list (`src/installer/state.rs`). The terminal runs the root steps; the
+service runs the rest every minute and whenever the browser answers. The service never has root and needs none: every
+onboarding step works through the engine's management API, DNS lookups, the CA or the vault.
 
-Resume with `yunori-mail install --resume` (or reopen the console mid-install, which shows the same step list). Retry-from-step, cancel and `yunori-mail uninstall` (stops services, keeps data unless `--purge`) all exist — Openship had no uninstall.
+| # | Step (id) | Where | What | Verified before moving on |
+|---|---|---|---|---|
+| 1 | Check this server (`preflight`) | Terminal | §7.3 | Blocking checks pass (or `--force`) |
+| 2 | Choose where the console opens (`panel`) | Terminal | The one question (§7.2). Writes the starting config: the answers given as flags, or placeholder names derived from the console's address | A domain answer must point here (zone's own nameservers); sslip.io names are checked the same way |
+| 3 | Open mail ports (`firewall`) | Terminal | ufw / firewalld; a cloud-firewall reminder | — |
+| 4 | Install the mail engine (`install_engine`) | Terminal | Users; pinned Stalwart download + SHA-256; `unbound`; hardened units | Checksum; units written |
+| 5 | Configure the mail engine (`bootstrap_engine`) | Terminal | First run (loopback-only port) with the config's hostname and domain, which may be placeholders; recovery mode: Yunori listener set, proxy trust; normal start under systemd; sign-in ban policy | Engine answers JMAP on loopback |
+| 6 | Start the console and HTTPS edge (`edge_tls`) | Terminal | Units enabled, edge on :80/:443. Then the console's certificate through `certs::ensure` (sslip.io falls back to the bare IP if it fails) and the one-time setup link | Both ports listen |
+| 7 | Your mail domain (`inputs`) | Browser | Domain, mail hostname, outside alert address. `apply_identity` renames the placeholder domain in place (DKIM keys and the admin follow), sets the hostname, re-seals the admin credential | Engine shows the domain and hostname |
+| 8 | How mail goes out (`sending`) | Browser | Direct or relay (`PUT /sending`, write-only password); suggestion from the port-25 check | Relay route saved in the engine |
+| 9 | Point the mail hostname here (`host_record`) | Browser | Record to add; Cloudflare publishes it when connected; certificate pre-checks (proxy, stale AAAA, CAA) | A/AAAA resolve here (zone's nameservers, public resolvers noted) |
+| 10 | Get a trusted TLS certificate (`certificate`) | Browser | `certs::ensure` for the mail hostname plus the console's name; the first attempt after step 9 skips old backoff | CA-issued certificate covers both |
+| 11 | Publish DNS records (`dns`) | Browser | Full record set (§8.1); Cloudflare plan → publish, or copy cards and a zone file | Required records pass on public resolvers |
+| 12 | Set reverse DNS (`ptr`) | Browser | Provider-specific instructions; "skip for now" (as `--skip-ptr`) says what breaks; relay sending skips it | PTR → mail host, forward-confirmed |
+| 13 | Create your first mailbox (`first_mailbox`) | Browser | Invite link or a password shown once (the terminal creates it only with `--domain … --first-mailbox`) | A user mailbox exists |
+| 14 | Finish (`done`) | Browser | Setup complete; the overview takes over | — |
+
+Installs started with the older terminal flow keep their saved answers and step states. If the old flow paused before
+the engine was installed, the terminal asks its question (suggesting the saved mail hostname) and runs the root
+steps; the browser continues at the next open step. If it was already past the edge, `panel` is marked done on
+upgrade (the console stays on the mail hostname). Uninstall: `yunori-mail uninstall` (stops services, keeps data
+unless `--purge`).
 
 ### 7.5 Day-2: domains, mailboxes, aliases
 
@@ -877,6 +900,69 @@ briefly for the delivery attempt to finish. Also confirmed against real third pa
 bad token with our plain-language message; Gmail's IMAP over verified TLS answers a wrong password with the
 app-password hint. Not yet verified: a real Cloudflare zone, a real Gmail/Microsoft 365 import with valid
 credentials, alert email to an outside inbox (outbound port 25 is blocked on the test VM).
+
+### The terminal does the minimum; setup moves to the browser (2026-11-11)
+
+Owner direction: "switch all those steps to onboarding, only domain where the panel is hosted if domain or ip must be
+asked … not everything on terminal".
+
+**Terminal.** It runs preflight, then asks one question: a domain for the console that points here, or this server's
+address. For the address it uses `<ip>.sslip.io`, so the console gets a real certificate. Then it runs only the root
+steps (firewall, pinned engine, first run, units, edge), gets the console's certificate through `certs::ensure`,
+prints the setup link and exits. It no longer waits at DNS, reverse-DNS or certificate checks. If the sslip.io name
+can't be validated, the console falls back to the bare IP with a self-signed certificate; the self-signed certificate
+covers the IP. A re-run after the terminal's part only prints the console address (and `setup-token` while no owner
+exists). `install --dry-run` shows the six terminal steps and the eight browser steps.
+
+**Browser.** `/console/onboarding` (`console/src/console/pages/onboarding.tsx`), after the owner and TOTP. Its steps:
+mail domain + hostname + alert address → sending (port-25 suggestion, provider presets, write-only password) → host
+record (Cloudflare optional) → certificate (CertProblem, Try now) → DNS records (Cloudflare plan/publish or copy;
+optional records apart) → reverse DNS (skip for now, saying what breaks) → first mailbox (invite link or one-time
+password) → done.
+
+The server owns the state: `GET /onboarding`; `PUT /onboarding/identity`; `PUT /sending` answers the sending step;
+`POST /onboarding/check` runs the gates now; `PUT /onboarding/ptr`. The wizard re-checks every minute and reads the
+state every few seconds while a gate is open. The overview's setup card links into the wizard.
+
+**Engine facts, verified on the real 1.0.3 binary** (`src/engine/live_onboarding_tests.rs`, `cargo test
+live_engine_late_identity -- --ignored`, run in a private network namespace):
+- `x:Bootstrap` needs a hostname and a domain. It refuses a reserved `.invalid` domain ("Invalid default domain"),
+  and also `*.example`, but accepts `*.test`, `localhost` and an sslip.io name. So placeholders are derived from the
+  console's address: its parent domain, or the sslip.io name.
+- `x:Domain/set {name}` renames a domain in place. Its DKIM signatures (linked by id) and accounts follow, and the
+  zone file re-derives every name. The administrator becomes `admin@<new>`. The old name keeps signing in only until
+  the engine restarts, so Yunori re-seals the credential at once.
+- `x:SystemSettings.defaultHostname` is stored immediately, but the SMTP greeting changes only after `x:Action
+  ReloadSettings`. No restart is needed. The MX/SRV targets in the zone file follow, since `mailExchangers[].hostname`
+  is null. It survives a restart.
+- Listeners and TLS don't depend on the hostname: 465/587/993 keep serving the certificate Yunori pushes (selected by
+  SNI or the default), before and after the change.
+
+**Certificates.** `certs::required_names` lists the names the certificate must cover. That is the console's name
+(unless it is a bare IP), plus the mail hostname once its host record is verified. Until then, a mail hostname that
+doesn't point here never blocks the console's certificate. Required names are never excluded the way failing helper
+names are. Installs from before keep "the mail hostname only".
+
+**Compatibility.** Old step ids keep their meaning. New steps (`panel`, `sending`) are inserted on upgrade. Answers
+saved by the old flow read as "sending decided". An install paused before its engine (at `host_record`, with domain
+and hostname saved) gets the one question, with the saved hostname as the default, then the root steps; the browser
+continues at the host record. This was rehearsed with the real binary, engine and edge. An install already past its
+edge gets `panel` marked done, so the service never waits for the terminal. Every old flag still works:
+`--domain/--hostname/--admin-email/--sending/--relay-*/--dns-provider/--first-mailbox` are applied by the terminal, and
+`--skip-ptr` is remembered. `--yes`, `--no-wait` and `--resume` are accepted. New: `--panel <domain|ip>`.
+
+**Verified.** 240 Rust tests (plus 7 opt-in live tests): new state-machine tests, including resuming the old flow, and API tests for the wizard
+against the mock engine. Also clippy and fmt, the console typecheck, lint and build, and the live engine test above.
+The whole wizard was clicked through in Chromium against the mock (screenshots at desktop and phone width, dark mode,
+no page errors). A **terminal rehearsal** ran the real `yunori-mail install` under a private root, with
+systemd/useradd/apt shimmed and a TEST-NET "public IP": real preflight, the question, the real Stalwart bootstrap with
+placeholders, the real edge on :80/:443, and a real Let's Encrypt staging order. That order failed as expected (the
+address is unreachable), so the console fell back to the IP. Chromium then took the printed link through owner →
+TOTP → mail domain (engine renamed live: greeting `220 mail.example.com`) → sending → host record (real DNS: "no A
+record yet"). The old-flow resume and the flags path were rehearsed the same way.
+
+**Not verified:** a real Let's Encrypt certificate for an sslip.io name (the sandbox has no public IP) and the whole
+flow on a VM with systemd.
 
 ## 15. Sources
 

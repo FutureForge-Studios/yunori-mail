@@ -21,6 +21,20 @@ YUNORI_STALWART_BIN=/path/to/stalwart cargo test live_engine -- --ignored --noca
 | Bootstrap's tracer defaults to `/var/log/stalwart/`. On hosts without IPv6, `[::]` listeners fall back to `0.0.0.0` (a warning only). | Bootstrap sets the tracer path explicitly. |
 | JSON-pointer patches (`aliases/<k>`, `credentials/<k>/secret`) work. Plaintext secrets are hashed server-side, and password strength is enforced. App-password create returns `{id, secret}`, and app passwords authenticate JMAP Basic auth. | As designed. |
 
+## Naming the server after its first run (verified live, 2026-11-11)
+
+The terminal bootstraps the engine before anyone has chosen a mail domain. The browser names it later, and nothing is
+restarted. Live test: `src/engine/live_onboarding_tests.rs`, run with
+`cargo test live_engine_late_identity -- --ignored --nocapture`.
+
+| Finding | Consequence for Yunori |
+|---|---|
+| `x:Bootstrap` requires `defaultHostname` and `defaultDomain`. It refuses `setup.yunori.invalid` (`Invalid default domain (defaultDomain)`), and `x:Domain` refuses `*.example`; `*.test`, `localhost` and `203-0-113-10.sslip.io` are accepted. | The first run uses placeholder names derived from the console's address: its parent domain, or its sslip.io name (`installer::panel::placeholders`). |
+| `x:Domain/set update {"name": …}` renames the domain in place. DKIM signatures stay linked by `domainId`, and the zone file re-derives every record (`v1-ed25519-…._domainkey.<new>`, MX, SRV, MTA-STS, TLS-RPT). | `Engine::rename_domain`; `installer::apply_identity` renames the placeholder, but only while no mailbox lives on it. |
+| The administrator is `admin@<domain>` and follows the rename. The old name keeps authenticating until the engine restarts (cached), then only `admin@<new>` works. A bare `admin` never does. | The sealed `engine.admin` credential is rewritten as soon as the rename succeeds. |
+| `x:SystemSettings/set {"defaultHostname"}` is stored at once, but the SMTP greeting and EHLO change only after `x:Action ReloadSettings`. It survives a restart. With `mailExchangers[].hostname = null` and service hostnames `null`, the zone file's MX and SRV targets follow it. | `Engine::set_hostname` = update + `ReloadSettings`. |
+| Listeners and TLS don't depend on the hostname. 465/587/993 keep serving the certificate pushed through `x:Certificate` + `defaultCertificateId`, before and after the change. | The mail certificate is pushed as before, once it covers the new name. |
+
 ## Process & files
 
 | Thing | Value |
