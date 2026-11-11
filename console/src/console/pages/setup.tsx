@@ -1,18 +1,18 @@
 import { useState } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
-import { CheckCircle2 } from "lucide-react";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Label } from "@/design/vendor/ui/label";
+import { KeyRound, ScanLine } from "lucide-react";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { SetupResponse } from "@/api/types";
-import { AuthFrame, FormError } from "@/components/auth-frame";
+import { AuthFrame } from "@/components/auth-frame";
 import { CopyButton } from "@/components/copy-button";
-import { FieldError, usePageTitle } from "@/components/kit";
 import { PasswordInput, StrengthHint } from "@/components/password-input";
 import { QrCode } from "@/components/qr-code";
-import { toneText } from "@/components/status";
 import { MIN_PASSWORD } from "@/lib/password";
+import { Button } from "@/ui/button";
+import { Callout, FormError } from "@/ui/feedback";
+import { FieldError, FieldHint, Input, Label } from "@/ui/form";
+import { usePageTitle } from "@/ui/page";
+import { Step, Steps } from "@/ui/steps";
 import { useSession } from "../session";
 
 type FieldErrors = Partial<Record<"token" | "email" | "password" | "code", string>>;
@@ -126,17 +126,18 @@ function OwnerStep({
       title="Set up Yunori Mail"
       subtitle={
         <>
-          Create the first owner for <span className="font-mono text-[13px] text-foreground/80">{hostname}</span>.
+          Create the first owner for <span className="font-mono text-[13px] text-foreground/85">{hostname}</span>.
         </>
       }
+      aside={<SetupJourney stage={1} />}
       footnote={
         <>
-          The link works once, for this server only. Lost it? Run <code className="font-mono">sudo yunori-mail setup-token</code> on the server for a new
-          one.
+          The link works once, for this server only. Lost it? Run <code className="font-mono text-foreground/80">sudo yunori-mail setup-token</code> on the
+          server for a new one.
         </>
       }
     >
-      <form onSubmit={onSubmit} className="space-y-4" noValidate>
+      <form onSubmit={onSubmit} className="space-y-5" noValidate>
         {showToken ? (
           <div className="space-y-1.5">
             <Label htmlFor="token">Setup token</Label>
@@ -154,25 +155,23 @@ function OwnerStep({
             {errors.token ? (
               <FieldError id="token-err">{errors.token}</FieldError>
             ) : (
-              <p id="token-hint" className="text-[11px] text-muted-foreground">
+              <FieldHint id="token-hint">
                 Printed by <code className="font-mono">yunori-mail install</code> (or <code className="font-mono">yunori-mail setup-token</code>).
-              </p>
+              </FieldHint>
             )}
           </div>
         ) : (
-          <div className="flex items-start justify-between gap-3 rounded-lg border border-border/60 bg-muted/30 px-3 py-2.5">
-            <p className="flex items-start gap-2 text-xs leading-relaxed text-foreground/85">
-              <CheckCircle2 aria-hidden className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${toneText("ok")}`} />
-              <span>Setup link recognised. Choose how you'll sign in to this console.</span>
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowToken(true)}
-              className="shrink-0 rounded-sm text-[11px] text-muted-foreground underline-offset-2 transition-colors hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            >
-              Use another token
-            </button>
-          </div>
+          <Callout
+            tone="ok"
+            className="py-3"
+            action={
+              <Button type="button" variant="ghost" size="sm" onClick={() => setShowToken(true)} className="h-7 px-2 text-xs text-muted-foreground">
+                Use another token
+              </Button>
+            }
+          >
+            Setup link recognised. Choose how you'll sign in to this console.
+          </Callout>
         )}
         <div className="space-y-1.5">
           <Label htmlFor="email">Your email</Label>
@@ -189,9 +188,7 @@ function OwnerStep({
           {errors.email ? (
             <FieldError id="email-err">{errors.email}</FieldError>
           ) : (
-            <p id="email-hint" className="text-[11px] text-muted-foreground">
-              Used to sign in to this console. It doesn't need to be on this server.
-            </p>
+            <FieldHint id="email-hint">Used to sign in to this console. It doesn't need to be on this server.</FieldHint>
           )}
         </div>
         <div className="space-y-1.5">
@@ -207,7 +204,7 @@ function OwnerStep({
           {errors.password ? <FieldError id="password-err">{errors.password}</FieldError> : <StrengthHint password={password} id="password-strength" />}
         </div>
         <FormError>{formError}</FormError>
-        <Button type="submit" variant="torii" className="w-full" disabled={busy}>
+        <Button type="submit" variant="torii" className="h-10 w-full" loading={busy}>
           {busy ? "Creating…" : "Continue"}
         </Button>
       </form>
@@ -245,16 +242,26 @@ function TotpStep({ totp, email, onDone }: { totp: SetupResponse; email: string;
       title="Pair your authenticator"
       subtitle="Every console sign-in needs a code. Scan this with 1Password, Bitwarden, Aegis or any TOTP app."
       width="max-w-md"
+      aside={<SetupJourney stage={2} />}
       footnote={<>Signed in as {email} once confirmed. The secret is never shown again.</>}
     >
-      <div className="flex flex-col items-center gap-5 rounded-xl border border-border/60 bg-card/40 p-6">
-        <div className="rounded-lg border border-border/60 bg-[#faf7f2] p-2">
-          <QrCode value={totp.otpauthUrl} label={`QR code for two-step sign-in as ${email}`} />
+      <div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+        <div className="flex flex-col items-center gap-4 px-6 pb-5 pt-5">
+          <p className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+            <ScanLine aria-hidden className="h-3.5 w-3.5" />
+            Scan with your authenticator app
+          </p>
+          <div className="rounded-xl border border-border/70 bg-[#faf7f2] p-2.5 shadow-card">
+            <QrCode value={totp.otpauthUrl} label={`QR code for two-step sign-in as ${email}`} />
+          </div>
         </div>
-        <div className="w-full">
-          <p className="text-center text-[11px] text-muted-foreground">Can't scan? Enter this key instead:</p>
+        <div className="border-t border-border/70 bg-muted/30 px-4 py-3.5">
+          <p className="flex items-center justify-center gap-1.5 text-center text-xs text-muted-foreground">
+            <KeyRound aria-hidden className="h-3.5 w-3.5" />
+            Can't scan? Enter this key instead:
+          </p>
           <div className="mt-1.5 flex items-center justify-center gap-1">
-            <code className="select-all break-all text-center font-mono text-sm tracking-wider text-foreground/90" aria-label="Secret key">
+            <code className="min-w-0 select-all break-all text-center font-mono text-[13px] tracking-wider text-foreground" aria-label="Secret key">
               {grouped}
             </code>
             <CopyButton value={totp.totpSecret} label="secret key" />
@@ -274,16 +281,42 @@ function TotpStep({ totp, email, onDone }: { totp: SetupResponse; email: string;
             placeholder="123 456"
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            className="font-mono tracking-[0.3em]"
+            className="h-11 text-center font-mono text-lg tracking-[0.35em] placeholder:tracking-[0.2em]"
             aria-invalid={!!error}
             aria-describedby={error ? "code-err" : undefined}
           />
           <FieldError id="code-err">{error}</FieldError>
         </div>
-        <Button type="submit" variant="torii" className="w-full" disabled={busy}>
+        <Button type="submit" variant="torii" className="h-10 w-full" loading={busy}>
           {busy ? "Confirming…" : "Confirm and sign in"}
         </Button>
       </form>
     </AuthFrame>
+  );
+}
+
+/** The brand panel during first run: where this sits in the whole setup. */
+function SetupJourney({ stage }: { stage: 1 | 2 }) {
+  return (
+    <>
+      <p className="font-serif text-[32px] leading-[1.14] tracking-[-0.02em]">Your own mail server, a few calm steps away.</p>
+      <p className="mt-4 max-w-sm text-sm leading-relaxed text-muted-foreground">
+        Secure this console first. Then the browser walks you through your domain, DNS and certificate, checking each one for real.
+      </p>
+      <Steps label="Setup stages" className="mt-9">
+        <Step index={1} state={stage === 1 ? "current" : "done"} title="Owner account" meta={stage === 1 ? "Now" : undefined}>
+          Your sign-in for this console.
+        </Step>
+        <Step index={2} state={stage === 2 ? "current" : "pending"} title="Two-step sign-in" meta={stage === 2 ? "Now" : undefined}>
+          A code from your authenticator app.
+        </Step>
+        <Step index={3} state="pending" title="Domain, DNS and certificate">
+          Checked against public resolvers and Let's Encrypt.
+        </Step>
+        <Step index={4} state="pending" title="Your first mailbox" last>
+          Then connect any mail app.
+        </Step>
+      </Steps>
+    </>
   );
 }

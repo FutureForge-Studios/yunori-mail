@@ -2,11 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Hourglass, Loader2 } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Card } from "@/design/vendor/admin/ui";
 import { api } from "@/api/client";
 import type { FirstMailboxResponse, InstallState, InstallStep, StepStatus } from "@/api/types";
 import { StatusBadge } from "@/components/status";
+import { Button } from "@/ui/button";
+import { Card } from "@/ui/card";
 import { toast } from "@/lib/toast";
 
 /** Steps the terminal runs; everything after them is the browser onboarding. */
@@ -61,58 +61,75 @@ export function InstallChecklist({
   const doneCount = browser.filter((s) => isDone(s.status)).length;
   const current: InstallStep | undefined = terminalLeft ?? browser.find((s) => !isDone(s.status));
 
+  const title = current?.title ?? "Finishing setup";
   return (
-    <Card className="mb-6">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <p className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-          Setup · {doneCount} of {browser.length} done
-        </p>
-        {active && (
-          <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Loader2 aria-hidden className="h-3 w-3 animate-spin motion-reduce:animate-none" />
-            Checking by itself
-          </p>
-        )}
-      </div>
-      <ol className="mt-3 flex gap-1" aria-label={`${doneCount} of ${browser.length} setup steps done`}>
-        {browser.map((s) => (
-          <li
-            key={s.id}
-            title={s.title}
-            className={cn(
-              "h-1.5 flex-1 rounded-full",
-              isDone(s.status) ? "bg-foreground/70" : s === current ? "bg-torii" : "bg-foreground/10",
+    <Card padded={false} className="mb-6" aria-labelledby="setup-card-title">
+      <div className="flex flex-col gap-4 px-5 py-5 sm:flex-row sm:items-start sm:justify-between sm:px-6">
+        <div className="min-w-0 max-w-2xl">
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-muted-foreground">
+            <span>Setup</span>
+            <span aria-hidden>·</span>
+            <span className="tabular-nums">
+              {doneCount} of {browser.length} done
+            </span>
+            {active && (
+              <>
+                <span aria-hidden>·</span>
+                <span className="inline-flex items-center gap-1.5 font-normal">
+                  <Loader2 aria-hidden className="h-3 w-3 animate-spin motion-reduce:animate-none" />
+                  Checking by itself
+                </span>
+              </>
             )}
-          />
-        ))}
-      </ol>
-      {current && (
-        <div className="mt-5 flex flex-wrap items-start justify-between gap-4">
-          <div className="min-w-0 max-w-2xl">
-            <div className="flex flex-wrap items-center gap-2">
-              <h2 className="font-serif text-[22px] leading-tight tracking-tight">{current.title}</h2>
-              {current.status === "waiting" && (
-                <StatusBadge tone="warn" icon={Hourglass}>
-                  Waiting for you
-                </StatusBadge>
-              )}
-            </div>
-            {current.detail && <p className="mt-1.5 text-sm leading-relaxed text-foreground/85 [overflow-wrap:anywhere]">{current.detail}</p>}
-            {terminalLeft && (
-              <p className="mt-2 text-xs text-muted-foreground">
-                Run <code className="font-mono text-foreground/80">sudo yunori-mail install</code> on the server to finish this part.
-              </p>
+          </p>
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <h2 id="setup-card-title" className="font-serif text-[22px] leading-tight tracking-[-0.01em] text-foreground">
+              {current ? <span className="sr-only">Next: </span> : null}
+              {title}
+            </h2>
+            {current?.status === "waiting" && (
+              <StatusBadge tone="warn" icon={Hourglass}>
+                Waiting for you
+              </StatusBadge>
             )}
           </div>
-          {!terminalLeft && (
-            <Button asChild variant="torii" size="sm">
-              <Link to="/console/onboarding">
-                Continue setup <ArrowRight aria-hidden className="h-3.5 w-3.5" />
-              </Link>
-            </Button>
+          {current?.detail && <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{current.detail}</p>}
+          {terminalLeft && (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              Run <code className="font-mono text-foreground/85">sudo yunori-mail install</code> on the server to finish this part.
+            </p>
           )}
         </div>
-      )}
+        {!terminalLeft && current && (
+          <Button asChild variant="torii" className="w-full shrink-0 sm:w-auto">
+            <Link to="/console/onboarding">
+              Continue setup <ArrowRight aria-hidden className="h-3.5 w-3.5" />
+            </Link>
+          </Button>
+        )}
+      </div>
+      <div className="rounded-b-xl border-t border-border/70 bg-muted/25 px-5 py-4 sm:px-6">
+        <ol className="grid gap-1.5" style={{ gridTemplateColumns: `repeat(${Math.max(browser.length, 1)}, minmax(0, 1fr))` }} aria-label={`${doneCount} of ${browser.length} setup steps done`}>
+          {browser.map((s) => {
+            const here = s === current;
+            const state = isDone(s.status) ? "done" : here ? "current step" : "not yet";
+            return (
+              <li key={s.id} className="min-w-0" aria-current={here ? "step" : undefined}>
+                <span
+                  aria-hidden
+                  className={cn("block h-1.5 rounded-full", isDone(s.status) ? "bg-foreground/70" : here ? "bg-torii" : "bg-foreground/10")}
+                />
+                <span aria-hidden className={cn("mt-2 hidden truncate pr-2 text-2xs lg:block", here ? "font-medium text-foreground" : "text-muted-foreground")} title={s.title}>
+                  {s.title}
+                </span>
+                <span className="sr-only">
+                  {s.title}: {state}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+      </div>
     </Card>
   );
 }
