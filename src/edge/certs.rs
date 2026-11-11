@@ -17,7 +17,7 @@
 use super::acme::{self, CertProblem, Failure, Issued, ProblemKind};
 use super::tls;
 use crate::app::App;
-use crate::dns::{DnsLookup, Resolver};
+use crate::dns::DnsLookup;
 use crate::paths::Paths;
 use async_trait::async_trait;
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
@@ -498,7 +498,9 @@ pub async fn ensure(app: &App, force: bool) -> Outcome {
     let Some(cfg) = app.config() else {
         return Outcome::NotConfigured;
     };
-    let dns = Resolver::public();
+    // The zone's own servers: a record just fixed counts at once, not after a
+    // public resolver's cached copy of the old one expires.
+    let dns = crate::dns::Truth::for_name(&cfg.hostname).await;
     let issuer = AcmeIssuer {
         app,
         contact: cfg.admin_email.clone(),

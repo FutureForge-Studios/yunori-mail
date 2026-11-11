@@ -485,6 +485,28 @@ pub async fn public_ips() -> (Option<String>, Option<String>) {
 
 /// Host record gate: does `hostname` resolve to this server on public DNS?
 /// A server without public IPv4 is checked on its AAAA record instead.
+/// The host-record check as an install gate: decided by the zone's own
+/// nameservers (what the record *is*), with a note when public resolvers still
+/// serve an older cached answer — that is not the person's problem and
+/// clears by itself within the old record's TTL.
+pub async fn host_record_now(hostname: &str, ipv4: Option<&str>, ipv6: Option<&str>) -> Check {
+    let truth = dns::Truth::for_name(hostname).await;
+    let c = check_host_record(hostname, ipv4, ipv6, &truth).await;
+    if c.status != Status::Pass || !truth.is_authoritative() {
+        return c;
+    }
+    let public = check_host_record(hostname, ipv4, ipv6, &Resolver::public()).await;
+    if public.status == Status::Fail {
+        let mut c = c;
+        c.detail = format!(
+            "{} Your DNS provider already has it; some public resolvers still show the old record from their cache and will catch up by themselves.",
+            c.detail
+        );
+        return c;
+    }
+    c
+}
+
 pub async fn check_host_record(
     hostname: &str,
     ipv4: Option<&str>,
@@ -656,7 +678,7 @@ pub async fn preflight(paths: &Paths, hostname: Option<&str>) -> Vec<Check> {
         out.push(c);
     }
     if let Some(h) = hostname {
-        out.push(check_host_record(h, v4.as_deref(), v6.as_deref(), &public).await);
+        out.push(host_record_now(h, v4.as_deref(), v6.as_deref()).await);
     }
     out
 }

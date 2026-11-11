@@ -1,6 +1,6 @@
 [package]
 name = "yunori-mail"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.85"
 description = "Yunori Mail Server: installer, control plane, HTTPS edge and console for a self-hosted Stalwart mail server"

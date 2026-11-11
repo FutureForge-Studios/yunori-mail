@@ -377,11 +377,10 @@ impl Installer {
             Ok(None) => {}
             Err(e) => self.log("warn", "host_record", &format!("DNS provider: {e}")),
         }
-        let c = checks::check_host_record(
+        let c = checks::host_record_now(
             &cfg.hostname,
             cfg.public_ipv4.as_deref(),
             cfg.public_ipv6.as_deref(),
-            &Resolver::public(),
         )
         .await;
         if c.status != Status::Pass {
@@ -398,7 +397,7 @@ impl Installer {
             &cfg.hostname,
             cfg.public_ipv4.as_deref(),
             cfg.public_ipv6.as_deref(),
-            &Resolver::public(),
+            &crate::dns::Truth::for_name(&cfg.hostname).await,
             crate::edge::acme::caa_identity(&directory),
         )
         .await

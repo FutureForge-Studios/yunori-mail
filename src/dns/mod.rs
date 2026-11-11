@@ -98,6 +98,132 @@ impl Resolver {
     }
 }
 
+/// What the zone itself says, without any cache in between: names inside the
+/// zone are asked of its authoritative nameservers; anything else, or any
+/// failure to reach them, falls back to the public resolvers.
+///
+/// Install gates use this so that a record the person has just fixed is seen
+/// at once, instead of the stale answer a public resolver may keep for the old
+/// record's whole TTL (seen live: Cloudflare and Google had the new A record
+/// while another public resolver still served the old one, and the host-record
+/// gate kept waiting on it).
+pub struct Truth {
+    zone: Option<(String, Resolver)>,
+    public: Resolver,
+}
+
+impl Truth {
+    /// The zone that holds `name` and a resolver pointed at its nameservers.
+    pub async fn for_name(name: &str) -> Self {
+        let public = Resolver::public();
+        let zone = find_zone_servers(&public, name).await;
+        Self { zone, public }
+    }
+
+    /// The zone's own nameservers are being used (else: public resolvers only).
+    pub fn is_authoritative(&self) -> bool {
+        self.zone.is_some()
+    }
+
+    fn pick(&self, name: &str) -> Option<&Resolver> {
+        let n = norm_host(name);
+        self.zone
+            .as_ref()
+            .filter(|(z, _)| n == *z || n.ends_with(&format!(".{z}")))
+            .map(|(_, r)| r)
+    }
+}
+
+/// Walk up from `name` to the first label that has NS records (via the public
+/// resolvers), then resolve those nameservers' addresses (at most 4).
+async fn find_zone_servers(public: &Resolver, name: &str) -> Option<(String, Resolver)> {
+    let host = norm_host(name);
+    let parts: Vec<&str> = host.split('.').collect();
+    // Never stop at a bare TLD.
+    for i in 0..parts.len().saturating_sub(1) {
+        let candidate = parts[i..].join(".");
+        let Ok(ns) = public.inner.ns_lookup(fqdn(&candidate)).await else {
+            continue;
+        };
+        let names: Vec<String> = ns.iter().map(|n| n.0.to_utf8()).collect();
+        if names.is_empty() {
+            continue;
+        }
+        let mut ips: Vec<IpAddr> = vec![];
+        for n in names.iter().take(4) {
+            if let Ok(a) = public.inner.ipv4_lookup(fqdn(n)).await {
+                ips.extend(a.iter().map(|a| IpAddr::V4(a.0)));
+            }
+            if let Ok(a) = public.inner.ipv6_lookup(fqdn(n)).await {
+                ips.extend(a.iter().map(|a| IpAddr::V6(a.0)));
+            }
+        }
+        ips.truncate(8);
+        if ips.is_empty() {
+            return None;
+        }
+        let group = NameServerConfigGroup::from_ips_clear(&ips, 53, true);
+        let mut o = opts();
+        o.recursion_desired = false;
+        return Some((
+            candidate,
+            Resolver {
+                inner: TokioAsyncResolver::tokio(
+                    ResolverConfig::from_parts(None, vec![], group),
+                    o,
+                ),
+            },
+        ));
+    }
+    None
+}
+
+/// Ask the zone's servers when `name` is in the zone, falling back to public.
+macro_rules! truth_lookup {
+    ($self:ident, $name:expr, $method:ident) => {{
+        // A non-empty answer from the zone's servers is the record as it is
+        // now (a public cache may still hold the old one). An empty answer or
+        // an error is cross-checked with the public resolvers: some
+        // nameservers intermittently answer empty (seen live on sslip.io).
+        if let Some(r) = $self.pick($name) {
+            if let Ok(v) = r.$method($name).await {
+                if !v.is_empty() {
+                    return Ok(v);
+                }
+            }
+        }
+        $self.public.$method($name).await
+    }};
+}
+
+#[async_trait]
+impl DnsLookup for Truth {
+    async fn a(&self, name: &str) -> LookupResult<String> {
+        truth_lookup!(self, name, a)
+    }
+    async fn aaaa(&self, name: &str) -> LookupResult<String> {
+        truth_lookup!(self, name, aaaa)
+    }
+    async fn mx(&self, name: &str) -> LookupResult<(u16, String)> {
+        truth_lookup!(self, name, mx)
+    }
+    async fn txt(&self, name: &str) -> LookupResult<String> {
+        truth_lookup!(self, name, txt)
+    }
+    async fn cname(&self, name: &str) -> LookupResult<String> {
+        truth_lookup!(self, name, cname)
+    }
+    async fn srv(&self, name: &str) -> LookupResult<Srv> {
+        truth_lookup!(self, name, srv)
+    }
+    async fn ptr(&self, ip: IpAddr) -> LookupResult<String> {
+        self.public.ptr(ip).await
+    }
+    async fn caa(&self, name: &str) -> LookupResult<String> {
+        truth_lookup!(self, name, caa)
+    }
+}
+
 fn empty_or_err<T>(e: ResolveError) -> LookupResult<T> {
     match e.kind() {
         ResolveErrorKind::NoRecordsFound { .. } => Ok(vec![]),
