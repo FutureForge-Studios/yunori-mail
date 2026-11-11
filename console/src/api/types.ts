@@ -173,7 +173,7 @@ export interface OnboardingState {
     suggested: "direct" | "relay";
     port25: Check;
   };
-  server: { ipv4: string | null; ipv6: string | null };
+  server: { ipv4: string | null; ipv6: string | null; freeName?: string | null };
   mailHostname: string;
   primaryDomain: string;
   primaryDomainId: string | null;

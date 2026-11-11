@@ -182,6 +182,13 @@ async fn changing_the_names_checks_their_gates_again() {
     let (_, b) = c.get("/onboarding").await;
     assert_eq!(b["panel"]["kind"], "sslip");
     assert_eq!(b["suggested"]["domain"], Value::Null);
+    // With no domain to suggest, the server's free name is offered instead.
+    assert!(
+        b["server"]["freeName"]
+            .as_str()
+            .is_some_and(|n| n.ends_with(".sslip.io")),
+        "{b}"
+    );
 
     let (s, _) = put(
         &mut c,

@@ -217,7 +217,7 @@ function stateJson(ob: MockOnboarding, h: OnboardingHooks): OnboardingState {
       adminEmail: h.ownerEmail(),
     },
     sending: { confirmed: ob.sendingConfirmed, mode: h.sendingMode(), suggested: p25.status === "fail" ? "relay" : "direct", port25: p25 },
-    server: { ipv4: h.ipv4, ipv6: h.ipv6 },
+    server: { ipv4: h.ipv4, ipv6: h.ipv6, freeName: h.ipv4 ? `${h.ipv4.replace(/\./g, "-")}.sslip.io` : null },
     mailHostname: ob.identity?.hostname ?? ob.panelHost,
     primaryDomain: primary?.name ?? "",
     primaryDomainId: primary?.id ?? null,

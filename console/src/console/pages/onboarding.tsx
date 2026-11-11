@@ -666,6 +666,19 @@ function DomainStep({ state, onSaved }: { state: OnboardingState; onSaved: (s: O
                   </button>
                 </p>
               )}
+              {!domain && state.server.freeName && (
+                <p className="text-xs leading-relaxed text-foreground/85">
+                  No domain yet? Try it with this server's free name{" "}
+                  <button
+                    type="button"
+                    className="rounded-sm font-mono font-medium underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+                    onClick={() => changeDomain(state.server.freeName ?? "")}
+                  >
+                    {state.server.freeName}
+                  </button>
+                  . It works at once; switch to your own domain whenever you are ready.
+                </p>
+              )}
             </Field>
             <Field label="Mail server hostname" htmlFor="ob-host" hint="This server's own name: where mail is delivered and mail apps connect." error={errors.hostname}>
               <Input

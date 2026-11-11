@@ -126,7 +126,7 @@ curl -fsSL https://yunori.email/server/install.sh \
 # Read it first, or pin a version
 curl -fsSLO https://yunori.email/server/install.sh
 less install.sh
-sudo YUNORI_VERSION=0.2.3 sh install.sh
+sudo YUNORI_VERSION=0.3.0 sh install.sh
 
 # The binary is already here: run the installer directly
 sudo yunori-mail install

@@ -91,7 +91,18 @@ pub(super) async fn state_json(app: &AppState, owner_email: &str) -> ApiResult<V
             "suggested": suggested_sending,
             "port25": port25,
         },
-        "server": { "ipv4": cfg.public_ipv4, "ipv6": cfg.public_ipv6 },
+        "server": {
+            "ipv4": cfg.public_ipv4,
+            "ipv6": cfg.public_ipv6,
+            // A free name that already resolves here (sslip.io), offered as a
+            // mail domain to try things out when no domain was given.
+            "freeName": cfg
+                .public_ipv4
+                .as_deref()
+                .or(cfg.public_ipv6.as_deref())
+                .and_then(|ip| ip.parse().ok())
+                .map(panel::sslip_name),
+        },
         "mailHostname": cfg.hostname,
         "primaryDomain": cfg.primary_domain,
         "primaryDomainId": primary_domain_id,
