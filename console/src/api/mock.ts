@@ -71,7 +71,7 @@ export const SCENARIOS: { key: Scenario; label: string; hint: string; path: stri
 const HOST = "mail.example.com";
 const IPV4 = "203.0.113.24";
 const IPV6 = "2001:db8:5::24";
-const CLIENT_ORIGIN = "https://app.yunori.email";
+const CLIENT_ORIGIN = "https://yunori.email";
 const VERSION = "0.1.0";
 const ENGINE = "1.0.3";
 const SETUP_DAY = "20261021";

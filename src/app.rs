@@ -14,7 +14,10 @@ use std::time::Instant;
 use zeroize::Zeroizing;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const DEFAULT_CLIENT_ORIGIN: &str = "https://app.yunori.email";
+/// Where the Yunori client is served. (0.2.1 and earlier defaulted to
+/// `https://app.yunori.email`, a host that never existed; see `config()`.)
+pub const DEFAULT_CLIENT_ORIGIN: &str = "https://yunori.email";
+const OLD_DEFAULT_CLIENT_ORIGIN: &str = "https://app.yunori.email";
 pub const ENGINE_HTTP_PORT: u16 = 18080;
 
 pub struct PortalSession {
@@ -125,10 +128,17 @@ impl App {
     }
 
     pub fn config(&self) -> Option<ServerConfig> {
-        self.db
+        let mut cfg = self
+            .db
             .get_json::<ServerConfig>(ServerConfig::KEY)
             .ok()
-            .flatten()
+            .flatten()?;
+        // Installs made before 0.2.2 saved a client origin that never resolved,
+        // so every "Open in Yunori" link was dead: read it as the real one.
+        if cfg.client_origin.trim_end_matches('/') == OLD_DEFAULT_CLIENT_ORIGIN {
+            cfg.client_origin = DEFAULT_CLIENT_ORIGIN.into();
+        }
+        Some(cfg)
     }
 
     pub fn save_config(&self, cfg: &ServerConfig) -> Result<()> {
@@ -196,5 +206,26 @@ impl App {
         }
         hits.push(now);
         false
+    }
+}
+
+#[cfg(test)]
+mod client_origin_tests {
+    use super::*;
+
+    #[test]
+    fn the_dead_default_client_origin_is_read_as_yunori_email() {
+        let app = App::for_tests();
+        let mut cfg = app.config().expect("test app is configured");
+        cfg.client_origin = "https://app.yunori.email/".into();
+        app.save_config(&cfg).unwrap();
+        assert_eq!(app.config().unwrap().client_origin, "https://yunori.email");
+        cfg.client_origin = "https://mail-client.example.org".into();
+        app.save_config(&cfg).unwrap();
+        assert_eq!(
+            app.config().unwrap().client_origin,
+            "https://mail-client.example.org",
+            "a chosen origin is kept"
+        );
     }
 }
