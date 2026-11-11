@@ -24,7 +24,7 @@
 # It never pipes further remote code into a shell. Read it before running it.
 #
 # Environment overrides:
-#   YUNORI_VERSION=0.2.2       install this release instead of the one this script was published with
+#   YUNORI_VERSION=0.2.3       install this release instead of the one this script was published with
 #   YUNORI_SKIP_INSTALL=1      download, verify and install the binary only; don't run the installer
 #   YUNORI_BASE_URL=…          download from a mirror (https:// or file://) instead of yunori.email/GitHub
 #   YUNORI_FEED=…              the release feed (default https://yunori.email/server; GitHub is the fallback)
