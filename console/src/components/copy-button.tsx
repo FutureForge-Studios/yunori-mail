@@ -37,12 +37,12 @@ export function CopyButton({
       aria-label={showText ? undefined : `Copy ${label}`}
       title={showText ? undefined : `Copy ${label}`}
       className={cn(
-        "inline-flex shrink-0 items-center gap-1.5 rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-        showText ? "h-8 border border-border px-2.5 text-xs shadow-sm" : "h-7 w-7 justify-center",
+        "inline-flex shrink-0 items-center gap-1.5 rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60",
+        showText ? "h-8 border border-border bg-card px-3 text-xs font-medium text-foreground/85 shadow-card" : "h-7 w-7 justify-center",
         className,
       )}
     >
-      {copied ? <Check aria-hidden className="h-3.5 w-3.5" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
+      {copied ? <Check aria-hidden className="h-3.5 w-3.5 text-success-ink" /> : <Copy aria-hidden className="h-3.5 w-3.5" />}
       {showText && (copied ? "Copied" : text)}
       <span className="sr-only" aria-live="polite">
         {copied ? `${label} copied` : ""}

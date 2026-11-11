@@ -1,15 +1,15 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, Check as CheckIcon, Dot, ExternalLink } from "lucide-react";
+import { ArrowRight, Check as CheckIcon, Dot, ExternalLink, KeyRound, Route, Server, ShieldCheck } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Textarea } from "@/design/vendor/ui/textarea";
-import { Card, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Card, CardBody, CardHeader } from "@/ui/card";
+import { Skeleton } from "@/ui/feedback";
+import { Input, RadioCard, Select, Textarea } from "@/ui/form";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { RelayProvider, SendingDomain, SendingResponse } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
-import { FieldError, LoadError, Page, selectClass, usePageTitle } from "@/components/kit";
+import { FieldError, LoadError, Page, usePageTitle } from "@/components/kit";
 import { CheckList, StatusBadge } from "@/components/status";
 import { toast } from "@/lib/toast";
 import { useApi } from "@/lib/use-api";
@@ -80,10 +80,10 @@ export default function SendingPage() {
     return (
       <Page title="Sending" blurb="How mail leaves this server.">
         <div className="grid gap-4 md:grid-cols-2">
-          <Skeleton className="h-56" />
-          <Skeleton className="h-56" />
+          <Skeleton className="h-56 rounded-xl" />
+          <Skeleton className="h-56 rounded-xl" />
         </div>
-        <Skeleton className="mt-4 h-40" />
+        <Skeleton className="mt-4 h-40 rounded-xl" />
       </Page>
     );
   }
@@ -191,10 +191,19 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
   const domainsUrl = provider?.domainsUrl?.replace("{region}", relay.region || provider.defaultRegion || "us-east-1") ?? null;
 
   return (
-    <Page title="Sending" blurb="How mail leaves this server. Receiving always stays here, whichever you choose.">
-      <form onSubmit={save} noValidate>
+    <Page
+      title="Sending"
+      blurb="How mail leaves this server. Receiving always stays here, whichever you choose."
+      meta={
+        <StatusBadge tone={data.mode === "relay" ? "info" : blocked ? "warn" : "ok"} icon={data.mode === "relay" ? Route : Server}>
+          {data.mode === "relay" ? `Relaying through ${data.providers.find((p) => p.key === data.relay?.provider)?.label ?? "a relay"}` : "Sending directly"}
+        </StatusBadge>
+      }
+    >
+      <div className="grid gap-6 xl:grid-cols-12">
+      <form onSubmit={save} noValidate className="min-w-0 xl:col-span-8">
         <fieldset>
-          <legend className="sr-only">Sending mode</legend>
+          <legend className="mb-3 text-base font-semibold tracking-[-0.01em]">How mail leaves</legend>
           <div className="grid gap-4 md:grid-cols-2">
             <ModeCard
               value="direct"
@@ -229,11 +238,12 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
 
         {mode === "relay" && (
           <>
-            <Card className="mt-4">
-              <SectionLabel>Relay provider</SectionLabel>
+            <Card padded={false} className="mt-4" aria-labelledby="rl-title">
+              <CardHeader id="rl-title" title="Relay provider" icon={Route} description="Pick the service that will deliver for you, then paste its SMTP credentials." />
+              <CardBody>
               <fieldset>
                 <legend className="sr-only">Relay provider</legend>
-                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 lg:grid-cols-4">
                   {data.providers.map((p) => (
                     <ProviderTile key={p.key} provider={p} checked={relay.provider === p.key} onChange={() => chooseProvider(p.key)} />
                   ))}
@@ -242,15 +252,15 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
               </fieldset>
 
               {provider && (
-                <div className="mt-5 grid gap-4 border-t border-border/50 pt-5 sm:grid-cols-2">
+                <div className="mt-5 grid gap-4 border-t border-border/70 pt-5 sm:grid-cols-2">
                   {provider.regions.length > 0 && (
                     <div className="space-y-1.5">
-                      <label htmlFor="rl-region" className="block text-xs font-medium text-foreground/80">
+                      <label htmlFor="rl-region" className="block text-[13px] font-medium text-foreground/90">
                         {provider.hostTemplate ? `${provider.label} region` : "Sending region"}
                       </label>
-                      <select
+                      <Select
                         id="rl-region"
-                        className={cn(selectClass, "w-full font-mono text-[13px]")}
+                        className="font-mono text-[13px]"
                         value={relay.region}
                         onChange={(e) => set("region", e.target.value)}
                         aria-invalid={!!errors.region}
@@ -261,11 +271,11 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
                             {r}
                           </option>
                         ))}
-                      </select>
+                      </Select>
                       {errors.region ? (
                         <FieldError id="rl-region-err">{errors.region}</FieldError>
                       ) : (
-                        <p id="rl-region-hint" className="text-[11px] text-muted-foreground">
+                        <p id="rl-region-hint" className="text-xs text-muted-foreground">
                           {provider.hostTemplate ? "The region where your domains are verified in SES." : `The region shown on your ${provider.label} domain page.`}
                         </p>
                       )}
@@ -273,9 +283,9 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
                   )}
                   {derivedHost ? (
                     <div className="space-y-1.5">
-                      <span className="block text-xs font-medium text-foreground/80">SMTP host</span>
-                      <p className="flex h-9 items-center font-mono text-[13px] text-foreground/85">{derivedHost}</p>
-                      <p className="text-[11px] text-muted-foreground">Set by the region.</p>
+                      <span className="block text-[13px] font-medium text-foreground/90">SMTP host</span>
+                      <p className="flex h-9 items-center truncate rounded-lg border border-dashed border-border px-3 font-mono text-[13px] text-foreground/85">{derivedHost}</p>
+                      <p className="text-xs text-muted-foreground">Set by the region.</p>
                     </div>
                   ) : (
                     <TextField
@@ -331,7 +341,7 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
                       mono
                     />
                   )}
-                  <div className="space-y-1 text-[11px] text-muted-foreground sm:col-span-2">
+                  <div className="space-y-1 rounded-lg bg-muted/50 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground sm:col-span-2">
                     {provider.spfInclude && (
                       <p>
                         Adds <code className="font-mono text-foreground/80">include:{provider.spfInclude}</code> to each domain's SPF record.
@@ -356,13 +366,21 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
                   </div>
                 </div>
               )}
+              </CardBody>
             </Card>
 
             {provider && verifies && (
-              <Card className="mt-4">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <SectionLabel>Verify your domains with {provider.label}</SectionLabel>
-                  {domainsUrl && (
+              <Card padded={false} className="mt-4" aria-labelledby="rl-verify">
+                <CardHeader
+                  id="rl-verify"
+                  icon={ShieldCheck}
+                  title={`Verify your domains with ${provider.label}`}
+                  description={
+                    provider.verify === "sesDkim"
+                      ? "Add each domain as an identity in Amazon SES with Easy DKIM, then paste the three CNAME records SES shows. Yunori adds them to the domain's DNS checklist and checks them against public DNS."
+                      : `Add each domain in ${provider.label}, then paste the DKIM value it shows for ${provider.dkimSelector}._domainkey. Yunori adds it, and the ${provider.mailFrom?.label ?? "bounce"} records ${provider.label} needs, to the domain's DNS checklist.`
+                  }
+                  actions={domainsUrl && (
                     <a
                       href={domainsUrl}
                       target="_blank"
@@ -373,13 +391,9 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
                       <span className="sr-only">(opens in a new tab)</span>
                     </a>
                   )}
-                </div>
-                <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
-                  {provider.verify === "sesDkim"
-                    ? "Add each domain as an identity in Amazon SES with Easy DKIM, then paste the three CNAME records SES shows. Yunori adds them to the domain's DNS checklist and checks them against public DNS."
-                    : `Add each domain in ${provider.label}, then paste the DKIM value it shows for ${provider.dkimSelector}._domainkey. Yunori adds it, and the ${provider.mailFrom?.label ?? "bounce"} records ${provider.label} needs, to the domain's DNS checklist.`}
-                </p>
-                <ul className="mt-4 divide-y divide-border/50">
+                />
+                <CardBody>
+                <ul className="divide-y divide-border/60">
                   {data.domains.map((d) => (
                     <DomainVerification
                       key={d.id}
@@ -392,14 +406,16 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
                     />
                   ))}
                 </ul>
-                {data.domains.length === 0 && <p className="text-xs text-muted-foreground">Add a domain first.</p>}
+                {data.domains.length === 0 && <p className="text-[13px] text-muted-foreground">Add a domain first.</p>}
+                </CardBody>
               </Card>
             )}
           </>
         )}
 
         {dirty && (
-          <div className="mt-4 flex flex-wrap items-center justify-end gap-2">
+          <div className="sticky bottom-3 z-10 mt-4 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-border bg-popover/95 p-3 shadow-pop backdrop-blur">
+            <span className="mr-auto pl-1 text-[13px] text-muted-foreground">You have unsaved changes.</span>
             <Button
               type="button"
               variant="ghost"
@@ -413,40 +429,56 @@ function SendingForm({ data, onSaved }: { data: SendingResponse; onSaved: (d: Se
             >
               Discard changes
             </Button>
-            <Button type="submit" size="sm" disabled={busy}>
+            <Button type="submit" size="sm" loading={busy}>
               {busy ? "Saving…" : mode === "direct" ? "Switch to direct sending" : data.mode === "relay" ? "Save relay settings" : "Switch to relay"}
             </Button>
           </div>
         )}
       </form>
 
-      <Card className="mt-8">
-        <SectionLabel>What this server can do</SectionLabel>
-        <CheckList checks={[data.port25, data.ptr]} />
-      </Card>
+      <aside className="min-w-0 space-y-4 xl:col-span-4">
+        <Card padded={false} aria-labelledby="can-title">
+          <CardHeader id="can-title" title="What this server can do" icon={Server} description="Direct sending needs both of these to pass." divider />
+          <CardBody className="pb-2">
+            <CheckList checks={[data.port25, data.ptr]} compact />
+          </CardBody>
+        </Card>
+        <Card padded={false} aria-labelledby="keys-title">
+          <CardHeader id="keys-title" title="Either way" icon={KeyRound} />
+          <CardBody>
+            <ul className="space-y-2.5 text-[13px] leading-relaxed text-muted-foreground">
+              <li className="flex gap-2">
+                <CheckIcon aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-ink" />
+                DKIM is signed on this server with your domain's own keys.
+              </li>
+              <li className="flex gap-2">
+                <CheckIcon aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-ink" />
+                Relay passwords are sealed in the vault and never shown again.
+              </li>
+              <li className="flex gap-2">
+                <CheckIcon aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-ink" />
+                Incoming mail always arrives here directly.
+              </li>
+            </ul>
+          </CardBody>
+        </Card>
+      </aside>
+      </div>
     </Page>
   );
 }
 
 function ProviderTile({ provider, checked, onChange }: { provider: RelayProvider; checked: boolean; onChange: () => void }) {
   return (
-    <label
-      className={cn(
-        "flex cursor-pointer flex-col justify-between gap-1 rounded-lg border px-3 py-2.5 transition-colors has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-ring",
-        checked ? "border-foreground/35 bg-card" : "border-border/60 bg-card/40 hover:border-foreground/20",
-      )}
-    >
-      <input type="radio" name="relay-provider" value={provider.key} checked={checked} onChange={onChange} className="sr-only" />
-      <span className="flex items-center gap-2 text-sm font-medium">
-        <span aria-hidden className={cn("grid h-3.5 w-3.5 shrink-0 place-items-center rounded-full border", checked ? "border-foreground" : "border-muted-foreground/60")}>
-          {checked && <span className="h-1.5 w-1.5 rounded-full bg-foreground" />}
-        </span>
-        {provider.label}
-      </span>
-      <span className="pl-[22px] text-[11px] text-muted-foreground">
-        {provider.verify !== "none" ? "Domain records set up here" : provider.key === "custom" ? "Any SMTP relay" : "SMTP relay"}
-      </span>
-    </label>
+    <RadioCard
+      compact
+      name="relay-provider"
+      value={provider.key}
+      checked={checked}
+      onChange={onChange}
+      title={provider.label}
+      description={provider.verify !== "none" ? "Domain records set up here" : provider.key === "custom" ? "Any SMTP relay" : "SMTP relay"}
+    />
   );
 }
 
@@ -478,7 +510,7 @@ function DomainVerification({
       </div>
       <div className={cn("mt-3 grid gap-3", ses && "sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]")}>
         <div className="space-y-1.5">
-          <label htmlFor={`${base}-dkim`} className="block text-xs font-medium text-foreground/80">
+          <label htmlFor={`${base}-dkim`} className="block text-[13px] font-medium text-foreground/90">
             {ses ? "DKIM records from SES" : `DKIM value for ${provider.dkimSelector}._domainkey`}
           </label>
           <Textarea
@@ -496,7 +528,7 @@ function DomainVerification({
         </div>
         {ses && (
           <div className="space-y-1.5">
-            <label htmlFor={`${base}-mf`} className="block text-xs font-medium text-foreground/80">
+            <label htmlFor={`${base}-mf`} className="block text-[13px] font-medium text-foreground/90">
               Custom MAIL FROM (optional)
             </label>
             <Input
@@ -512,7 +544,7 @@ function DomainVerification({
             {mfErr ? (
               <FieldError id={`${base}-mf-err`}>{mfErr}</FieldError>
             ) : (
-              <p id={`${base}-mf-hint`} className="text-[11px] text-muted-foreground">
+              <p id={`${base}-mf-hint`} className="text-xs text-muted-foreground">
                 Set the same subdomain in SES so SPF aligns too.
               </p>
             )}
@@ -520,12 +552,12 @@ function DomainVerification({
         )}
       </div>
       {saved && domain.records.length > 0 && (
-        <div className="mt-3 rounded-lg border border-border/60">
-          <table className="w-full table-fixed text-left text-xs">
+        <div className="mt-3 overflow-x-auto rounded-lg border border-border">
+          <table className="w-full min-w-[32rem] table-fixed text-left text-xs">
             <caption className="sr-only">
               {provider.label} records for {domain.name}
             </caption>
-            <thead className="text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+            <thead className="bg-muted/40 text-xs text-muted-foreground">
               <tr>
                 <th scope="col" className="w-16 px-3 py-2 font-normal">
                   Type
@@ -592,42 +624,21 @@ function ModeCard({
   footer?: string;
 }) {
   return (
-    <label
-      className={cn(
-        "relative flex cursor-pointer flex-col rounded-xl border p-5 transition-colors has-[:focus-visible]:ring-1 has-[:focus-visible]:ring-ring",
-        checked ? "border-foreground/35 bg-card" : "border-border/60 bg-card/40 hover:border-foreground/20",
-      )}
-    >
-      <div className="flex items-start gap-3">
-        <input type="radio" name="sending-mode" value={value} checked={checked} onChange={onChange} className="peer sr-only" />
-        <span
-          aria-hidden
-          className={cn("mt-0.5 grid h-4 w-4 shrink-0 place-items-center rounded-full border", checked ? "border-foreground" : "border-muted-foreground/60")}
-        >
-          {checked && <span className="h-2 w-2 rounded-full bg-foreground" />}
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="text-sm font-medium">{title}</span>
-            {badge}
-          </div>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{summary}</p>
-        </div>
-      </div>
-      <ul className="mt-4 space-y-1.5 pl-7">
+    <RadioCard name="sending-mode" value={value} checked={checked} onChange={onChange} title={title} description={summary} badge={badge} className="h-full">
+      <ul className="mt-4 space-y-2 pl-7">
         {points.map((p) => (
-          <li key={p.text} className="flex gap-1.5 text-xs leading-relaxed text-foreground/85">
+          <li key={p.text} className="flex gap-2 text-[13px] leading-relaxed text-foreground/85">
             {p.good ? (
-              <CheckIcon aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-700 dark:text-emerald-400" />
+              <CheckIcon aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-ink" />
             ) : (
-              <Dot aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+              <Dot aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
             )}
             <span>{p.text}</span>
           </li>
         ))}
       </ul>
-      {footer && <p className="mt-4 border-t border-border/50 pl-7 pt-3 text-xs text-foreground/85">{footer}</p>}
-    </label>
+      {footer && <p className="mt-4 rounded-lg bg-warning/10 px-3 py-2 text-[13px] text-foreground/90 sm:ml-7">{footer}</p>}
+    </RadioCard>
   );
 }
 
@@ -651,7 +662,7 @@ function TextField({
 } & Omit<React.InputHTMLAttributes<HTMLInputElement>, "onChange" | "value" | "id">) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={id} className="block text-xs font-medium text-foreground/80">
+      <label htmlFor={id} className="block text-[13px] font-medium text-foreground/90">
         {label}
       </label>
       <Input
@@ -668,7 +679,7 @@ function TextField({
         <FieldError id={`${id}-err`}>{error}</FieldError>
       ) : (
         hint && (
-          <p id={`${id}-hint`} className="text-[11px] text-muted-foreground">
+          <p id={`${id}-hint`} className="text-xs leading-relaxed text-muted-foreground">
             {hint}
           </p>
         )

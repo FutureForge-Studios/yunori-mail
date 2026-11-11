@@ -1,0 +1,90 @@
+/*
+ * Console + portal refinements on top of the generated brand tokens
+ * (design/yunori/tokens.css) and the vendored client stylesheet. Hand-written;
+ * plain CSS only (Tailwind directives live in the vendored globals.css).
+ */
+
+/* Native controls (selects, date pickers, scrollbars) follow the theme. */
+:root {
+  color-scheme: light;
+  /* Hairline used by the console chrome — one step quieter than --border. */
+  --hairline: hsl(var(--border) / 0.75);
+  --sidebar-width: 15.5rem;
+  --sidebar-width-collapsed: 4rem;
+  --topbar-height: 3.5rem;
+}
+.dark {
+  color-scheme: dark;
+}
+
+html {
+  background: hsl(var(--background));
+  /* Reserve the scrollbar gutter so the sticky shell never jumps between pages. */
+  scrollbar-gutter: stable;
+}
+body {
+  min-height: 100dvh;
+  background: hsl(var(--background));
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+::selection {
+  background: hsl(var(--torii) / 0.22);
+  color: inherit;
+}
+
+/* Native <select> popups render with the page's colours instead of white-on-white. */
+select option {
+  background-color: hsl(var(--popover));
+  color: hsl(var(--popover-foreground));
+}
+
+/* Date inputs: the calendar glyph inherits the icon tone. */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+/* Numbers line up in tables, stats and meters. */
+.tabular-nums,
+table td {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Fraunces display numbers (stat tiles, meters). */
+.display-number {
+  font-family: var(--font-serif);
+  font-weight: 360;
+  letter-spacing: -0.02em;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+
+/* A soft wash behind the auth pages' brand panel. */
+.brand-wash {
+  background:
+    radial-gradient(60rem 40rem at 110% -10%, hsl(var(--torii) / 0.22), transparent 60%),
+    radial-gradient(40rem 30rem at -20% 110%, hsl(var(--info) / 0.16), transparent 60%),
+    hsl(var(--background));
+}
+
+/* Skeleton shimmer, quiet. */
+@keyframes yu-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.yu-skeleton {
+  background: linear-gradient(90deg, hsl(var(--muted) / 0.55) 0%, hsl(var(--muted)) 50%, hsl(var(--muted) / 0.55) 100%);
+  background-size: 200% 100%;
+  animation: yu-shimmer 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .yu-skeleton {
+    animation: none;
+  }
+}

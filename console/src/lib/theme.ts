@@ -25,6 +25,11 @@ function resolve(pref: ThemePref): "light" | "dark" {
   return pref === "system" ? (media().matches ? "dark" : "light") : pref;
 }
 
+/** Apply the saved theme now (main.tsx calls it at boot as a fallback for theme-init.js). */
+export function applyTheme() {
+  apply();
+}
+
 function apply() {
   const dark = resolve(readPref()) === "dark";
   document.documentElement.classList.toggle("dark", dark);

@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Plus } from "lucide-react";
-import { Button } from "@/design/vendor/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/design/vendor/ui/dialog";
-import { Input } from "@/design/vendor/ui/input";
-import { Label } from "@/design/vendor/ui/label";
+import { ChevronRight, Globe, Plus } from "lucide-react";
+import { Button } from "@/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/ui/overlay";
+import { Input, Label } from "@/ui/form";
+import { Badge } from "@/ui/badge";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { Domain } from "@/api/types";
 import { DataTable, FieldError, LoadError, Page, usePageTitle, type Column } from "@/components/kit";
@@ -46,17 +46,20 @@ export default function DomainsPage() {
       key: "name",
       header: "Domain",
       cell: (d) => (
-        <div className="flex flex-wrap items-center gap-2">
-          <Link
-            to={`/console/domains/${d.id}`}
-            className="rounded-sm text-sm font-medium text-foreground/90 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          >
-            {d.name}
-          </Link>
-          {d.isPrimary && (
-            <span className="rounded-full border border-border/70 px-2 py-0.5 text-[11px] text-foreground/80">Primary</span>
-          )}
-          {!d.enabled && <StatusBadge tone="muted">Disabled</StatusBadge>}
+        <div className="flex min-w-0 items-center gap-3">
+          <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border bg-muted/50 text-icon">
+            <Globe className="h-4 w-4" strokeWidth={1.75} />
+          </span>
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <Link
+              to={`/console/domains/${d.id}`}
+              className="rounded-sm text-sm font-medium text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+            >
+              {d.name}
+            </Link>
+            {d.isPrimary && <Badge>Primary</Badge>}
+            {!d.enabled && <StatusBadge tone="muted" size="xs">Disabled</StatusBadge>}
+          </div>
         </div>
       ),
     },
@@ -70,7 +73,7 @@ export default function DomainsPage() {
             <StatusBadge tone={m.tone} icon={m.icon}>
               {DNS_LABEL[d.dnsStatus]}
             </StatusBadge>
-            <span className="text-[11px] text-muted-foreground">{d.dnsCheckedAt ? `checked ${timeAgo(d.dnsCheckedAt)}` : "never checked"}</span>
+            <span className="text-xs text-muted-foreground">{d.dnsCheckedAt ? `checked ${timeAgo(d.dnsCheckedAt)}` : "never checked"}</span>
           </div>
         );
       },
@@ -81,7 +84,7 @@ export default function DomainsPage() {
       cell: (d) => (
         <Link
           to={`/console/mailboxes?domain=${d.id}`}
-          className="rounded-sm text-xs tabular-nums text-foreground/80 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="rounded-sm text-[13px] tabular-nums text-foreground underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
         >
           {fmtNumber(d.mailboxCount)}
           <span className="sr-only"> mailboxes on {d.name}</span>
@@ -92,13 +95,20 @@ export default function DomainsPage() {
       key: "catchAll",
       header: "Catch-all",
       hideBelowMd: true,
-      cell: (d) => <span className="text-xs text-muted-foreground">{d.catchAll ?? "Off"}</span>,
+      cell: (d) => <span className="text-[13px] text-muted-foreground">{d.catchAll ?? "Off"}</span>,
     },
     {
       key: "created",
       header: "Added",
       hideBelowMd: true,
-      cell: (d) => <span className="text-xs text-muted-foreground">{timeAgo(d.createdAt)}</span>,
+      cell: (d) => <span className="text-[13px] text-muted-foreground">{timeAgo(d.createdAt)}</span>,
+    },
+    {
+      key: "open",
+      header: <span className="sr-only">Open</span>,
+      className: "w-10",
+      mobile: "hidden",
+      cell: () => <ChevronRight aria-hidden className="h-4 w-4 text-muted-foreground" />,
     },
   ];
 
@@ -125,6 +135,15 @@ export default function DomainsPage() {
           rows={data ?? []}
           rowKey={(d) => d.id}
           loading={loading && !data}
+          caption="Domains"
+          onRowClick={(d) => navigate(`/console/domains/${d.id}`)}
+          emptyIcon={Globe}
+          emptyAction={
+            <Button size="sm" onClick={() => setAddOpen(true)}>
+              <Plus className="h-4 w-4" />
+              Add domain
+            </Button>
+          }
           emptyTitle="No domains yet"
           emptyHint="Add the domain you want addresses on — Yunori creates its DKIM keys and the full record set for you."
         />

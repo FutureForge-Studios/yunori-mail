@@ -3,7 +3,7 @@ import { cn } from "@/design/vendor/lib/utils";
 import { useTheme } from "@/lib/theme";
 
 export const iconButton =
-  "grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  "grid h-8 w-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60";
 
 /** Same control as the client's admin top bar. */
 export function ThemeToggle({ className }: { className?: string }) {

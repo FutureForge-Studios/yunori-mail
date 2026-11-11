@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, Download, FileUp } from "lucide-react";
-import { Button } from "@/design/vendor/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/design/vendor/ui/dialog";
-import { Textarea } from "@/design/vendor/ui/textarea";
+import { AlertCircle, CheckCircle2, Download, FileSpreadsheet, FileUp } from "lucide-react";
+import { Button } from "@/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/ui/overlay";
+import { RadioCard, Textarea } from "@/ui/form";
+import { Badge } from "@/ui/badge";
+import { FormError } from "@/ui/feedback";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { ImportMailboxesResponse, ImportSkipped } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
-import { FieldError, RadioRow } from "@/components/kit";
+import { FieldError } from "@/components/kit";
 import { saveBlob, toCsv } from "@/lib/download";
 import { fmtDate, fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -109,7 +111,7 @@ export function ImportMailboxesDialog({
   return (
     <Dialog open={open} onOpenChange={(o) => !o && close()}>
       <DialogContent
-        className="max-h-[calc(100dvh-2rem)] max-w-2xl overflow-y-auto"
+        className="max-w-2xl"
         // The results are shown once: don't lose them to a stray click outside.
         onInteractOutside={(e) => step.kind === "done" && e.preventDefault()}
       >
@@ -132,11 +134,16 @@ export function ImportMailboxesDialog({
 
             <div className="space-y-1.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <label htmlFor="imp-csv" className="block text-xs font-medium text-foreground/80">
+                <label htmlFor="imp-csv" className="block text-[13px] font-medium text-foreground/90">
                   CSV
                 </label>
-                <div className="flex items-center gap-2">
-                  {fileName && <span className="max-w-48 truncate text-[11px] text-muted-foreground">{fileName}</span>}
+                <div className="flex min-w-0 items-center gap-2">
+                  {fileName && (
+                    <span className="flex min-w-0 max-w-48 items-center gap-1 truncate text-xs text-muted-foreground">
+                      <FileSpreadsheet aria-hidden className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{fileName}</span>
+                    </span>
+                  )}
                   <input
                     ref={fileRef}
                     type="file"
@@ -163,51 +170,52 @@ export function ImportMailboxesDialog({
                 rows={7}
                 spellCheck={false}
                 placeholder={`…or paste the rows here:\n\n${EXAMPLE}`}
-                className="font-mono text-xs"
+                className="font-mono text-xs leading-6"
                 aria-invalid={!!error.csv}
                 aria-describedby={error.csv ? "imp-csv-err" : "imp-csv-hint"}
               />
               {error.csv ? (
                 <FieldError id="imp-csv-err">{error.csv}</FieldError>
               ) : (
-                <p id="imp-csv-hint" className="text-[11px] text-muted-foreground">
+                <p id="imp-csv-hint" className="text-xs text-muted-foreground">
                   Up to 1,000 mailboxes at a time. Their domains must already be on this server. An empty storage limit means no limit.
                 </p>
               )}
             </div>
 
             <fieldset>
-              <legend className="mb-1.5 text-xs font-medium text-foreground/80">How they'll get in</legend>
-              <div className="space-y-1.5">
-                <RadioRow
+              <legend className="mb-2 text-[13px] font-medium text-foreground/90">How they'll get in</legend>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <RadioCard
+                  compact
                   name="imp-mode"
+                  value="invite"
                   checked={mode === "invite"}
                   onChange={() => setMode("invite")}
-                  label="Send invite links"
-                  hint="Recommended. Each person chooses their own password. You get one link per mailbox to pass on; each works once, for 7 days."
+                  title="Send invite links"
+                  badge={<Badge tone="ok">Recommended</Badge>}
+                  description="Each person chooses their own password. One link per mailbox; each works once, for 7 days."
                 />
-                <RadioRow
+                <RadioCard
+                  compact
                   name="imp-mode"
+                  value="password"
                   checked={mode === "password"}
                   onChange={() => setMode("password")}
-                  label="Generate passwords"
-                  hint="A strong password per mailbox, shown once after the import for you to pass on."
+                  title="Generate passwords"
+                  description="A strong password per mailbox, shown once after the import for you to pass on."
                 />
               </div>
             </fieldset>
 
-            {error.form && (
-              <p role="alert" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
-                {error.form}
-              </p>
-            )}
+            <FormError>{error.form}</FormError>
 
             <DialogFooter>
               <Button type="button" variant="ghost" onClick={close} disabled={busy}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={busy || !csv.trim()}>
-                {busy ? "Checking…" : "Check"}
+              <Button type="submit" disabled={!csv.trim()} loading={busy}>
+                {busy ? "Checking…" : "Check the list"}
               </Button>
             </DialogFooter>
           </form>
@@ -229,11 +237,11 @@ export function ImportMailboxesDialog({
 
             {step.result.ready.length > 0 && (
               <div>
-                <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground/80">
-                  <CheckCircle2 aria-hidden className="h-3.5 w-3.5 text-emerald-700 dark:text-emerald-400" />
+                <p className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+                  <CheckCircle2 aria-hidden className="h-4 w-4 text-success-ink" />
                   Ready
                 </p>
-                <ul className="max-h-48 overflow-y-auto rounded-lg border border-border/60 bg-muted/30 px-3 py-2 font-mono text-xs leading-6 text-foreground/90">
+                <ul className="max-h-48 overflow-y-auto rounded-lg border border-border bg-muted/30 px-3 py-2 font-mono text-xs leading-6 text-foreground/90">
                   {step.result.ready.map((a) => (
                     <li key={a} className="truncate">
                       {a}
@@ -271,13 +279,13 @@ function SkippedList({ rows }: { rows: ImportSkipped[] }) {
   if (rows.length === 0) return null;
   return (
     <div>
-      <p className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-foreground/80">
-        <AlertCircle aria-hidden className="h-3.5 w-3.5 text-amber-700 dark:text-amber-400" />
+      <p className="mb-1.5 flex items-center gap-1.5 text-[13px] font-medium text-foreground">
+        <AlertCircle aria-hidden className="h-4 w-4 text-warning-ink" />
         Skipped
       </p>
-      <div className="max-h-56 overflow-y-auto rounded-lg border border-border/60">
+      <div className="max-h-56 overflow-auto rounded-lg border border-border">
         <table className="w-full text-left text-xs">
-          <thead className="sticky top-0 bg-card text-[11px] text-muted-foreground">
+          <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
             <tr className="border-b border-border/60">
               <th scope="col" className="w-14 px-3 py-1.5 font-normal">
                 Row
@@ -343,7 +351,7 @@ function Results({
       </DialogHeader>
 
       {n > 0 && (
-        <div className="max-h-72 overflow-y-auto rounded-lg border border-border/60">
+        <div className="max-h-72 overflow-y-auto rounded-lg border border-border">
           <ul className="divide-y divide-border/50">
             {result.created.map((c) => {
               const secret = invites ? c.inviteUrl : c.password;
@@ -352,13 +360,13 @@ function Results({
                   <p className="text-xs font-medium text-foreground/90">{c.address}</p>
                   {secret && (
                     <div className="mt-1 flex items-center gap-1.5">
-                      <code className="min-w-0 flex-1 select-all truncate rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-[11px] text-foreground/90" title={secret}>
+                      <code className="min-w-0 flex-1 select-all truncate rounded-md border border-border bg-muted/40 px-2 py-1 font-mono text-xs text-foreground/90" title={secret}>
                         {secret}
                       </code>
                       <CopyButton value={secret} label={`${invites ? "invite link" : "password"} for ${c.address}`} />
                     </div>
                   )}
-                  {invites && c.inviteExpiresAt && <p className="mt-0.5 text-[11px] text-muted-foreground">Works once, until {fmtDate(c.inviteExpiresAt)}</p>}
+                  {invites && c.inviteExpiresAt && <p className="mt-0.5 text-xs text-muted-foreground">Works once, until {fmtDate(c.inviteExpiresAt)}</p>}
                 </li>
               );
             })}

@@ -1,15 +1,20 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, RefreshCw, Settings2, Trash2 } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Switch } from "@/design/vendor/ui/switch";
-import { Card, EmptyState, SectionLabel, Skeleton, selectClass } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Badge } from "@/ui/badge";
+import { Card, CardHeader, SectionHeader } from "@/ui/card";
+import { RingMeter, StatCard } from "@/ui/data-viz";
+import { EmptyState, Skeleton } from "@/ui/feedback";
+import { Field, Select, SwitchRow } from "@/ui/form";
+import { PageContainer, PageHeader } from "@/ui/page";
+import { Segmented } from "@/ui/segmented";
 import { api, errorMessage } from "@/api/client";
 import type { DnsRecord, Domain, DomainDnsResponse, Mailbox } from "@/api/types";
 import { ConfirmAction } from "@/components/confirm";
 import { CopyButton } from "@/components/copy-button";
-import { FilterPills, LoadError, Page, usePageTitle } from "@/components/kit";
+import { LoadError, Page, usePageTitle } from "@/components/kit";
 import { CheckPill, StatusBadge } from "@/components/status";
 import { fmtDateTime, timeAgo } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -35,7 +40,7 @@ export default function DomainDetailPage() {
     return { domain, dns, mailboxes };
   });
   const [checking, setChecking] = useState(false);
-  const [filter, setFilter] = useState<"all" | "attention">("all");
+  const [filter, setFilter] = useState<"all" | "attention" | "required" | "optional">("all");
 
   usePageTitle(data?.domain?.name ?? "Domain");
   useCrumb(data?.domain?.name);
@@ -50,8 +55,12 @@ export default function DomainDetailPage() {
   if (!data) {
     return (
       <Page title="Domain" blurb="Loading…">
-        <Skeleton className="mb-4 h-10" />
-        <Skeleton className="h-[28rem]" />
+        <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <Skeleton key={i} className="h-28 rounded-xl" />
+          ))}
+        </div>
+        <Skeleton className="mt-4 h-[28rem] rounded-xl" />
       </Page>
     );
   }
@@ -78,7 +87,9 @@ export default function DomainDetailPage() {
   const required = dns.records.filter((r) => r.required);
   const requiredOk = required.filter((r) => r.status === "pass" || r.status === "info").length;
   const attention = dns.records.filter((r) => r.status === "fail" || r.status === "warn");
-  const shown = sortRecords(filter === "all" ? dns.records : attention);
+  const shown = sortRecords(
+    filter === "all" ? dns.records : filter === "attention" ? attention : dns.records.filter((r) => r.required === (filter === "required")),
+  );
 
   async function checkNow() {
     setChecking(true);
@@ -98,68 +109,133 @@ export default function DomainDetailPage() {
     }
   }
 
+  const optional = dns.records.filter((r) => !r.required);
+  const optionalOk = optional.filter((r) => r.status === "pass" || r.status === "info").length;
+  const requiredTone = requiredOk === required.length ? "ok" : required.some((r) => r.status === "fail") ? "bad" : "warn";
+
   return (
-    <Page
-      title={domain.name}
-      blurb={`${domain.isPrimary ? "Primary domain · " : ""}${domain.mailboxCount} mailbox${domain.mailboxCount === 1 ? "" : "es"} · ${
-        dns.checkedAt ? `checked ${timeAgo(dns.checkedAt)}` : "not checked yet"
-      }`}
-      actions={
-        <>
-          <CopyButton value={dns.zoneFile} label="zone file" showText text="Copy zone file" />
-          <Button size="sm" onClick={() => void checkNow()} disabled={checking}>
-            <RefreshCw className={cn("h-3.5 w-3.5", checking && "animate-spin motion-reduce:animate-none")} />
-            {checking ? "Checking…" : "Check now"}
-          </Button>
-        </>
-      }
-    >
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <CheckPill
-            status={requiredOk === required.length ? "pass" : required.some((r) => r.status === "fail") ? "fail" : "warn"}
-            label={`${requiredOk} of ${required.length} required records resolve`}
-          />
-          {attention.length > 0 && (
-            <span className="text-xs text-muted-foreground">
-              {attention.length} record{attention.length === 1 ? "" : "s"} need{attention.length === 1 ? "s" : ""} attention
+    <PageContainer>
+      <PageHeader
+        eyebrow={
+          <Link to="/console/domains" className="inline-flex items-center gap-1 rounded-sm hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
+            <ArrowLeft aria-hidden className="h-3.5 w-3.5" />
+            Domains
+          </Link>
+        }
+        title={domain.name}
+        meta={
+          <>
+            {domain.isPrimary && <Badge>Primary</Badge>}
+            {domain.enabled ? <StatusBadge tone="ok">Receiving</StatusBadge> : <StatusBadge tone="muted">Not receiving</StatusBadge>}
+            <span className="text-[13px] text-muted-foreground">
+              {domain.mailboxCount} mailbox{domain.mailboxCount === 1 ? "" : "es"} · {dns.checkedAt ? `checked ${timeAgo(dns.checkedAt)}` : "not checked yet"}
             </span>
-          )}
+          </>
+        }
+        actions={
+          <>
+            <CopyButton value={dns.zoneFile} label="zone file" showText text="Copy zone file" className="h-8" />
+            <Button size="sm" onClick={() => void checkNow()} loading={checking}>
+              {!checking && <RefreshCw className="h-3.5 w-3.5" />}
+              {checking ? "Checking…" : "Check now"}
+            </Button>
+          </>
+        }
+      />
+
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+        <StatCard
+          label="Required records"
+          value={
+            <>
+              {requiredOk}
+              <span className="text-lg text-muted-foreground">/{required.length}</span>
+            </>
+          }
+          hint={requiredOk === required.length ? "All resolve" : `${required.length - requiredOk} not resolving yet`}
+          tone={requiredTone === "ok" ? undefined : requiredTone}
+        >
+          <RingMeter
+            value={required.length ? (requiredOk / required.length) * 100 : null}
+            tone={requiredTone}
+            label="Required records resolving"
+            valueText={`${requiredOk} of ${required.length}`}
+            size={44}
+            stroke={5}
+            center={<span />}
+            className="hidden sm:inline-grid"
+          />
+        </StatCard>
+        <StatCard
+          label="Optional records"
+          value={
+            <>
+              {optionalOk}
+              <span className="text-lg text-muted-foreground">/{optional.length}</span>
+            </>
+          }
+          hint="Autoconfig, MTA-STS, SRV, CAA"
+        >
+          <RingMeter
+            value={optional.length ? (optionalOk / optional.length) * 100 : null}
+            tone={optionalOk === optional.length ? "ok" : "muted"}
+            label="Optional records resolving"
+            valueText={`${optionalOk} of ${optional.length}`}
+            size={44}
+            stroke={5}
+            center={<span />}
+            className="hidden sm:inline-grid"
+          />
+        </StatCard>
+        <StatCard to={`/console/mailboxes?domain=${domain.id}`} label="Mailboxes" value={domain.mailboxCount} hint={mailboxes.length ? "Open the list" : "None yet"} />
+        <StatCard label="Catch-all" value={domain.catchAll ? "On" : "Off"} hint={domain.catchAll ?? "Unknown addresses are refused"} />
+      </div>
+
+      <div className="mt-4 grid gap-4 xl:grid-cols-12">
+        <div className="min-w-0 xl:col-span-7">
+          <DnsProviderCard
+            domain={domain}
+            onChecked={(fresh) => {
+              setData((d) => (d ? { ...d, dns: fresh } : d));
+              refreshHealth();
+            }}
+          />
         </div>
-        <FilterPills
-          label="Filter records"
-          value={filter}
-          onChange={setFilter}
-          options={[
-            { value: "all", label: `All ${dns.records.length}` },
-            { value: "attention", label: `Needs attention ${attention.length}` },
-          ]}
+        <div className="min-w-0 xl:col-span-5">
+          <SettingsCard domain={domain} mailboxes={mailboxes} onSaved={(d) => setData((x) => (x ? { ...x, domain: d } : x))} />
+        </div>
+      </div>
+
+      <section className="mt-10" aria-labelledby="dns-title">
+        <SectionHeader
+          id="dns-title"
+          title="DNS records"
+          description={
+            <>
+              Publish these at your DNS provider. “Found” is what public resolvers return right now
+              {dns.checkedAt ? ` (as of ${fmtDateTime(dns.checkedAt)})` : ""}; long TXT values are split automatically in the zone file.
+            </>
+          }
+          actions={
+            <Segmented
+              label="Filter records"
+              value={filter}
+              onChange={setFilter}
+              size="sm"
+              options={[
+                { value: "all", label: "All", count: dns.records.length },
+                { value: "attention", label: "Needs attention", count: attention.length },
+                { value: "required", label: "Required", count: required.length },
+                { value: "optional", label: "Optional", count: optional.length },
+              ]}
+            />
+          }
         />
-      </div>
-
-      <div className="mb-4">
-        <DnsProviderCard
-          domain={domain}
-          onChecked={(fresh) => {
-            setData((d) => (d ? { ...d, dns: fresh } : d));
-            refreshHealth();
-          }}
-        />
-      </div>
-
-      <DnsTable records={shown} />
-      <p className="mt-2 text-[11px] text-muted-foreground">
-        “Found” is what public resolvers return right now{dns.checkedAt ? ` (as of ${fmtDateTime(dns.checkedAt)})` : ""}. Values are copied
-        exactly as they must be published; long TXT values are split automatically in the zone file.
-      </p>
-
-      <div className="mt-8 grid gap-4 lg:grid-cols-2">
-        <CatchAllCard domain={domain} mailboxes={mailboxes} onSaved={(d) => setData((x) => (x ? { ...x, domain: d } : x))} />
-        <StatusCard domain={domain} onSaved={(d) => setData((x) => (x ? { ...x, domain: d } : x))} />
-      </div>
+        <DnsTable records={shown} />
+      </section>
 
       <DangerZone domain={domain} />
-    </Page>
+    </PageContainer>
   );
 }
 
@@ -171,34 +247,19 @@ function sortRecords(records: DnsRecord[]): DnsRecord[] {
 // ── DNS table ────────────────────────────────────────────────────────────────
 
 function DnsTable({ records }: { records: DnsRecord[] }) {
-  if (records.length === 0) return <EmptyState title="Nothing needs attention" hint="Every record resolves as expected." />;
+  if (records.length === 0) return <EmptyState icon={CheckCircle2} title="Nothing needs attention" hint="Every record resolves as expected." />;
   return (
-    <div className="overflow-hidden rounded-xl border border-border/60">
-      <table className="w-full text-sm">
-        <caption className="sr-only">DNS records for this domain: what to publish, what resolvers return, and status</caption>
-        <thead className="max-md:hidden">
-          <tr className="border-b border-border/60 bg-muted/20">
-            {["Record", "Value", "Status"].map((h, i) => (
-              <th
-                key={h}
-                scope="col"
-                className={cn(
-                  "px-4 py-2.5 text-left text-[11px] font-medium uppercase tracking-[0.1em] text-muted-foreground",
-                  i === 0 && "w-[34%]",
-                  i === 2 && "w-36",
-                )}
-              >
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {records.map((r) => (
-            <DnsRow key={r.id} record={r} />
-          ))}
-        </tbody>
-      </table>
+    <div className="overflow-hidden rounded-xl border border-border bg-card shadow-card">
+      <div aria-hidden className="hidden grid-cols-[minmax(15rem,0.9fr)_minmax(0,1.6fr)_7.5rem] gap-6 border-b border-border bg-muted/40 px-5 py-2.5 text-xs font-medium text-muted-foreground md:grid">
+        <span>Record</span>
+        <span>Value</span>
+        <span>Status</span>
+      </div>
+      <ul className="divide-y divide-border/60" aria-label="DNS records for this domain: what to publish, what resolvers return, and status">
+        {records.map((r) => (
+          <DnsRow key={r.id} record={r} />
+        ))}
+      </ul>
     </div>
   );
 }
@@ -207,44 +268,49 @@ function DnsRow({ record: r }: { record: DnsRecord }) {
   const [expanded, setExpanded] = useState(false);
   const long = r.expected.length > 110;
   const matches = r.actual.length > 0 && r.actual.includes(r.expected);
+  const bad = r.status === "fail" || r.status === "warn";
   return (
-    <tr className="border-b border-border/40 bg-card/30 align-top last:border-0 max-md:block max-md:py-2">
-      <td className="px-4 py-3.5 max-md:block max-md:py-1.5">
-        <div className="flex items-center gap-2">
-          <span className="w-12 shrink-0 rounded border border-border/70 px-1 py-px text-center font-mono text-[10px] text-foreground/80">{r.type}</span>
-          <span className="min-w-0 break-all font-mono text-xs text-foreground/90">{r.name}</span>
-          <CopyButton value={r.name} label={`name ${r.name}`} className="h-6 w-6" />
-        </div>
-        <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">{r.purpose}</p>
-      </td>
-      <td className="px-4 py-3.5 max-md:block max-md:py-1.5">
+    <li className={cn("grid gap-3 px-4 py-4 sm:px-5 md:grid-cols-[minmax(15rem,0.9fr)_minmax(0,1.6fr)_7.5rem] md:gap-6", bad && "bg-warning/[0.04]")}>
+      <div className="min-w-0">
         <div className="flex items-start gap-2">
-          <span className="w-14 shrink-0 pt-px text-[11px] text-muted-foreground">Publish</span>
+          <span className="mt-px w-12 shrink-0 rounded-md border border-border bg-muted/60 py-0.5 text-center font-mono text-2xs font-medium text-foreground/80">{r.type}</span>
+          <span className="min-w-0 flex-1 break-all pt-px font-mono text-[12.5px] text-foreground">{r.name}</span>
+          <CopyButton value={r.name} label={`name ${r.name}`} className="-mt-0.5 h-6 w-6" />
+        </div>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-muted-foreground">{r.purpose}</p>
+        <div className="mt-2 flex items-center gap-2 md:hidden">
+          <CheckPill status={r.status} />
+          <span className="text-xs text-muted-foreground">{r.required ? "Required" : "Optional"}</span>
+        </div>
+      </div>
+      <div className="min-w-0 space-y-2">
+        <div className="flex items-start gap-2 rounded-lg border border-border/70 bg-muted/30 px-3 py-2">
+          <span className="w-14 shrink-0 pt-px text-xs text-muted-foreground">Publish</span>
           <div className="min-w-0 flex-1">
-            <code className={cn("block break-all font-mono text-xs text-foreground/90", long && !expanded && "line-clamp-2")}>{r.expected}</code>
+            <code className={cn("block break-all font-mono text-[12.5px] leading-relaxed text-foreground", long && !expanded && "line-clamp-2")}>{r.expected}</code>
             {long && (
               <button
                 type="button"
                 onClick={() => setExpanded((v) => !v)}
                 aria-expanded={expanded}
-                className="mt-0.5 rounded-sm text-[11px] text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="mt-0.5 rounded-sm text-xs font-medium text-muted-foreground underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
               >
                 {expanded ? "Show less" : `Show all ${r.expected.length} characters`}
               </button>
             )}
           </div>
-          <CopyButton value={r.expected} label={`${r.type} value for ${r.name}`} className="h-6 w-6" />
+          <CopyButton value={r.expected} label={`${r.type} value for ${r.name}`} className="-my-0.5 h-6 w-6" />
         </div>
-        <div className="mt-2 flex items-start gap-2">
-          <span className="w-14 shrink-0 pt-px text-[11px] text-muted-foreground">Found</span>
+        <div className="flex items-start gap-2 px-3">
+          <span className="w-14 shrink-0 pt-px text-xs text-muted-foreground">Found</span>
           <div className="min-w-0 flex-1">
             {r.actual.length === 0 ? (
-              <span className="text-xs text-muted-foreground">Nothing published yet</span>
+              <span className="text-[13px] text-danger-ink">Nothing published yet</span>
             ) : matches ? (
-              <span className="text-xs text-muted-foreground">Same as above</span>
+              <span className="text-[13px] text-muted-foreground">Same as above</span>
             ) : (
               r.actual.map((a, i) => (
-                <code key={i} className="block break-all font-mono text-xs text-foreground/75">
+                <code key={i} className="block break-all font-mono text-[12.5px] text-foreground/75">
                   {a}
                 </code>
               ))
@@ -252,30 +318,30 @@ function DnsRow({ record: r }: { record: DnsRecord }) {
           </div>
         </div>
         {r.remedy && (
-          <p className="mt-2 rounded-md bg-muted/40 px-2.5 py-1.5 text-xs leading-relaxed text-foreground/85">
+          <p className="rounded-lg bg-warning/10 px-3 py-2 text-[13px] leading-relaxed text-foreground/90">
             <span className="font-medium">What to do: </span>
             {r.remedy}
           </p>
         )}
-      </td>
-      <td className="px-4 py-3.5 max-md:flex max-md:items-center max-md:gap-2 max-md:py-1.5">
+      </div>
+      <div className="hidden md:block">
         <CheckPill status={r.status} />
-        <p className="mt-1.5 text-[11px] text-muted-foreground max-md:mt-0">{r.required ? "Required" : "Optional"}</p>
-      </td>
-    </tr>
+        <p className="mt-1.5 text-xs text-muted-foreground">{r.required ? "Required" : "Optional"}</p>
+      </div>
+    </li>
   );
 }
 
 // ── Settings ─────────────────────────────────────────────────────────────────
 
-function CatchAllCard({ domain, mailboxes, onSaved }: { domain: Domain; mailboxes: Mailbox[]; onSaved: (d: Domain) => void }) {
+function SettingsCard({ domain, mailboxes, onSaved }: { domain: Domain; mailboxes: Mailbox[]; onSaved: (d: Domain) => void }) {
   const [value, setValue] = useState(domain.catchAll ?? "");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"catch" | "enabled" | null>(null);
   useEffect(() => setValue(domain.catchAll ?? ""), [domain.catchAll]);
   const dirty = value !== (domain.catchAll ?? "");
 
   async function save() {
-    setBusy(true);
+    setBusy("catch");
     try {
       const d = await api.updateDomain(domain.id, { catchAll: value || null });
       onSaved(d);
@@ -283,71 +349,62 @@ function CatchAllCard({ domain, mailboxes, onSaved }: { domain: Domain; mailboxe
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
 
-  return (
-    <Card>
-      <SectionLabel>Catch-all</SectionLabel>
-      <p className="-mt-1 text-xs leading-relaxed text-muted-foreground">
-        Mail to an address that doesn't exist at {domain.name} is normally refused. A catch-all delivers it to one mailbox
-        instead — handy, but it also collects spam sent to guessed addresses.
-      </p>
-      <div className="mt-4 flex flex-wrap items-end gap-2">
-        <div className="min-w-56 flex-1 space-y-1.5">
-          <label htmlFor="catch-all" className="block text-xs font-medium text-foreground/80">
-            Deliver unknown addresses to
-          </label>
-          <select id="catch-all" className={selectClass} value={value} onChange={(e) => setValue(e.target.value)}>
-            <option value="">Off — refuse them</option>
-            {mailboxes.map((m) => (
-              <option key={m.id} value={m.address}>
-                {m.address}
-              </option>
-            ))}
-          </select>
-        </div>
-        <Button size="sm" variant="outline" onClick={() => void save()} disabled={!dirty || busy} className="h-9">
-          {busy ? "Saving…" : "Save"}
-        </Button>
-      </div>
-    </Card>
-  );
-}
-
-function StatusCard({ domain, onSaved }: { domain: Domain; onSaved: (d: Domain) => void }) {
-  const [busy, setBusy] = useState(false);
   async function toggle(enabled: boolean) {
-    setBusy(true);
+    setBusy("enabled");
     try {
       onSaved(await api.updateDomain(domain.id, { enabled }));
       toast.success(enabled ? `${domain.name} accepts mail again.` : `${domain.name} now refuses new mail. Existing mail is kept.`);
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   }
+
   return (
-    <Card>
-      <SectionLabel>Receiving</SectionLabel>
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <label htmlFor="domain-enabled" className="text-sm text-foreground/90">
-            Accept mail for {domain.name}
-          </label>
-          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
-            {domain.isPrimary
-              ? "The primary domain names this server, so it's always on."
-              : "Turning this off refuses new mail for the domain. Mailboxes and their mail stay as they are."}
-          </p>
+    <Card padded={false} className="h-full" aria-labelledby="dom-settings">
+      <CardHeader id="dom-settings" title="Settings" icon={Settings2} divider />
+      <div className="divide-y divide-border/70">
+        <div className="px-5 py-4">
+          <SwitchRow
+            id="domain-enabled"
+            title={`Accept mail for ${domain.name}`}
+            description={
+              domain.isPrimary
+                ? "The primary domain names this server, so it's always on."
+                : "Turning this off refuses new mail for the domain. Mailboxes and their mail stay as they are."
+            }
+            checked={domain.enabled}
+            disabled={busy !== null || domain.isPrimary}
+            onCheckedChange={(v) => void toggle(v)}
+            stateText
+          />
         </div>
-        <div className="flex items-center gap-2 pt-0.5">
-          <span className="text-[11px] text-muted-foreground" aria-hidden>
-            {domain.enabled ? "On" : "Off"}
-          </span>
-          <Switch id="domain-enabled" checked={domain.enabled} disabled={busy || domain.isPrimary} onCheckedChange={(v) => void toggle(v)} />
+        <div className="px-5 py-4">
+          <p className="text-sm font-medium text-foreground">Catch-all</p>
+          <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+            Mail to an address that doesn't exist is normally refused. A catch-all delivers it to one mailbox instead — handy, but it also collects spam sent
+            to guessed addresses.
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+            <Field label="Deliver unknown addresses to" htmlFor="catch-all" className="min-w-0 flex-1">
+              <Select id="catch-all" value={value} onChange={(e) => setValue(e.target.value)}>
+                <option value="">Off — refuse them</option>
+                {mailboxes.map((m) => (
+                  <option key={m.id} value={m.address}>
+                    {m.address}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+            <Button size="sm" onClick={() => void save()} disabled={!dirty} loading={busy === "catch"} className="h-9 shrink-0">
+              {busy === "catch" ? "Saving…" : "Save"}
+            </Button>
+          </div>
         </div>
       </div>
     </Card>
@@ -360,19 +417,19 @@ function DangerZone({ domain }: { domain: Domain }) {
   const [open, setOpen] = useState(false);
   if (domain.isPrimary) return null;
   return (
-    <section className="mt-8 rounded-xl border border-border/60 p-5" aria-labelledby="danger-title">
+    <section className="mt-10 rounded-xl border border-destructive/25 bg-destructive/[0.03] p-5" aria-labelledby="danger-title">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 id="danger-title" className="text-sm font-medium text-foreground/90">
+          <h2 id="danger-title" className="text-sm font-semibold text-foreground">
             Delete {domain.name}
           </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
             {domain.mailboxCount > 0
               ? `Only possible once its ${domain.mailboxCount} mailbox${domain.mailboxCount === 1 ? " is" : "es are"} deleted — mail is never removed silently.`
               : "Removes the domain, its aliases and its DKIM keys from this server."}
           </p>
         </div>
-        <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
+        <Button variant="outline" size="sm" onClick={() => setOpen(true)} className="text-danger-ink hover:text-danger-ink">
           <Trash2 className="h-3.5 w-3.5" />
           Delete domain
         </Button>
@@ -393,7 +450,7 @@ function DangerZone({ domain }: { domain: Domain }) {
         }}
       >
         {domain.mailboxCount > 0 && (
-          <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed">
+          <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-[13px] leading-relaxed">
             <StatusBadge tone="warn" className="mb-1.5">
               Has dependents
             </StatusBadge>

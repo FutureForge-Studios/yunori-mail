@@ -1,13 +1,13 @@
 import { useEffect, useId, useState, type FormEvent } from "react";
-import { BellRing, CheckCircle2, RefreshCw, Send } from "lucide-react";
+import { Activity, BellRing, CheckCircle2, Eye, History as HistoryIcon, Mail, RefreshCw, Send, Webhook } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Switch } from "@/design/vendor/ui/switch";
-import { Card, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Card, CardBody, CardHeader, SectionHeader } from "@/ui/card";
+import { Skeleton } from "@/ui/feedback";
+import { CheckboxRow, Input, RadioCard, Switch } from "@/ui/form";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { AlertDelivery, AlertEventKind, AlertHistoryEntry, AlertsResponse, UpdateAlertSettingsRequest, WebhookKind } from "@/api/types";
-import { DataTable, FieldError, LoadError, Page, RadioRow, usePageTitle, type Column } from "@/components/kit";
+import { DataTable, FieldError, LoadError, Page, usePageTitle, type Column } from "@/components/kit";
 import { StatusBadge, type Tone } from "@/components/status";
 import { fmtDateTime, timeAgo } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -113,18 +113,22 @@ export default function AlertsPage() {
       {error && !data ? (
         <LoadError error={error} onRetry={() => void reload()} what="Alerts" />
       ) : !data ? (
-        <div className="grid gap-4 lg:grid-cols-3" aria-busy="true">
-          <Skeleton className="h-40 lg:col-span-2" />
-          <Skeleton className="h-40" />
-          <Skeleton className="h-72 lg:col-span-2" />
+        <div className="grid gap-4 xl:grid-cols-12" aria-busy="true">
+          <Skeleton className="h-48 rounded-xl xl:col-span-8" />
+          <Skeleton className="h-48 rounded-xl xl:col-span-4" />
+          <Skeleton className="h-72 rounded-xl xl:col-span-12" />
         </div>
       ) : (
         <>
-          <div className="grid gap-4 lg:grid-cols-3">
-            <Card className="lg:col-span-2">
-              <div className="flex items-baseline justify-between gap-3">
-                <SectionLabel>Happening now</SectionLabel>
-                <span className="text-[11px] text-muted-foreground">
+          <div className="grid gap-4 xl:grid-cols-12">
+            <Card padded={false} className="xl:col-span-8 xl:self-start" aria-labelledby="al-now">
+              <CardHeader
+                id="al-now"
+                title="Happening now"
+                icon={Activity}
+                divider
+                actions={
+                <span className="text-xs text-muted-foreground">
                   {data.evaluatedAt ? (
                     <time dateTime={data.evaluatedAt} title={fmtDateTime(data.evaluatedAt)}>
                       Checked {timeAgo(data.evaluatedAt)}
@@ -133,37 +137,45 @@ export default function AlertsPage() {
                     "Not checked yet"
                   )}
                 </span>
-              </div>
+                }
+              />
+              <CardBody className="pb-2">
               {data.active.length > 0 ? (
                 <AlertList alerts={data.active} />
               ) : (
-                <div className="flex items-start gap-3 py-3">
-                  <CheckCircle2 aria-hidden strokeWidth={1.75} className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
-                  <p className="text-sm text-foreground/85">
+                <div className="flex items-start gap-3 py-5">
+                  <span aria-hidden className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-success/10">
+                    <CheckCircle2 strokeWidth={2} className="h-[18px] w-[18px] text-success-ink" />
+                  </span>
+                  <p className="text-sm font-medium text-foreground">
                     Nothing needs your attention.
-                    <span className="mt-0.5 block text-xs text-muted-foreground">
+                    <span className="mt-0.5 block text-[13px] font-normal text-muted-foreground">
                       {data.evaluatedAt ? "Every check passed on the last run." : "The first check runs a few minutes after the server starts."}
                     </span>
                   </p>
                 </div>
               )}
+              </CardBody>
             </Card>
-            <Card>
-              <SectionLabel>What Yunori watches</SectionLabel>
-              <dl className="space-y-2">
+            <Card padded={false} className="xl:col-span-4" aria-labelledby="al-watch">
+              <CardHeader id="al-watch" title="What Yunori watches" icon={Eye} description="Checked every 10 minutes." divider />
+              <CardBody className="pt-1">
+              <dl className="divide-y divide-border/60">
                 {WATCHED.map(([k, v]) => (
-                  <div key={k}>
-                    <dt className="text-xs font-medium text-foreground/85">{k}</dt>
-                    <dd className="text-[11px] leading-relaxed text-muted-foreground">{v}</dd>
+                  <div key={k} className="py-2.5">
+                    <dt className="text-[13px] font-medium text-foreground">{k}</dt>
+                    <dd className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{v}</dd>
                   </div>
                 ))}
               </dl>
+              </CardBody>
             </Card>
           </div>
 
+          <SectionHeader className="mt-10" title="Where alerts go" description="Use both: email for the record, a push for when mail itself is the problem." />
           <Channels data={data} onSaved={setData} />
 
-          <h2 className="mb-3 mt-8 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">History</h2>
+          <SectionHeader className="mt-10" title="History" description="Every alert Yunori sent, and every test." />
           <History rows={data.history} />
         </>
       )}
@@ -229,26 +241,22 @@ function Channels({ data, onSaved }: { data: AlertsResponse; onSaved: (d: Alerts
       : "Yunori POSTs JSON with the alert's id, severity, summary and remedy (and a Slack-style text field).";
 
   return (
-    <form onSubmit={(e) => void save(e)} className="mt-4 grid gap-4 lg:grid-cols-2" noValidate>
-      <Card>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <SectionLabel>Email</SectionLabel>
-            <p className="-mt-1 text-xs leading-relaxed text-muted-foreground">
-              Sent from <span className="font-mono text-foreground/85">{s.sender ?? "a mailbox Yunori manages"}</span>, a mailbox Yunori creates
-              and manages on this server. If the mail engine itself is down, email cannot go out, so add a webhook too.
-            </p>
-          </div>
-          <Switch
-            id={`${id}-email`}
-            checked={form.emailEnabled}
-            onCheckedChange={(v) => set("emailEnabled", v)}
-            aria-label="Email alerts"
-            className="mt-0.5"
-          />
-        </div>
-        <div className="mt-4 space-y-1.5">
-          <label htmlFor={`${id}-recipient`} className="block text-xs font-medium text-foreground/80">
+    <form onSubmit={(e) => void save(e)} className="grid gap-4 lg:grid-cols-2" noValidate>
+      <Card padded={false}>
+        <CardHeader
+          title="Email"
+          icon={Mail}
+          description={
+            <>
+              Sent from <span className="font-mono text-foreground/85">{s.sender ?? "a mailbox Yunori manages"}</span>, a mailbox Yunori creates and manages on this
+              server. If the mail engine itself is down, email cannot go out, so add a webhook too.
+            </>
+          }
+          actions={<Switch id={`${id}-email`} checked={form.emailEnabled} onCheckedChange={(v) => set("emailEnabled", v)} aria-label="Email alerts" />}
+        />
+        <CardBody>
+        <div className="space-y-1.5">
+          <label htmlFor={`${id}-recipient`} className="block text-[13px] font-medium text-foreground/90">
             Send to
           </label>
           <Input
@@ -261,36 +269,29 @@ function Channels({ data, onSaved }: { data: AlertsResponse; onSaved: (d: Alerts
             aria-invalid={!!errors.recipient}
             aria-describedby={`${id}-recipient-hint ${id}-recipient-err`}
           />
-          <p id={`${id}-recipient-hint`} className="text-[11px] leading-relaxed text-muted-foreground">
+          <p id={`${id}-recipient-hint`} className="text-xs leading-relaxed text-muted-foreground">
             Leave empty for the admin address from setup{s.defaultRecipient ? ` (${s.defaultRecipient})` : ""}. Use an address outside this server.
           </p>
           <FieldError id={`${id}-recipient-err`}>{errors.recipient}</FieldError>
         </div>
+        </CardBody>
       </Card>
 
-      <Card>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <SectionLabel>Webhook or ntfy</SectionLabel>
-            <p className="-mt-1 text-xs leading-relaxed text-muted-foreground">
-              A push to your phone (ntfy) or a message in your chat or incident tool. It works even when mail does not.
-            </p>
-          </div>
-          <Switch
-            id={`${id}-webhook`}
-            checked={form.webhookEnabled}
-            onCheckedChange={(v) => set("webhookEnabled", v)}
-            aria-label="Webhook alerts"
-            className="mt-0.5"
-          />
-        </div>
-        <fieldset className="mt-4 space-y-2" disabled={!form.webhookEnabled}>
-          <legend className="mb-1 text-xs font-medium text-foreground/80">Kind</legend>
-          <RadioRow name={`${id}-kind`} checked={form.kind === "ntfy"} onChange={() => set("kind", "ntfy")} label="ntfy topic" hint="Title, priority and text, as ntfy shows them." />
-          <RadioRow name={`${id}-kind`} checked={form.kind === "json"} onChange={() => set("kind", "json")} label="JSON webhook" hint="A POST with the alert as JSON." />
+      <Card padded={false}>
+        <CardHeader
+          title="Webhook or ntfy"
+          icon={Webhook}
+          description="A push to your phone (ntfy) or a message in your chat or incident tool. It works even when mail does not."
+          actions={<Switch id={`${id}-webhook`} checked={form.webhookEnabled} onCheckedChange={(v) => set("webhookEnabled", v)} aria-label="Webhook alerts" />}
+        />
+        <CardBody>
+        <fieldset className={cn("grid gap-2 sm:grid-cols-2", !form.webhookEnabled && "opacity-60")} disabled={!form.webhookEnabled}>
+          <legend className="mb-2 text-[13px] font-medium text-foreground/90">Kind</legend>
+          <RadioCard compact name={`${id}-kind`} value="ntfy" checked={form.kind === "ntfy"} onChange={() => set("kind", "ntfy")} title="ntfy topic" description="Title, priority and text, as ntfy shows them." />
+          <RadioCard compact name={`${id}-kind`} value="json" checked={form.kind === "json"} onChange={() => set("kind", "json")} title="JSON webhook" description="A POST with the alert as JSON." />
         </fieldset>
         <div className="mt-4 space-y-1.5">
-          <label htmlFor={`${id}-url`} className="block text-xs font-medium text-foreground/80">
+          <label htmlFor={`${id}-url`} className="block text-[13px] font-medium text-foreground/90">
             URL
           </label>
           <Input
@@ -306,13 +307,13 @@ function Channels({ data, onSaved }: { data: AlertsResponse; onSaved: (d: Alerts
             aria-invalid={!!errors.webhookUrl}
             aria-describedby={`${id}-url-hint ${id}-url-err`}
           />
-          <p id={`${id}-url-hint`} className="text-[11px] leading-relaxed text-muted-foreground">
+          <p id={`${id}-url-hint`} className="text-xs leading-relaxed text-muted-foreground">
             {urlHint}
           </p>
           <FieldError id={`${id}-url-err`}>{errors.webhookUrl}</FieldError>
         </div>
         <div className="mt-4 space-y-1.5">
-          <label htmlFor={`${id}-token`} className="block text-xs font-medium text-foreground/80">
+          <label htmlFor={`${id}-token`} className="block text-[13px] font-medium text-foreground/90">
             Access token <span className="font-normal text-muted-foreground">(optional)</span>
           </label>
           <Input
@@ -331,16 +332,13 @@ function Channels({ data, onSaved }: { data: AlertsResponse; onSaved: (d: Alerts
           />
           <FieldError id={`${id}-token-err`}>{errors.webhookToken}</FieldError>
           {s.webhook.hasToken && (
-            <label className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              <input
-                type="checkbox"
-                checked={form.removeToken}
-                onChange={(e) => set("removeToken", e.target.checked)}
-                disabled={!form.webhookEnabled || !!form.token}
-                className="h-3.5 w-3.5 accent-foreground"
-              />
-              Remove the saved token
-            </label>
+            <CheckboxRow
+              className="pt-1 text-[13px]"
+              checked={form.removeToken}
+              onChange={(v) => set("removeToken", v)}
+              disabled={!form.webhookEnabled || !!form.token}
+              label="Remove the saved token"
+            />
           )}
         </div>
         {s.webhook.hasUrl && (
@@ -348,23 +346,24 @@ function Channels({ data, onSaved }: { data: AlertsResponse; onSaved: (d: Alerts
             type="button"
             onClick={(e) => void save(e, true)}
             disabled={busy}
-            className="mt-3 rounded-sm text-[11px] text-muted-foreground underline underline-offset-2 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="mt-4 rounded-sm text-xs text-muted-foreground underline underline-offset-2 transition-colors hover:text-danger-ink focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
           >
             Remove the saved webhook
           </button>
         )}
+        </CardBody>
       </Card>
 
       <div className="flex flex-wrap items-center gap-3 lg:col-span-2">
-        <Button type="submit" size="sm" disabled={busy || !dirty}>
-          <BellRing aria-hidden className="h-4 w-4" />
+        <Button type="submit" size="sm" disabled={!dirty} loading={busy}>
+          {!busy && <BellRing aria-hidden className="h-4 w-4" />}
           {busy ? "Saving…" : "Save alert settings"}
         </Button>
         {!form.emailEnabled && !form.webhookEnabled && (
-          <span className="text-xs text-muted-foreground">With both off, alerts still appear here and on the Overview.</span>
+          <span className="text-[13px] text-muted-foreground">With both off, alerts still appear here and on the Overview.</span>
         )}
         {formError && (
-          <p role="alert" className="text-xs text-torii dark:text-[hsl(4_80%_70%)]">
+          <p role="alert" className="text-[13px] text-danger-ink">
             {formError}
           </p>
         )}
@@ -379,7 +378,7 @@ function History({ rows }: { rows: AlertHistoryEntry[] }) {
       key: "at",
       header: "When",
       cell: (e) => (
-        <time dateTime={e.at} title={fmtDateTime(e.at)} className="whitespace-nowrap text-xs text-muted-foreground">
+        <time dateTime={e.at} title={fmtDateTime(e.at)} className="whitespace-nowrap text-[13px] text-muted-foreground">
           {timeAgo(e.at)}
         </time>
       ),
@@ -387,15 +386,17 @@ function History({ rows }: { rows: AlertHistoryEntry[] }) {
     {
       key: "kind",
       header: "Event",
+      mobile: "aside",
       cell: (e) => <StatusBadge tone={EVENT_META[e.kind].tone}>{EVENT_META[e.kind].label}</StatusBadge>,
     },
     {
       key: "title",
       header: "Alert",
+      mobile: "title",
       cell: (e) => (
         <div className="min-w-0">
-          <p className="text-xs text-foreground/90">{e.title}</p>
-          <p className="text-[11px] leading-relaxed text-muted-foreground">{e.summary}</p>
+          <p className="text-[13px] font-medium text-foreground">{e.title}</p>
+          <p className="text-xs leading-relaxed text-muted-foreground">{e.summary}</p>
         </div>
       ),
     },
@@ -405,11 +406,11 @@ function History({ rows }: { rows: AlertHistoryEntry[] }) {
       hideBelowMd: true,
       cell: (e) =>
         e.deliveries.length === 0 ? (
-          <span className="text-[11px] text-muted-foreground">Shown here only</span>
+          <span className="text-xs text-muted-foreground">Shown here only</span>
         ) : (
           <ul className="space-y-0.5">
             {e.deliveries.map((d, i) => (
-              <li key={i} className={cn("text-[11px]", d.ok ? "text-muted-foreground" : "text-torii dark:text-[hsl(4_80%_70%)]")}>
+              <li key={i} className={cn("text-xs", d.ok ? "text-muted-foreground" : "text-danger-ink")}>
                 {d.ok ? "" : "Failed: "}
                 {describe(d)}
               </li>
@@ -423,6 +424,8 @@ function History({ rows }: { rows: AlertHistoryEntry[] }) {
       columns={columns}
       rows={rows}
       rowKey={(e) => String(e.id)}
+      caption="Alert history"
+      emptyIcon={HistoryIcon}
       emptyTitle="No alerts yet"
       emptyHint="Every alert Yunori sends, and every test, is listed here."
     />

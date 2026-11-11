@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Command } from "cmdk";
 import { Globe, Inbox, LogOut, Moon, Plus, Search, Stethoscope } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/design/vendor/ui/dialog";
+import { Kbd } from "@/ui/badge";
 import { api } from "@/api/client";
 import type { Domain, Mailbox } from "@/api/types";
 import { useTheme } from "@/lib/theme";
@@ -44,21 +45,22 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-xl gap-0 overflow-hidden p-0">
+      <DialogContent className="top-[12vh] w-[calc(100%-1.5rem)] max-w-xl translate-y-0 gap-0 overflow-hidden rounded-2xl bg-popover p-0 shadow-pop [&>button:last-child]:hidden">
         <DialogTitle className="sr-only">Search the console</DialogTitle>
-        <Command label="Search the console" className="bg-card">
-          <div className="flex items-center gap-2 border-b border-border px-3">
-            <Search className="h-4 w-4 text-muted-foreground" aria-hidden />
+        <Command label="Search the console" className="bg-popover">
+          <div className="flex items-center gap-2.5 border-b border-border px-4">
+            <Search className="h-[18px] w-[18px] text-muted-foreground" aria-hidden />
             <Command.Input
               placeholder="Jump to a section, domain or mailbox…"
-              className="flex h-11 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="flex h-14 w-full bg-transparent text-[15px] outline-none placeholder:text-muted-foreground"
             />
+            <Kbd>Esc</Kbd>
           </div>
-          <Command.List className="max-h-80 overflow-y-auto p-2">
-            <Command.Empty className="p-4 text-center text-sm text-muted-foreground">Nothing found.</Command.Empty>
+          <Command.List className="max-h-[min(24rem,60vh)] overflow-y-auto p-2 [&_[cmdk-group-heading]]:px-2.5 [&_[cmdk-group-heading]]:pb-1.5 [&_[cmdk-group-heading]]:pt-3 [&_[cmdk-group-heading]]:text-2xs [&_[cmdk-group-heading]]:font-semibold [&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-[0.08em]">
+            <Command.Empty className="p-6 text-center text-sm text-muted-foreground">Nothing found.</Command.Empty>
 
             {NAV.map((g) => (
-              <Command.Group key={g.label} heading={g.label} className="px-1 text-xs text-muted-foreground">
+              <Command.Group key={g.label} heading={g.label} className="text-muted-foreground">
                 {g.items.map((i) => (
                   <Item key={i.to} value={`${g.label} ${i.label} ${(i.keywords ?? []).join(" ")}`} onSelect={() => go(i.to)} icon={<i.icon className="h-4 w-4" />}>
                     {i.label}
@@ -67,7 +69,7 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
               </Command.Group>
             ))}
 
-            <Command.Group heading="Actions" className="px-1 text-xs text-muted-foreground">
+            <Command.Group heading="Actions" className="text-muted-foreground">
               <Item value="new mailbox create user" onSelect={() => go("/console/mailboxes?new=1")} icon={<Plus className="h-4 w-4" />}>
                 New mailbox
               </Item>
@@ -106,7 +108,7 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
             </Command.Group>
 
             {domains.length > 0 && (
-              <Command.Group heading="Domains" className="px-1 text-xs text-muted-foreground">
+              <Command.Group heading="Domains" className="text-muted-foreground">
                 {domains.map((d) => (
                   <Item key={d.id} value={`domain ${d.name}`} onSelect={() => go(`/console/domains/${d.id}`)} icon={<Globe className="h-4 w-4" />}>
                     {d.name}
@@ -116,7 +118,7 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
               </Command.Group>
             )}
             {mailboxes.length > 0 && (
-              <Command.Group heading="Mailboxes" className="px-1 text-xs text-muted-foreground">
+              <Command.Group heading="Mailboxes" className="text-muted-foreground">
                 {mailboxes.map((m) => (
                   <Item
                     key={m.id}
@@ -131,6 +133,18 @@ export function Palette({ open, onOpenChange }: { open: boolean; onOpenChange: (
               </Command.Group>
             )}
           </Command.List>
+          <div className="flex items-center gap-4 border-t border-border bg-muted/30 px-4 py-2 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5">
+              <Kbd>↑</Kbd>
+              <Kbd>↓</Kbd> to move
+            </span>
+            <span className="flex items-center gap-1.5">
+              <Kbd>↵</Kbd> to open
+            </span>
+            <span className="ml-auto hidden items-center gap-1.5 sm:flex">
+              <Kbd>⌘K</Kbd> anywhere
+            </span>
+          </div>
         </Command>
       </DialogContent>
     </Dialog>
@@ -142,9 +156,9 @@ function Item({ children, icon, onSelect, value }: { children: ReactNode; icon: 
     <Command.Item
       value={value}
       onSelect={onSelect}
-      className="flex cursor-pointer items-center gap-2.5 rounded-md px-2.5 py-2 text-sm text-foreground/90 aria-selected:bg-accent aria-selected:text-foreground"
+      className="flex cursor-pointer items-center gap-3 rounded-lg px-2.5 py-2 text-sm text-foreground/90 aria-selected:bg-accent aria-selected:text-foreground"
     >
-      <span className="text-muted-foreground" aria-hidden>
+      <span className="grid h-7 w-7 shrink-0 place-items-center rounded-md border border-border bg-card text-icon" aria-hidden>
         {icon}
       </span>
       <span className="flex min-w-0 flex-1 items-center gap-2">{children}</span>
@@ -153,5 +167,5 @@ function Item({ children, icon, onSelect, value }: { children: ReactNode; icon: 
 }
 
 function Hint({ children }: { children: ReactNode }) {
-  return <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">{children}</span>;
+  return <span className="ml-auto shrink-0 text-xs text-muted-foreground">{children}</span>;
 }

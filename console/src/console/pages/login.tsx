@@ -1,8 +1,7 @@
 import { useState } from "react";
 import { Navigate, useNavigate, useSearchParams } from "react-router-dom";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Label } from "@/design/vendor/ui/label";
+import { Button } from "@/ui/button";
+import { Input, Label } from "@/ui/form";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import { AuthFrame, FormError } from "@/components/auth-frame";
 import { PasswordInput } from "@/components/password-input";
@@ -104,15 +103,15 @@ export function LoginPage() {
             placeholder="123 456"
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
-            className="font-mono tracking-[0.3em]"
+            className="h-11 text-center font-mono text-lg tracking-[0.4em]"
             aria-describedby="code-hint"
           />
-          <p id="code-hint" className="text-[11px] text-muted-foreground">
+          <p id="code-hint" className="text-xs text-muted-foreground">
             The 6-digit code from the app you paired during setup.
           </p>
         </div>
         <FormError>{error}</FormError>
-        <Button type="submit" variant="torii" className="w-full" disabled={busy}>
+        <Button type="submit" variant="torii" size="lg" className="w-full" loading={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </Button>
       </form>

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { Button } from "@/design/vendor/ui/button";
-import { Label } from "@/design/vendor/ui/label";
+import { Button } from "@/ui/button";
+import { Label } from "@/ui/form";
 import { ApiRequestError, errorMessage, portalApi } from "@/api/client";
 import type { InviteInfo } from "@/api/types";
 import { AuthFrame, FormError } from "@/components/auth-frame";
@@ -14,10 +14,15 @@ import { MIN_PASSWORD } from "@/lib/password";
  * Reads `#invite=…` once and takes it out of the address bar, so the link is
  * not left in history or on screen (same as the console's setup link).
  */
+let lastToken = "";
 function tokenFromLink(): string {
   const m = /(?:^#|&)invite=([^&]+)/.exec(window.location.hash);
-  if (m) window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
-  return m ? decodeURIComponent(m[1]) : "";
+  if (m) {
+    window.history.replaceState(window.history.state, "", window.location.pathname + window.location.search);
+    lastToken = decodeURIComponent(m[1]);
+  }
+  // Remembered so a second call (React StrictMode runs initialisers twice) still sees it.
+  return lastToken;
 }
 
 /** /account/welcome#invite=… — an invited person chooses their own password, then sets up their devices. */
@@ -120,7 +125,7 @@ export function PortalWelcome() {
           <FieldError id="w-confirm-err">{errors.confirm}</FieldError>
         </div>
         <FormError>{errors.form}</FormError>
-        <Button type="submit" variant="torii" className="w-full" disabled={busy}>
+        <Button type="submit" variant="torii" size="lg" className="w-full" loading={busy}>
           {busy ? "Setting it up…" : "Set password and continue"}
         </Button>
       </form>

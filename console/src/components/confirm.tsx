@@ -1,16 +1,8 @@
 import { useState, type ReactNode } from "react";
 import { AlertTriangle } from "lucide-react";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/design/vendor/ui/dialog";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Label } from "@/design/vendor/ui/label";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/ui/overlay";
+import { Button } from "@/ui/button";
+import { Input, Label } from "@/ui/form";
 import { errorMessage } from "@/api/client";
 
 /**
@@ -89,7 +81,7 @@ export function ConfirmAction({
               if (!blocked) void confirm();
             }}
           >
-            <Label htmlFor="confirm-type" className="normal-case tracking-normal">
+            <Label htmlFor="confirm-type">
               Type <span className="font-medium text-foreground">{typeToConfirm}</span> to confirm
             </Label>
             <Input
@@ -104,8 +96,8 @@ export function ConfirmAction({
         )}
 
         {error && (
-          <p role="alert" className="flex items-start gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed">
-            <AlertTriangle aria-hidden className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-700 dark:text-amber-400" />
+          <p role="alert" className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2.5 text-[13px] leading-relaxed">
+            <AlertTriangle aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-warning-ink" />
             {error}
           </p>
         )}
@@ -114,7 +106,7 @@ export function ConfirmAction({
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
             Cancel
           </Button>
-          <Button variant={destructive ? "destructive" : "default"} onClick={() => void confirm()} disabled={blocked}>
+          <Button variant={destructive ? "destructive" : "default"} onClick={() => void confirm()} disabled={blocked} loading={busy}>
             {busy ? "Working…" : confirmLabel}
           </Button>
         </DialogFooter>

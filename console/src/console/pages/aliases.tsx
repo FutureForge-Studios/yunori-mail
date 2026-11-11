@@ -1,14 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowRight, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowRight, AtSign, Plus, Trash2 } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/design/vendor/ui/dialog";
-import { Input } from "@/design/vendor/ui/input";
+import { Button, IconButton } from "@/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/ui/overlay";
+import { AddressInput, Field, Select } from "@/ui/form";
+import { FormError } from "@/ui/feedback";
+import { SearchInput } from "@/ui/segmented";
+import { TableToolbar } from "@/ui/data-table";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { Alias, Domain, Mailbox } from "@/api/types";
 import { ConfirmAction } from "@/components/confirm";
-import { DataTable, FieldError, LoadError, Page, selectClass, usePageTitle, type Column } from "@/components/kit";
+import { DataTable, FieldError, LoadError, Page, usePageTitle, type Column } from "@/components/kit";
 import { StatusBadge } from "@/components/status";
 import { fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -51,14 +54,21 @@ export default function AliasesPage() {
     {
       key: "address",
       header: "Alias",
-      cell: (a) => <span className={cn("text-sm font-medium", a.enabled ? "text-foreground/90" : "text-muted-foreground")}>{a.address}</span>,
+      cell: (a) => (
+        <div className="flex min-w-0 items-center gap-3">
+          <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border bg-muted/50 text-icon">
+            <AtSign className="h-4 w-4" strokeWidth={1.75} />
+          </span>
+          <span className={cn("break-all text-sm font-medium", a.enabled ? "text-foreground" : "text-muted-foreground")}>{a.address}</span>
+        </div>
+      ),
     },
     {
       key: "target",
       header: "Delivers to",
       cell: (a) => (
-        <span className="inline-flex items-center gap-1.5 text-xs text-foreground/80">
-          <ArrowRight aria-hidden className="h-3 w-3 text-muted-foreground" />
+        <span className="inline-flex min-w-0 items-center gap-1.5 break-all text-[13px] text-foreground/85">
+          <ArrowRight aria-hidden className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
           {a.mailboxAddress}
         </span>
       ),
@@ -74,15 +84,9 @@ export default function AliasesPage() {
       header: <span className="sr-only">Actions</span>,
       className: "w-12 text-right",
       cell: (a) => (
-        <button
-          type="button"
-          onClick={() => setDeleting(a)}
-          aria-label={`Delete alias ${a.address}`}
-          title="Delete alias"
-          className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+        <IconButton label={`Delete alias ${a.address}`} onClick={() => setDeleting(a)} className="hover:text-danger-ink">
+          <Trash2 className="h-4 w-4" />
+        </IconButton>
       ),
     },
   ];
@@ -102,12 +106,9 @@ export default function AliasesPage() {
         </Button>
       }
     >
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-52 flex-1 sm:max-w-xs">
-          <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search aliases…" aria-label="Search aliases" className="h-9 pl-8" />
-        </div>
-      </div>
+      <TableToolbar end={data && <span className="text-[13px] tabular-nums text-muted-foreground">{fmtNumber(rows.length)} shown</span>}>
+        <SearchInput value={q} onValueChange={setQ} placeholder="Search aliases or mailboxes…" aria-label="Search aliases" />
+      </TableToolbar>
 
       {error && !data ? (
         <LoadError error={error} onRetry={() => void reload()} what="Aliases" />
@@ -117,6 +118,8 @@ export default function AliasesPage() {
           rows={rows}
           rowKey={(a) => a.address}
           loading={loading && !data}
+          caption="Aliases"
+          emptyIcon={AtSign}
           emptyTitle={q ? "No aliases match" : "No aliases yet"}
           emptyHint={q ? "Try another search." : "Use one for info@, billing@ or a role address that several people read through one mailbox."}
         />
@@ -218,58 +221,36 @@ function CreateAliasDialog({
             <DialogDescription>Mail to the alias lands in the mailbox you pick. An alias can't reuse a mailbox's address.</DialogDescription>
           </DialogHeader>
           <fieldset className="space-y-1.5">
-            <legend className="mb-1.5 text-xs font-medium text-foreground/80">Alias address</legend>
-            <div className="flex items-stretch">
-              <Input
-                aria-label="Name before the @"
-                value={local}
-                onChange={(e) => setLocal(e.target.value)}
-                placeholder="info"
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                autoFocus
-                className="rounded-r-none"
-                aria-invalid={!!errors.local}
-                aria-describedby={errors.local ? "al-local-err" : undefined}
-              />
-              <span aria-hidden className="grid place-items-center border-y border-input bg-muted/40 px-2 text-sm text-muted-foreground">
-                @
-              </span>
-              <select aria-label="Domain" className={cn(selectClass, "w-auto max-w-[55%] rounded-l-none")} value={domainId} onChange={(e) => setDomainId(e.target.value)}>
-                {domains.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <legend className="mb-1.5 text-[13px] font-medium text-foreground/90">Alias address</legend>
+            <AddressInput
+              local={local}
+              onLocal={setLocal}
+              domainId={domainId}
+              onDomain={setDomainId}
+              domains={domains}
+              placeholder="info"
+              autoFocus
+              invalid={!!errors.local}
+              describedBy={errors.local ? "al-local-err" : undefined}
+            />
             <FieldError id="al-local-err">{errors.local ?? errors.domainId}</FieldError>
           </fieldset>
-          <div className="space-y-1.5">
-            <label htmlFor="al-target" className="block text-xs font-medium text-foreground/80">
-              Deliver to
-            </label>
-            <select id="al-target" className={selectClass} value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
+          <Field label="Deliver to" htmlFor="al-target" error={errors.mailboxId} errorId="al-target-err">
+            <Select id="al-target" value={mailboxId} onChange={(e) => setMailboxId(e.target.value)}>
               {mailboxes.map((m) => (
                 <option key={m.id} value={m.id}>
                   {m.address}
                   {m.displayName ? ` — ${m.displayName}` : ""}
                 </option>
               ))}
-            </select>
-            <FieldError id="al-target-err">{errors.mailboxId}</FieldError>
-          </div>
-          {errors.form && (
-            <p role="alert" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
-              {errors.form}
-            </p>
-          )}
+            </Select>
+          </Field>
+          <FormError>{errors.form}</FormError>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || !local.trim()}>
+            <Button type="submit" disabled={!local.trim()} loading={busy}>
               {busy ? "Creating…" : "Create alias"}
             </Button>
           </DialogFooter>

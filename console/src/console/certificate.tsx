@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, RefreshCw, ShieldCheck } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Chip, KV, SectionLabel } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Chip } from "@/ui/badge";
+import { KV, KVList, SectionLabel } from "@/ui/card";
+import { InlineLoading } from "@/ui/feedback";
 import { api, errorMessage } from "@/api/client";
 import type { CertificateInfo, CertState } from "@/api/types";
 import { StatusBadge, type Tone } from "@/components/status";
@@ -123,11 +125,11 @@ export function CertificateProblem({
       )}
       {p?.detail && (
         <details className="group">
-          <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm text-[11px] text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <summary className="flex cursor-pointer list-none items-center gap-1 rounded-sm text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 [&::-webkit-details-marker]:hidden">
             <ChevronRight aria-hidden className="h-3 w-3 transition-transform group-open:rotate-90 motion-reduce:transition-none" />
             What {cert?.authority ?? "the certificate authority"} said
           </summary>
-          <p className="mt-1.5 break-words rounded-md border border-border/60 bg-card px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground/80">{p.detail}</p>
+          <p className="mt-1.5 break-words rounded-lg border border-border bg-card px-3 py-2 font-mono text-xs leading-relaxed text-foreground/85">{p.detail}</p>
         </details>
       )}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 pt-0.5">
@@ -135,7 +137,7 @@ export function CertificateProblem({
           <RefreshCw aria-hidden className={cn("h-3.5 w-3.5", busy && "animate-spin motion-reduce:animate-none")} />
           {busy ? "Requesting…" : "Try now"}
         </Button>
-        <span className="text-[11px] text-muted-foreground" aria-live="polite">
+        <span className="text-xs text-muted-foreground" aria-live="polite">
           {busy
             ? `Asking ${cert?.authority ?? "the certificate authority"} — this takes up to a minute.`
             : cert?.nextAttempt
@@ -150,15 +152,15 @@ export function CertificateProblem({
 /** The System page's certificate card: the facts on the left, what is being done about it on the right. */
 export function CertificatePanel() {
   const { cert, busy, tryNow } = useCertificate({ live: true });
-  if (!cert) return <p className="text-xs text-muted-foreground">Loading…</p>;
+  if (!cert) return <InlineLoading />;
   const meta = CERT_STATE[cert.state];
   const healthy = cert.state === "valid";
   return (
-    <div className="grid gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+    <div className="grid items-start gap-6 md:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
       <div>
-        <div className="mb-2 flex flex-wrap items-center gap-2">
+        <div className="mb-3 flex flex-wrap items-center gap-2">
           <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
-          <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5 text-[13px] text-muted-foreground">
             <ShieldCheck aria-hidden className="h-3.5 w-3.5" />
             {cert.authority} · renews automatically
           </span>
@@ -166,15 +168,16 @@ export function CertificatePanel() {
         {cert.state === "missing" ? (
           <p className="text-sm text-muted-foreground">Not issued yet.</p>
         ) : (
-          <>
+          <KVList>
             {cert.state === "self_signed" ? (
               <KV label="Expires">When the real one arrives</KV>
             ) : (
               <KV label="Expires">{cert.notAfter ? `${fmtDate(cert.notAfter)} (${relativeDays(cert.notAfter)})` : "—"}</KV>
             )}
             {healthy && cert.renewsAt && <KV label="Renews">{new Date(cert.renewsAt).getTime() > Date.now() ? `from ${fmtDate(cert.renewsAt)}` : "now"}</KV>}
-            <div className="flex items-center justify-between gap-4 py-1.5">
-              <span className="text-xs text-muted-foreground">Mail ports (465/587/993)</span>
+            <div className="flex items-center justify-between gap-4 py-2">
+              <dt className="text-[13px] text-muted-foreground">Mail ports (465/587/993)</dt>
+              <dd>
               {cert.servedMatches === null ? (
                 <StatusBadge tone="muted">Not checked</StatusBadge>
               ) : cert.servedMatches ? (
@@ -182,23 +185,24 @@ export function CertificatePanel() {
               ) : (
                 <StatusBadge tone="warn">Different certificate</StatusBadge>
               )}
+              </dd>
             </div>
-            <div className="mt-2 flex flex-wrap gap-1">
+            <div className="flex flex-wrap gap-1.5 pt-3">
               {cert.hostnames.map((h) => (
                 <Chip key={h}>{h}</Chip>
               ))}
             </div>
-          </>
+          </KVList>
         )}
       </div>
       {healthy ? (
-        <div className="rounded-lg border border-border/60 bg-muted/20 p-4 text-sm leading-relaxed text-foreground/85">
+        <div className="rounded-xl border border-success/25 bg-success/[0.06] p-4 text-sm leading-relaxed text-foreground/85">
           Nothing to do. Yunori renews this certificate 30 days before it expires, adds the autoconfig and MTA-STS names of
           your domains once they point here, and hands the same certificate to the mail engine.
           {cert.lastSuccess && <span className="mt-2 block text-xs text-muted-foreground">Last issued {timeAgo(cert.lastSuccess)}.</span>}
         </div>
       ) : (
-        <div className="rounded-lg border border-border bg-muted/30 p-4">
+        <div className="rounded-xl border border-warning/30 bg-warning/[0.07] p-4">
           <SectionLabel>{cert.problem ? "Last attempt" : "Next step"}</SectionLabel>
           <CertificateProblem
             cert={cert}

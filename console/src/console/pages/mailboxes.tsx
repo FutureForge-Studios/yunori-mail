@@ -1,9 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Download, ExternalLink, KeyRound, Link2, MoreHorizontal, Pencil, Plus, Search, Trash2, Upload } from "lucide-react";
-import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/design/vendor/ui/dialog";
+import { CheckCircle2, Download, ExternalLink, Gauge, HardDrive, Inbox, KeyRound, Link2, MailPlus, MoreHorizontal, Pencil, Plus, Trash2, Upload } from "lucide-react";
+import { Button } from "@/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/ui/overlay";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,13 +10,16 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/design/vendor/ui/dropdown-menu";
-import { Input } from "@/design/vendor/ui/input";
-import { Label } from "@/design/vendor/ui/label";
+import { AddressInput, Field, Input, RadioCard, Select } from "@/ui/form";
+import { Avatar, Badge } from "@/ui/badge";
+import { FormError } from "@/ui/feedback";
+import { SearchInput } from "@/ui/segmented";
+import { TableToolbar } from "@/ui/data-table";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { CreateMailboxResponse, Domain, Mailbox } from "@/api/types";
 import { ConfirmAction } from "@/components/confirm";
-import { DataTable, FieldError, FilterPills, LoadError, Page, RadioRow, selectClass, usePageTitle, type Column } from "@/components/kit";
-import { Meter } from "@/components/meter";
+import { DataTable, FieldError, LoadError, Page, usePageTitle, type Column } from "@/components/kit";
+import { Meter, StatCard, usageTone } from "@/ui/data-viz";
 import { PasswordInput, StrengthHint } from "@/components/password-input";
 import { SecretReveal } from "@/components/secret-reveal";
 import { fmtBytes, fmtDate, fmtNumber, openInYunoriUrl, pct, relativeDays, timeAgo } from "@/lib/format";
@@ -123,37 +125,37 @@ export default function MailboxesPage() {
       key: "address",
       header: "Mailbox",
       cell: (m) => (
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-sm font-medium text-foreground/90">{m.address}</span>
-            {m.role === "admin" && <span className="rounded-full border border-border/70 px-1.5 py-px text-[10px] text-foreground/75">Admin</span>}
-            {m.local === "postmaster" && <span className="rounded-full border border-border/70 px-1.5 py-px text-[10px] text-muted-foreground">System</span>}
-            {m.inviteExpiresAt && (
-              <span
-                className="rounded-full border border-amber-600/40 px-1.5 py-px text-[10px] text-amber-800 dark:text-amber-300"
-                title={`The invite link works until ${fmtDate(m.inviteExpiresAt)}`}
-              >
-                Invite pending
-              </span>
-            )}
+        <div className="flex min-w-0 items-center gap-3">
+          <Avatar name={m.displayName ?? m.address} />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="break-all text-sm font-medium text-foreground">{m.address}</span>
+              {m.role === "admin" && <Badge>Admin</Badge>}
+              {m.local === "postmaster" && <Badge>System</Badge>}
+              {m.inviteExpiresAt && (
+                <span title={`The invite link works until ${fmtDate(m.inviteExpiresAt)}`}>
+                  <Badge tone="warn">Invite pending</Badge>
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 text-[13px] text-muted-foreground">{m.displayName ?? "No display name"}</p>
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground">{m.displayName ?? "No display name"}</p>
         </div>
       ),
     },
     {
       key: "storage",
       header: "Storage",
-      className: "w-48",
+      className: "w-52",
       cell: (m) => {
         const p = pct(m.usedBytes, m.quotaBytes);
         const text = m.quotaBytes ? `${fmtBytes(m.usedBytes ?? 0)} of ${fmtBytes(m.quotaBytes)}` : `${fmtBytes(m.usedBytes ?? 0)} · no limit`;
         return (
-          <div className="w-40">
-            <Meter value={p} label={`Storage for ${m.address}`} valueText={text} />
-            <p className="mt-1 text-[11px] tabular-nums text-muted-foreground">
+          <div className="w-full max-w-[11rem]">
+            <Meter value={p} label={`Storage for ${m.address}`} valueText={text} tone={usageTone(p)} />
+            <p className="mt-1.5 text-xs tabular-nums text-muted-foreground">
               {text}
-              {p !== null && p >= 90 && <span className="text-amber-700 dark:text-amber-400"> · nearly full</span>}
+              {p !== null && p >= 90 && <span className="font-medium text-warning-ink"> · nearly full</span>}
             </p>
           </div>
         );
@@ -165,9 +167,9 @@ export default function MailboxesPage() {
       hideBelowMd: true,
       cell: (m) =>
         m.aliases.length === 0 ? (
-          <span className="text-xs text-muted-foreground">—</span>
+          <span className="text-[13px] text-muted-foreground">—</span>
         ) : (
-          <span className="text-xs text-foreground/80" title={m.aliases.join(", ")}>
+          <span className="text-[13px] text-foreground/80" title={m.aliases.join(", ")}>
             {m.aliases[0]}
             {m.aliases.length > 1 && <span className="text-muted-foreground"> +{m.aliases.length - 1}</span>}
           </span>
@@ -177,7 +179,7 @@ export default function MailboxesPage() {
       key: "created",
       header: "Created",
       hideBelowMd: true,
-      cell: (m) => <span className="text-xs text-muted-foreground">{timeAgo(m.createdAt)}</span>,
+      cell: (m) => <span className="text-[13px] text-muted-foreground">{timeAgo(m.createdAt)}</span>,
     },
     {
       key: "actions",
@@ -187,7 +189,7 @@ export default function MailboxesPage() {
         <DropdownMenu>
           <DropdownMenuTrigger
             aria-label={`Actions for ${m.address}`}
-            className="grid h-8 w-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            className="grid h-8 w-8 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 data-[state=open]:bg-accent"
           >
             <MoreHorizontal className="h-4 w-4" />
           </DropdownMenuTrigger>
@@ -239,11 +241,11 @@ export default function MailboxesPage() {
       }
       actions={
         <>
-          <Button size="sm" variant="ghost" onClick={() => setImportOpen(true)} disabled={!data || domains.length === 0}>
+          <Button size="sm" variant="outline" onClick={() => setImportOpen(true)} disabled={!data || domains.length === 0}>
             <Upload className="h-3.5 w-3.5" />
             Import
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => void exportCsv()} disabled={!data || data.mailboxes.length === 0 || exporting}>
+          <Button size="sm" variant="outline" onClick={() => void exportCsv()} disabled={!data || data.mailboxes.length === 0 || exporting}>
             <Download className="h-3.5 w-3.5" />
             {exporting ? "Exporting…" : "Export"}
           </Button>
@@ -256,20 +258,21 @@ export default function MailboxesPage() {
     >
       {reveal && <RevealPanel reveal={reveal} openUrl={yunori(reveal.address)} onDone={() => setReveal(null)} />}
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <div className="relative min-w-52 flex-1 sm:max-w-xs">
-          <Search aria-hidden className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search address, name or alias…" aria-label="Search mailboxes" className="h-9 pl-8" />
-        </div>
+      {data && data.mailboxes.length > 0 && <Summary mailboxes={data.mailboxes} />}
+
+      <TableToolbar end={data && <span className="text-[13px] tabular-nums text-muted-foreground">{fmtNumber(rows.length)} shown</span>}>
+        <SearchInput value={q} onValueChange={setQ} placeholder="Search address, name or alias…" aria-label="Search mailboxes" />
         {domains.length > 1 && (
-          <FilterPills
-            label="Filter by domain"
-            value={domainFilter}
-            onChange={setDomainFilter}
-            options={[{ value: "all", label: "All domains" }, ...domains.map((d) => ({ value: d.id, label: d.name }))]}
-          />
+          <Select aria-label="Filter by domain" value={domainFilter} onChange={(e) => setDomainFilter(e.target.value)} wrapperClassName="sm:w-48">
+            <option value="all">All domains</option>
+            {domains.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.name}
+              </option>
+            ))}
+          </Select>
         )}
-      </div>
+      </TableToolbar>
 
       {error && !data ? (
         <LoadError error={error} onRetry={() => void reload()} what="Mailboxes" />
@@ -279,6 +282,8 @@ export default function MailboxesPage() {
           rows={rows}
           rowKey={(m) => m.id}
           loading={loading && !data}
+          caption="Mailboxes"
+          emptyIcon={Inbox}
           emptyTitle={q || domainFilter !== "all" ? "No mailboxes match" : "No mailboxes yet"}
           emptyHint={q || domainFilter !== "all" ? "Try another search or domain." : "Create the first one and send its owner an invite link — they choose their own password."}
         />
@@ -335,8 +340,8 @@ function Dependents({ mailbox, domains }: { mailbox: Mailbox; domains: Domain[] 
   const catchAllFor = domains.filter((d) => d.catchAll === mailbox.address).map((d) => d.name);
   if (mailbox.aliases.length === 0 && catchAllFor.length === 0) return null;
   return (
-    <div className="rounded-md border border-border bg-muted/40 px-3 py-2.5 text-xs leading-relaxed">
-      <p className="font-medium text-foreground/90">Also affected</p>
+    <div className="rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-[13px] leading-relaxed">
+      <p className="font-medium text-foreground">Also affected</p>
       <ul className="mt-1 list-disc space-y-0.5 pl-4 text-foreground/80">
         {mailbox.aliases.length > 0 && (
           <li>
@@ -354,8 +359,9 @@ function RevealPanel({ reveal, openUrl, onDone }: { reveal: Reveal; openUrl: str
   useEffect(() => ref.current?.focus(), [reveal]);
   if (reveal.kind === "invite") return <InvitePanel reveal={reveal} headingRef={ref} onDone={onDone} />;
   return (
-    <section className="mb-6 rounded-xl border border-foreground/15 bg-card p-5" aria-labelledby="reveal-title">
-      <h2 id="reveal-title" ref={ref} tabIndex={-1} className="text-sm font-medium focus:outline-none">
+    <section className="mb-6 animate-rise-in rounded-xl border border-success/30 bg-card p-5 shadow-pop motion-reduce:animate-none" aria-labelledby="reveal-title">
+      <h2 id="reveal-title" ref={ref} tabIndex={-1} className="flex items-center gap-2 text-[15px] font-semibold focus:outline-none">
+        <CheckCircle2 aria-hidden className="h-4 w-4 shrink-0 text-success-ink" />
         {reveal.kind === "created" ? (
           <>
             <span className="font-mono">{reveal.address}</span> is ready
@@ -366,16 +372,16 @@ function RevealPanel({ reveal, openUrl, onDone }: { reveal: Reveal; openUrl: str
           </>
         )}
       </h2>
-      <p className="mt-1 text-xs text-muted-foreground">
+      <p className="mt-1 text-[13px] text-muted-foreground">
         {reveal.kind === "created"
           ? "Give these to the person who'll use it, through a channel you trust. They can change the password in their own settings."
           : "Share it through a channel you trust. They can change it afterwards in their own settings."}
       </p>
       <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
-        <div className="rounded-lg bg-muted/50 p-4">
-          <p className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Address</p>
+        <div className="rounded-xl border border-border bg-muted/40 p-4">
+          <p className="text-xs font-medium text-muted-foreground">Address</p>
           <p className="mt-2 break-all font-mono text-[15px]">{reveal.address}</p>
-          <p className="mt-2 text-[11px] text-muted-foreground">Also the username in any mail app.</p>
+          <p className="mt-2 text-xs text-muted-foreground">Also the username in any mail app.</p>
         </div>
         <SecretReveal label="Password" value={reveal.password} />
       </div>
@@ -405,8 +411,9 @@ function InvitePanel({
 }) {
   const who = reveal.name ?? reveal.address;
   return (
-    <section className="mb-6 rounded-xl border border-foreground/15 bg-card p-5" aria-labelledby="reveal-title">
-      <h2 id="reveal-title" ref={headingRef} tabIndex={-1} className="text-sm font-medium focus:outline-none">
+    <section className="mb-6 animate-rise-in rounded-xl border border-success/30 bg-card p-5 shadow-pop motion-reduce:animate-none" aria-labelledby="reveal-title">
+      <h2 id="reveal-title" ref={headingRef} tabIndex={-1} className="flex flex-wrap items-center gap-x-2 text-[15px] font-semibold focus:outline-none">
+        <MailPlus aria-hidden className="h-4 w-4 shrink-0 text-success-ink" />
         {reveal.isNew ? (
           <>
             <span className="font-mono">{reveal.address}</span> is ready — send {reveal.name ? reveal.name : "its owner"} this link
@@ -417,7 +424,7 @@ function InvitePanel({
           </>
         )}
       </h2>
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+      <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
         {who} opens it, chooses a password, and lands on a page that sets up their phone, computer and Yunori. Nobody else ever sees
         the password, you included.
       </p>
@@ -529,82 +536,68 @@ function CreateMailboxDialog({
           </DialogHeader>
 
           <fieldset className="space-y-1.5">
-            <legend className="mb-1.5 text-xs font-medium text-foreground/80">Address</legend>
-            <div className="flex items-stretch">
-              <Input
-                id="mb-local"
-                aria-label="Name before the @"
-                value={local}
-                onChange={(e) => setLocal(e.target.value)}
-                placeholder="name"
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                autoFocus
-                className="rounded-r-none"
-                aria-invalid={!!errors.local}
-                aria-describedby={errors.local ? "mb-local-err" : undefined}
-              />
-              <span aria-hidden className="grid place-items-center border-y border-input bg-muted/40 px-2 text-sm text-muted-foreground">
-                @
-              </span>
-              <select
-                aria-label="Domain"
-                className={cn(selectClass, "w-auto max-w-[55%] rounded-l-none")}
-                value={domainId}
-                onChange={(e) => setDomainId(e.target.value)}
-              >
-                {domains.map((d) => (
-                  <option key={d.id} value={d.id}>
-                    {d.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+            <legend className="mb-1.5 text-[13px] font-medium text-foreground/90">Address</legend>
+            <AddressInput
+              id="mb-local"
+              local={local}
+              onLocal={setLocal}
+              domainId={domainId}
+              onDomain={setDomainId}
+              domains={domains}
+              placeholder="name"
+              autoFocus
+              invalid={!!errors.local}
+              describedBy={errors.local ? "mb-local-err" : undefined}
+            />
             <FieldError id="mb-local-err">{errors.local ?? errors.domainId}</FieldError>
             {local && !errors.local && (
-              <p className="text-[11px] text-muted-foreground">
-                Will be <span className="font-mono text-foreground/80">{local.trim().toLowerCase()}@{domainName}</span>
+              <p className="text-xs text-muted-foreground">
+                Will be <span className="font-mono text-foreground/85">{local.trim().toLowerCase()}@{domainName}</span>
               </p>
             )}
           </fieldset>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <div className="space-y-1.5">
-              <label htmlFor="mb-name" className="block text-xs font-medium text-foreground/80">
-                Display name <span className="font-normal text-muted-foreground">(optional)</span>
-              </label>
+            <Field label="Display name" htmlFor="mb-name" optional>
               <Input id="mb-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Ren Ishikawa" />
-            </div>
-            <div className="space-y-1.5">
-              <label htmlFor="mb-quota" className="block text-xs font-medium text-foreground/80">
-                Storage limit
-              </label>
-              <select id="mb-quota" className={selectClass} value={quota} onChange={(e) => setQuota(e.target.value)}>
+            </Field>
+            <Field label="Storage limit" htmlFor="mb-quota">
+              <Select id="mb-quota" value={quota} onChange={(e) => setQuota(e.target.value)}>
                 {QUOTAS.map((q) => (
                   <option key={q.label} value={q.mb === null ? "" : String(q.mb)}>
                     {q.label}
                   </option>
                 ))}
-              </select>
-            </div>
+              </Select>
+            </Field>
           </div>
 
           <fieldset>
-            <legend className="mb-1.5 text-xs font-medium text-foreground/80">How they'll get in</legend>
-            <div className="space-y-1.5">
-              <RadioRow
+            <legend className="mb-2 text-[13px] font-medium text-foreground/90">How they'll get in</legend>
+            <div className="grid gap-2">
+              <RadioCard
+                compact
                 name="mb-pw"
+                value="invite"
                 checked={mode === "invite"}
                 onChange={() => setMode("invite")}
-                label="Send them an invite link"
-                hint="Recommended. They choose their own password, then set up their devices. The link works once, for 7 days."
+                title="Send them an invite link"
+                badge={<Badge tone="ok">Recommended</Badge>}
+                description="They choose their own password, then set up their devices. The link works once, for 7 days."
               />
-              <RadioRow name="mb-pw" checked={mode === "generate"} onChange={() => setMode("generate")} label="Generate a strong password" hint="Shown once after you create the mailbox; you pass it on." />
-              <RadioRow name="mb-pw" checked={mode === "manual"} onChange={() => setMode("manual")} label="Set one myself" />
+              <RadioCard
+                compact
+                name="mb-pw"
+                value="generate"
+                checked={mode === "generate"}
+                onChange={() => setMode("generate")}
+                title="Generate a strong password"
+                description="Shown once after you create the mailbox; you pass it on."
+              />
+              <RadioCard compact name="mb-pw" value="manual" checked={mode === "manual"} onChange={() => setMode("manual")} title="Set one myself" />
             </div>
             {mode === "manual" && (
-              <div className="mt-3 space-y-1.5 pl-6">
+              <div className="mt-3 space-y-1.5">
                 <PasswordInput
                   aria-label="Password"
                   autoComplete="new-password"
@@ -618,17 +611,13 @@ function CreateMailboxDialog({
             )}
           </fieldset>
 
-          {errors.form && (
-            <p role="alert" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
-              {errors.form}
-            </p>
-          )}
+          <FormError>{errors.form}</FormError>
 
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
               Cancel
             </Button>
-            <Button type="submit" disabled={busy || !local.trim()}>
+            <Button type="submit" disabled={!local.trim()} loading={busy}>
               {busy ? "Creating…" : "Create mailbox"}
             </Button>
           </DialogFooter>
@@ -670,31 +659,24 @@ function EditMailboxDialog({ mailbox, onClose, onSaved }: { mailbox: Mailbox; on
             <DialogTitle>Edit {mailbox.address}</DialogTitle>
             <DialogDescription>The address itself can't change. Create a new mailbox or an alias instead.</DialogDescription>
           </DialogHeader>
-          <div className="space-y-1.5">
-            <Label htmlFor="ed-name" className="normal-case tracking-normal">
-              Display name
-            </Label>
+          <Field label="Display name" htmlFor="ed-name">
             <Input id="ed-name" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="ed-quota" className="normal-case tracking-normal">
-              Storage limit
-            </Label>
-            <select id="ed-quota" className={selectClass} value={quota} onChange={(e) => setQuota(e.target.value)}>
+          </Field>
+          <Field
+            label="Storage limit"
+            htmlFor="ed-quota"
+            hint={`Using ${fmtBytes(mailbox.usedBytes ?? 0)} now. Lowering it never deletes mail; once it's full, new mail is refused until there's room.`}
+          >
+            <Select id="ed-quota" value={quota} onChange={(e) => setQuota(e.target.value)}>
               {!presets.includes(currentMb) && <option value={currentMb}>Current ({fmtBytes(mailbox.quotaBytes)})</option>}
               {QUOTAS.map((q) => (
                 <option key={q.label} value={q.mb === null ? "" : String(q.mb)}>
                   {q.label}
                 </option>
               ))}
-            </select>
-            <p className="text-[11px] text-muted-foreground">Using {fmtBytes(mailbox.usedBytes ?? 0)} now. Lowering it never deletes mail; once it's full, new mail is refused until there's room.</p>
-          </div>
-          {error && (
-            <p role="alert" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
-              {error}
-            </p>
-          )}
+            </Select>
+          </Field>
+          <FormError>{error}</FormError>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
               Cancel
@@ -706,5 +688,20 @@ function EditMailboxDialog({ mailbox, onClose, onSaved }: { mailbox: Mailbox; on
         </form>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** Four numbers above the table: count, storage, invites waiting, nearly full. */
+function Summary({ mailboxes }: { mailboxes: Mailbox[] }) {
+  const used = mailboxes.reduce((n, m) => n + (m.usedBytes ?? 0), 0);
+  const invites = mailboxes.filter((m) => m.inviteExpiresAt).length;
+  const full = mailboxes.filter((m) => (pct(m.usedBytes, m.quotaBytes) ?? 0) >= 90).length;
+  return (
+    <div className="mb-6 grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
+      <StatCard label="Mailboxes" icon={Inbox} value={fmtNumber(mailboxes.length)} hint={`${mailboxes.filter((m) => m.role === "admin").length} with admin role`} />
+      <StatCard label="Storage used" icon={HardDrive} value={fmtBytes(used)} hint="Across every mailbox" />
+      <StatCard label="Invites pending" icon={Link2} value={fmtNumber(invites)} hint={invites ? "Waiting for a password" : "None waiting"} tone={invites ? "info" : undefined} />
+      <StatCard label="Nearly full" icon={Gauge} value={fmtNumber(full)} hint={full ? "Over 90% of their limit" : "Everyone has room"} tone={full ? "warn" : undefined} />
+    </div>
   );
 }

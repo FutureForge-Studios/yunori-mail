@@ -1,9 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Switch } from "@/design/vendor/ui/switch";
-import { Textarea } from "@/design/vendor/ui/textarea";
-import { Skeleton } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/form";
+import { Checkbox, Switch } from "@/ui/form";
+import { Textarea } from "@/ui/form";
+import { Skeleton } from "@/ui/feedback";
 import { ApiRequestError, errorMessage, portalApi } from "@/api/client";
 import type { MailRules } from "@/api/types";
 import { FormError } from "@/components/auth-frame";
@@ -100,7 +100,7 @@ export function MailRulesCard({ address }: { address: string }) {
   if (error && !data) return <LoadError error={error} onRetry={() => void reload()} what="Auto-reply and forwarding" />;
   if (!data)
     return (
-      <div aria-busy="true" className="rounded-xl border border-border/60 bg-card/40 p-5">
+      <div aria-busy="true" className="rounded-xl border border-border bg-card shadow-card p-5">
         <Skeleton className="h-5 w-48" />
         <Skeleton className="mt-6 h-5 w-56" />
       </div>
@@ -158,7 +158,7 @@ function RulesForm({ saved, address, onSaved }: { saved: MailRules; address: str
   }
 
   return (
-    <form onSubmit={save} noValidate className="rounded-xl border border-border/60 bg-card/40">
+    <form onSubmit={save} noValidate className="rounded-xl border border-border bg-card shadow-card">
       <Toggle
         id="vr"
         title="Auto-reply"
@@ -195,7 +195,7 @@ function RulesForm({ saved, address, onSaved }: { saved: MailRules; address: str
             <FieldError id="vr-body-err">{errors["vacation.body"]}</FieldError>
           ) : (
             form.body.length > MAX_BODY - 500 && (
-              <p className="text-[11px] tabular-nums text-muted-foreground">
+              <p className="text-xs tabular-nums text-muted-foreground">
                 {form.body.length} of {MAX_BODY} characters
               </p>
             )
@@ -218,7 +218,7 @@ function RulesForm({ saved, address, onSaved }: { saved: MailRules; address: str
             {errors["vacation.startDate"] ? (
               <FieldError id="vr-start-err">{errors["vacation.startDate"]}</FieldError>
             ) : (
-              <p id="vr-start-hint" className="text-[11px] text-muted-foreground">
+              <p id="vr-start-hint" className="text-xs text-muted-foreground">
                 Empty: starts as soon as you save.
               </p>
             )}
@@ -240,7 +240,7 @@ function RulesForm({ saved, address, onSaved }: { saved: MailRules; address: str
             {errors["vacation.endDate"] ? (
               <FieldError id="vr-end-err">{errors["vacation.endDate"]}</FieldError>
             ) : (
-              <p id="vr-end-hint" className="text-[11px] text-muted-foreground">
+              <p id="vr-end-hint" className="text-xs text-muted-foreground">
                 Empty: until you switch it off. Includes that day.
               </p>
             )}
@@ -274,15 +274,10 @@ function RulesForm({ saved, address, onSaved }: { saved: MailRules; address: str
           <FieldError id="fw-address-err">{errors["forwarding.address"]}</FieldError>
         </div>
         <label className="flex cursor-pointer items-start gap-2.5 text-sm">
-          <input
-            type="checkbox"
-            checked={form.keepCopy}
-            onChange={(e) => set("keepCopy", e.target.checked)}
-            className="mt-1 h-3.5 w-3.5 accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          />
+          <Checkbox checked={form.keepCopy} onChange={(e) => set("keepCopy", e.target.checked)} className="mt-0.5" />
           <span>
             <span className="text-foreground/90">Keep a copy here</span>
-            <span className="block text-[11px] text-muted-foreground">
+            <span className="block text-xs text-muted-foreground">
               {form.keepCopy
                 ? `Mail still arrives in ${address} as well.`
                 : `Nothing stays in ${address} — if the other address refuses a message, it is lost.`}
@@ -291,22 +286,22 @@ function RulesForm({ saved, address, onSaved }: { saved: MailRules; address: str
         </label>
       </Toggle>
 
-      <div className="flex flex-col gap-3 border-t border-border/50 px-5 py-4 sm:flex-row sm:items-center">
+      <div className="flex flex-col gap-3 border-t border-border/70 px-5 py-4 sm:flex-row sm:items-center">
         <p role="status" className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
           {status.length ? (
             status.map((s) => (
               <span key={s} className="block text-foreground/85">
-                <span aria-hidden className="mr-1.5 inline-block h-1.5 w-1.5 -translate-y-px rounded-full bg-emerald-600 dark:bg-emerald-400" />
+                <span aria-hidden className="mr-1.5 inline-block h-1.5 w-1.5 -translate-y-px rounded-full bg-success" />
                 {s}
               </span>
             ))
           ) : (
             "Both are off."
           )}
-          {dirty && <span className="mt-0.5 block text-amber-800 dark:text-amber-300">You have changes that aren't saved yet.</span>}
+          {dirty && <span className="mt-0.5 block text-warning-ink">You have changes that aren't saved yet.</span>}
         </p>
         {errors.form && <FormError>{errors.form}</FormError>}
-        <Button type="submit" size="sm" disabled={busy || !dirty} className="shrink-0 self-end sm:self-auto">
+        <Button type="submit" size="sm" disabled={!dirty} loading={busy} className="shrink-0 self-end sm:self-auto">
           {busy ? "Saving…" : "Save"}
         </Button>
       </div>
@@ -332,26 +327,26 @@ function Toggle({
   children: ReactNode;
 }) {
   return (
-    <div className={bordered ? "border-t border-border/50" : undefined}>
-      <div className="flex items-start gap-4 px-5 py-4">
+    <div className={bordered ? "border-t border-border/70" : undefined}>
+      <div className="flex items-start gap-4 px-4 py-4 sm:px-5">
         <div className="min-w-0 flex-1">
           <label htmlFor={`${id}-toggle`} className="cursor-pointer text-sm font-medium">
             {title}
           </label>
-          <p id={`${id}-hint`} className="mt-0.5 text-xs leading-relaxed text-muted-foreground">
+          <p id={`${id}-hint`} className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
             {hint}
           </p>
         </div>
         <Switch id={`${id}-toggle`} checked={checked} onCheckedChange={onChange} aria-describedby={`${id}-hint`} className="mt-0.5" />
       </div>
-      {checked && <div className="space-y-4 px-5 pb-5">{children}</div>}
+      {checked && <div className="space-y-4 px-4 pb-5 sm:px-5">{children}</div>}
     </div>
   );
 }
 
 function FieldLabel({ htmlFor, optional, children }: { htmlFor: string; optional?: boolean; children: ReactNode }) {
   return (
-    <label htmlFor={htmlFor} className="block text-xs font-medium text-foreground/80">
+    <label htmlFor={htmlFor} className="block text-[13px] font-medium text-foreground/90">
       {children}
       {optional && <span className="font-normal text-muted-foreground"> (optional)</span>}
     </label>

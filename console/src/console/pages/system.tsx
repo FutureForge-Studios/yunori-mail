@@ -1,14 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { ArrowUpRight, RefreshCw, Stethoscope } from "lucide-react";
+import { ArrowUpRight, Cpu, Lock, Package, RefreshCw, Server, Stethoscope } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Card, KV, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Card, CardBody, CardHeader, KV, KVList } from "@/ui/card";
+import { RingMeter } from "@/ui/data-viz";
+import { Skeleton } from "@/ui/feedback";
 import { api, errorMessage } from "@/api/client";
 import type { Check, ServiceStatus, UpdateStatus } from "@/api/types";
 import { CopyButton } from "@/components/copy-button";
 import { LoadError, Page, usePageTitle } from "@/components/kit";
-import { Meter } from "@/components/meter";
 import { CheckList, CheckPill, StatusBadge, worstStatus, type Tone } from "@/components/status";
 import { fmtBytes, pct, timeAgo } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -74,9 +75,10 @@ export default function SystemPage() {
   return (
     <Page title="System" blurb="Services, versions and resources. Logs and diagnostics never include mail contents." actions={actions}>
       {preflight && (
-        <Card className="mb-4">
-          <div className="flex flex-wrap items-baseline justify-between gap-2">
-            <h2 ref={resultsRef} tabIndex={-1} className="text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground focus:outline-none">
+        <Card padded={false} className="mb-4 animate-rise-in motion-reduce:animate-none">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-5 py-4">
+            <h2 ref={resultsRef} tabIndex={-1} className="flex items-center gap-2 text-[15px] font-semibold focus:outline-none">
+              <Stethoscope aria-hidden className="h-4 w-4 text-icon" />
               Preflight results
             </h2>
             <div className="flex items-center gap-2">
@@ -84,10 +86,12 @@ export default function SystemPage() {
                 status={worstStatus(preflight.checks.map((c) => c.status))}
                 label={`${preflight.checks.filter((c) => c.status === "pass").length} of ${preflight.checks.length} passed`}
               />
-              <span className="text-[11px] text-muted-foreground">ran {timeAgo(preflight.at)}</span>
+              <span className="text-xs text-muted-foreground">ran {timeAgo(preflight.at)}</span>
             </div>
           </div>
-          <CheckList checks={preflight.checks} compact />
+          <CardBody className="pb-2">
+            <CheckList checks={preflight.checks} compact />
+          </CardBody>
         </Card>
       )}
 
@@ -96,58 +100,67 @@ export default function SystemPage() {
       ) : !data ? (
         <div className="grid gap-4 lg:grid-cols-3">
           {Array.from({ length: 3 }).map((_, i) => (
-            <Skeleton key={i} className="h-60" />
+            <Skeleton key={i} className="h-64 rounded-xl" />
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Card>
-            <SectionLabel>Services</SectionLabel>
-            <ul className="divide-y divide-border/50">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-12">
+          <Card padded={false} className="md:col-span-2 xl:col-span-7" aria-labelledby="sys-res">
+            <CardHeader id="sys-res" title="Resources" icon={Cpu} />
+            <CardBody>
+              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+                <Resource label="Memory" used={data.resources.memUsedBytes} total={data.resources.memTotalBytes} />
+                <Resource
+                  label="Disk"
+                  used={data.resources.diskTotalBytes - data.resources.diskFreeBytes}
+                  total={data.resources.diskTotalBytes}
+                  extra={`${fmtBytes(data.resources.diskFreeBytes)} free`}
+                />
+                <div className="col-span-2 flex flex-col items-center justify-center rounded-xl border border-border bg-muted/30 px-3 py-4 text-center sm:col-span-1">
+                  <span className="display-number text-[34px] leading-none">{data.resources.load1.toFixed(2)}</span>
+                  <span className="mt-2 text-[13px] font-medium text-foreground">Load</span>
+                  <span className="text-xs text-muted-foreground">1-minute average</span>
+                </div>
+              </div>
+            </CardBody>
+          </Card>
+
+          <Card padded={false} className="md:col-span-2 xl:col-span-5" aria-labelledby="sys-svc">
+            <CardHeader id="sys-svc" title="Services" icon={Server} divider />
+            <CardBody className="pb-2">
+            <ul className="divide-y divide-border/60">
               {data.services.map((s) => {
                 const m = SERVICE_TONE[s.status];
                 return (
-                  <li key={s.name} className="py-2.5">
+                  <li key={s.name} className="py-3">
                     <div className="flex items-center justify-between gap-2">
-                      <span className="text-sm text-foreground/90">{SERVICE_LABEL[s.name] ?? s.name}</span>
+                      <span className="text-sm font-medium text-foreground">{SERVICE_LABEL[s.name] ?? s.name}</span>
                       <StatusBadge tone={m.tone}>{m.label}</StatusBadge>
                     </div>
-                    {s.detail && <p className="mt-0.5 text-xs text-muted-foreground">{s.detail}</p>}
+                    {s.detail && <p className="mt-0.5 text-[13px] text-muted-foreground">{s.detail}</p>}
                   </li>
                 );
               })}
             </ul>
+            </CardBody>
           </Card>
 
-          <Card>
-            <SectionLabel>Resources</SectionLabel>
-            <Resource
-              label="Memory"
-              used={data.resources.memUsedBytes}
-              total={data.resources.memTotalBytes}
-            />
-            <Resource
-              label="Disk"
-              used={data.resources.diskTotalBytes - data.resources.diskFreeBytes}
-              total={data.resources.diskTotalBytes}
-              extra={`${fmtBytes(data.resources.diskFreeBytes)} free`}
-            />
-            <div className="mt-4 flex items-baseline justify-between">
-              <span className="text-xs text-muted-foreground">Load (1 min)</span>
-              <span className="font-serif text-[22px] leading-none tabular-nums">{data.resources.load1.toFixed(2)}</span>
-            </div>
+          <Card padded={false} className="md:col-span-2 xl:col-span-4" aria-labelledby="sys-ver">
+            <CardHeader id="sys-ver" title="Versions" icon={Package} divider />
+            <CardBody className="pt-1">
+              <KVList>
+                <KV label="Yunori Mail">{data.versions.yunori}</KV>
+                <KV label="Stalwart">{data.versions.engine ?? "Not installed"}</KV>
+              </KVList>
+              <Updates initial={data.update} />
+            </CardBody>
           </Card>
 
-          <Card>
-            <SectionLabel>Versions</SectionLabel>
-            <KV label="Yunori Mail">{data.versions.yunori}</KV>
-            <KV label="Stalwart">{data.versions.engine ?? "Not installed"}</KV>
-            <Updates initial={data.update} />
-          </Card>
-
-          <Card className="lg:col-span-3">
-            <SectionLabel>Certificate</SectionLabel>
-            <CertificatePanel />
+          <Card padded={false} className="md:col-span-2 xl:col-span-8" aria-labelledby="sys-cert">
+            <CardHeader id="sys-cert" title="Certificate" icon={Lock} description="Automatic HTTPS for the console, the portal and the mail ports." />
+            <CardBody>
+              <CertificatePanel />
+            </CardBody>
           </Card>
         </div>
       )}
@@ -159,16 +172,11 @@ function Resource({ label, used, total, extra }: { label: string; used: number; 
   const p = pct(used, total);
   const text = `${fmtBytes(used)} of ${fmtBytes(total)}`;
   return (
-    <div className="mb-4">
-      <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <span className="text-xs text-muted-foreground">{label}</span>
-        <span className="text-xs tabular-nums text-foreground/85">
-          {text}
-          {p !== null && <span className="text-muted-foreground"> · {Math.round(p)}%</span>}
-        </span>
-      </div>
-      <Meter value={p} label={`${label} used`} valueText={`${text}${extra ? `, ${extra}` : ""}`} />
-      {extra && <p className="mt-1 text-[11px] text-muted-foreground">{extra}</p>}
+    <div className="flex flex-col items-center rounded-xl border border-border bg-muted/30 px-3 py-4 text-center">
+      <RingMeter value={p} label={`${label} used`} valueText={`${text}${extra ? `, ${extra}` : ""}`} size={84} stroke={8} tone={p !== null && p >= 90 ? "warn" : "info"} />
+      <span className="mt-3 text-[13px] font-medium text-foreground">{label}</span>
+      <span className="text-xs tabular-nums text-muted-foreground">{text}</span>
+      {extra && <span className="text-xs tabular-nums text-muted-foreground">{extra}</span>}
     </div>
   );
 }
@@ -200,7 +208,7 @@ function Updates({ initial }: { initial: UpdateStatus }) {
   }
 
   return (
-    <div className="mt-3 border-t border-border/50 pt-3">
+    <div className="mt-3 border-t border-border/70 pt-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         {u.available ? (
           <StatusBadge tone="warn">{u.latest} is available</StatusBadge>
@@ -215,7 +223,7 @@ function Updates({ initial }: { initial: UpdateStatus }) {
           onClick={() => void checkNow()}
           disabled={busy}
           aria-label={busy ? "Checking for updates" : "Check now for updates"}
-          className="h-7 px-2 text-xs text-muted-foreground"
+          className="h-7 px-2 text-xs"
         >
           <RefreshCw aria-hidden className={cn("h-3.5 w-3.5", busy && "animate-spin motion-reduce:animate-none")} />
           {busy ? "Checking…" : "Check now"}
@@ -223,11 +231,11 @@ function Updates({ initial }: { initial: UpdateStatus }) {
       </div>
       {u.available && (
         <>
-          <p className="mt-2 text-xs leading-relaxed text-foreground/85">
+          <p className="mt-2 text-[13px] leading-relaxed text-foreground/85">
             {u.publishedAt && <>Released {timeAgo(u.publishedAt)}. </>}
             Run this on the server; your settings and mail stay as they are.
           </p>
-          <div className="mt-2 flex items-center gap-1 rounded-md border border-border/60 bg-muted/30 py-1 pl-2.5 pr-1">
+          <div className="mt-2 flex items-center gap-1 rounded-lg border border-border bg-muted/40 py-1 pl-3 pr-1">
             <code className="min-w-0 flex-1 truncate font-mono text-xs">{UPDATE_COMMAND}</code>
             <CopyButton value={UPDATE_COMMAND} label="the update command" />
           </div>
@@ -244,7 +252,7 @@ function Updates({ initial }: { initial: UpdateStatus }) {
           )}
         </>
       )}
-      <p className="mt-2 text-[11px] text-muted-foreground">
+      <p className="mt-2 text-xs text-muted-foreground">
         {u.problem
           ? `Last check failed: ${u.problem}`
           : u.checkedAt

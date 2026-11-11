@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { CheckCircle2, ExternalLink, Eye, RefreshCw, Unplug, UploadCloud, XCircle } from "lucide-react";
+import { CheckCircle2, CloudUpload, ExternalLink, Eye, Unplug, UploadCloud, XCircle } from "lucide-react";
 import { cn } from "@/design/vendor/lib/utils";
-import { Button } from "@/design/vendor/ui/button";
-import { Card, Field, SectionLabel, Skeleton, selectClass } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Card, CardBody, CardFooter, CardHeader } from "@/ui/card";
+import { Skeleton } from "@/ui/feedback";
+import { Checkbox, Field, Select } from "@/ui/form";
 import { ApiRequestError, api, errorMessage } from "@/api/client";
 import type { DnsPlan, DnsPlanAction, DnsPlanItem, DnsProviderStatus, DnsPublishResponse, Domain, DomainDnsResponse } from "@/api/types";
 import { ConfirmAction } from "@/components/confirm";
@@ -59,18 +61,34 @@ export function DnsProviderCard({ domain, onChecked }: { domain: Domain; onCheck
 
   if (loadError) {
     return (
-      <Card>
-        <SectionLabel>Publish automatically</SectionLabel>
-        <p className="text-xs text-muted-foreground">The DNS provider settings could not be loaded. Reload the page to try again.</p>
+      <Card padded={false} className="h-full">
+        <CardHeader title="Publish automatically" icon={CloudUpload} description="The DNS provider settings could not be loaded. Reload the page to try again." />
       </Card>
     );
   }
-  if (!status) return <Skeleton className="h-40" />;
+  if (!status) return <Skeleton className="h-64 rounded-xl" />;
 
   const conn = status.connected;
   return (
-    <Card>
-      <SectionLabel>Publish automatically</SectionLabel>
+    <Card padded={false} className="h-full" aria-labelledby="dns-pub-title">
+      <CardHeader
+        id="dns-pub-title"
+        title="Publish automatically"
+        icon={CloudUpload}
+        description={
+          conn && !editing
+            ? undefined
+            : `Connect the DNS provider that hosts ${domain.name} and Yunori writes the records for you: only the ones that are missing or wrong, after you have seen every change. It never deletes a record.`
+        }
+        actions={
+          conn && !editing ? (
+            <StatusBadge tone="ok" icon={CheckCircle2}>
+              Connected
+            </StatusBadge>
+          ) : undefined
+        }
+      />
+      <CardBody>
       {!conn || editing ? (
         <ConnectForm
           domain={domain}
@@ -89,15 +107,10 @@ export function DnsProviderCard({ domain, onChecked }: { domain: Domain; onCheck
         <>
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm text-foreground/90">
-                  {conn.label} · zone <span className="font-mono text-xs">{conn.zoneName}</span>
-                </span>
-                <StatusBadge tone="ok" icon={CheckCircle2}>
-                  Connected
-                </StatusBadge>
-              </div>
-              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              <p className="text-sm font-medium text-foreground">
+                {conn.label} · zone <span className="font-mono text-[13px]">{conn.zoneName}</span>
+              </p>
+              <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
                 Connected {timeAgo(conn.connectedAt)} by {conn.connectedBy}. The token is stored encrypted on this server and never shown again.
                 {conn.lastPublish &&
                   ` Last published ${timeAgo(conn.lastPublish.at)}: ${conn.lastPublish.created} added, ${conn.lastPublish.updated} changed${
@@ -106,8 +119,8 @@ export function DnsProviderCard({ domain, onChecked }: { domain: Domain; onCheck
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              <Button size="sm" onClick={() => void preview()} disabled={previewing}>
-                {previewing ? <RefreshCw className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" /> : <Eye className="h-3.5 w-3.5" />}
+              <Button size="sm" onClick={() => void preview()} loading={previewing}>
+                {!previewing && <Eye className="h-3.5 w-3.5" />}
                 {previewing ? "Reading the zone…" : plan ? "Preview again" : "Preview changes"}
               </Button>
               <Button size="sm" variant="outline" onClick={() => setEditing(true)}>
@@ -142,6 +155,10 @@ export function DnsProviderCard({ domain, onChecked }: { domain: Domain; onCheck
         </>
       )}
 
+      </CardBody>
+      {(!conn || editing) && (
+        <CardFooter className="text-xs text-muted-foreground">Every result is still checked against public DNS, and Yunori never deletes a record at the provider.</CardFooter>
+      )}
       <ConfirmAction
         open={disconnectOpen}
         onOpenChange={setDisconnectOpen}
@@ -197,21 +214,15 @@ function ConnectForm({
 
   return (
     <form onSubmit={(e) => void submit(e)} className="space-y-4">
-      {!replacing && (
-        <p className="-mt-1 text-xs leading-relaxed text-muted-foreground">
-          Connect the DNS provider that hosts {domain.name} and Yunori writes the records below for you: only the ones that are missing or
-          wrong, after you have seen every change. It never deletes a record, and every result is still checked against public DNS.
-        </p>
-      )}
-      <div className="grid gap-4 sm:grid-cols-[12rem_1fr]">
+      <div className="grid gap-4 sm:grid-cols-[11rem_minmax(0,1fr)]">
         <Field label="DNS provider" htmlFor="dns-provider">
-          <select id="dns-provider" className={selectClass} value={provider} onChange={(e) => setProvider(e.target.value)} disabled={status.providers.length < 2}>
+          <Select id="dns-provider" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={status.providers.length < 2}>
             {status.providers.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.label}
               </option>
             ))}
-          </select>
+          </Select>
         </Field>
         <Field
           label="API token"
@@ -242,8 +253,8 @@ function ConnectForm({
           <FieldError id="dns-token-error">{tokenError}</FieldError>
         </Field>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="submit" size="sm" disabled={busy || (!replacing && !token.trim())}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        <Button type="submit" size="sm" variant="torii" disabled={!replacing && !token.trim()} loading={busy}>
           {busy ? "Checking the token…" : replacing ? "Save and check" : `Connect ${info?.label ?? ""}`.trim()}
         </Button>
         {onCancel && (
@@ -251,7 +262,7 @@ function ConnectForm({
             Cancel
           </Button>
         )}
-        <span className="text-[11px] text-muted-foreground">Checked with read-only calls before it is saved.</span>
+        <span className="text-xs text-muted-foreground">Checked with read-only calls before it is saved.</span>
       </div>
     </form>
   );
@@ -312,18 +323,18 @@ function PlanView({
     });
 
   return (
-    <div className="mt-5 border-t border-border/50 pt-4">
-      <p className="text-xs text-muted-foreground" aria-live="polite">
+    <div className="mt-5 border-t border-border/70 pt-4">
+      <p className="text-[13px] text-muted-foreground" aria-live="polite">
         At {plan.providerLabel}, zone {plan.zoneName}: {plan.counts.create} to add, {plan.counts.update} to change, {plan.counts.unchanged} already right
         {plan.counts.manual ? `, ${plan.counts.manual} need${plan.counts.manual === 1 ? "s" : ""} you` : ""}. Nothing is deleted.
       </p>
 
       {changes.length === 0 ? (
-        <p className="mt-3 rounded-md bg-muted/40 px-3 py-2 text-xs text-foreground/85">
+        <p className="mt-3 rounded-lg bg-muted/50 px-3 py-2 text-[13px] text-foreground/85">
           Nothing to publish: every record Yunori can write is already right at {plan.providerLabel}.
         </p>
       ) : (
-        <ul className="mt-3 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60" aria-label="Changes to publish">
+        <ul className="mt-3 divide-y divide-border/60 overflow-hidden rounded-lg border border-border" aria-label="Changes to publish">
           {changes.map((i) => (
             <PlanRow key={i.id} item={i} checked={selected.has(i.id)} onToggle={(on) => toggle(i.id, on)} />
           ))}
@@ -332,8 +343,8 @@ function PlanView({
 
       {manual.length > 0 && (
         <div className="mt-4">
-          <p className="mb-2 text-xs font-medium text-foreground/85">Needs you at {plan.providerLabel}</p>
-          <ul className="divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60">
+          <p className="mb-2 text-[13px] font-medium text-foreground">Needs you at {plan.providerLabel}</p>
+          <ul className="divide-y divide-border/60 overflow-hidden rounded-lg border border-border">
             {manual.map((i) => (
               <PlanRow key={i.id} item={i} />
             ))}
@@ -342,11 +353,11 @@ function PlanView({
       )}
 
       {quiet.length > 0 && (
-        <details className="mt-4 text-xs">
-          <summary className="cursor-pointer rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring">
+        <details className="mt-4 text-[13px]">
+          <summary className="cursor-pointer rounded-sm text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60">
             {plan.counts.unchanged} already right, {plan.counts.skip} left alone
           </summary>
-          <ul className="mt-2 divide-y divide-border/40 overflow-hidden rounded-lg border border-border/60">
+          <ul className="mt-2 divide-y divide-border/60 overflow-hidden rounded-lg border border-border">
             {quiet.map((i) => (
               <PlanRow key={i.id} item={i} />
             ))}
@@ -355,14 +366,14 @@ function PlanView({
       )}
 
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <Button size="sm" onClick={() => void publish()} disabled={busy || selected.size === 0}>
-          <UploadCloud className="h-3.5 w-3.5" />
+        <Button size="sm" variant="torii" onClick={() => void publish()} disabled={selected.size === 0} loading={busy}>
+          {!busy && <UploadCloud className="h-3.5 w-3.5" />}
           {busy ? "Publishing…" : `Publish ${selected.size} change${selected.size === 1 ? "" : "s"}`}
         </Button>
         <Button size="sm" variant="ghost" onClick={onCancel} disabled={busy}>
           Cancel
         </Button>
-        <span className="text-[11px] text-muted-foreground">Then Yunori checks public DNS, exactly like “Check now”.</span>
+        <span className="text-xs text-muted-foreground">Then Yunori checks public DNS, exactly like “Check now”.</span>
       </div>
     </div>
   );
@@ -375,9 +386,9 @@ function PlanRow({ item: i, checked, onToggle }: { item: DnsPlanItem; checked?: 
     <div className="min-w-0 flex-1">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge tone={meta.tone}>{meta.label}</StatusBadge>
-        <span className="w-12 shrink-0 rounded border border-border/70 px-1 py-px text-center font-mono text-[10px] text-foreground/80">{i.type}</span>
-        <span className="min-w-0 break-all font-mono text-xs text-foreground/90">{i.name}</span>
-        {i.required && <span className="text-[11px] text-muted-foreground">Required</span>}
+        <span className="w-12 shrink-0 rounded-md border border-border bg-muted/60 py-px text-center font-mono text-2xs text-foreground/80">{i.type}</span>
+        <span className="min-w-0 break-all font-mono text-[12.5px] text-foreground">{i.name}</span>
+        {i.required && <span className="text-xs text-muted-foreground">Required</span>}
       </div>
       {(i.action === "update" || i.action === "manual") &&
         i.current.map((c, n) => (
@@ -392,16 +403,10 @@ function PlanRow({ item: i, checked, onToggle }: { item: DnsPlanItem; checked?: 
     </div>
   );
   return (
-    <li className="flex items-start gap-3 bg-card/30 px-3 py-2.5">
+    <li className="flex items-start gap-3 bg-card px-3 py-3">
       {onToggle ? (
         <>
-          <input
-            id={inputId}
-            type="checkbox"
-            checked={checked}
-            onChange={(e) => onToggle(e.target.checked)}
-            className="mt-1 h-3.5 w-3.5 shrink-0 accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-          />
+          <Checkbox id={inputId} checked={checked} onChange={(e) => onToggle(e.target.checked)} className="mt-0.5" />
           <label htmlFor={inputId} className="min-w-0 flex-1 cursor-pointer">
             {body}
           </label>
@@ -417,19 +422,19 @@ function ResultView({ result: r }: { result: DnsPublishResponse }) {
   const failed = r.results.filter((x) => !x.ok);
   const name = (id: string) => r.items.find((i) => i.id === id);
   return (
-    <div className="mt-5 border-t border-border/50 pt-4" aria-live="polite">
+    <div className="mt-5 border-t border-border/70 pt-4" aria-live="polite">
       <div className="flex flex-wrap items-center gap-2">
         <StatusBadge tone={failed.length ? "bad" : "ok"} icon={failed.length ? XCircle : CheckCircle2}>
           {failed.length ? "Partly published" : "Published"}
         </StatusBadge>
-        <span className="text-xs text-foreground/85">
+        <span className="text-[13px] text-foreground/85">
           {r.created} added, {r.updated} changed{failed.length ? `, ${failed.length} failed` : ""} at {r.providerLabel}.
         </span>
       </div>
       {failed.length > 0 && (
         <ul className="mt-3 space-y-1.5">
           {failed.map((f) => (
-            <li key={f.id} className="rounded-md bg-muted/40 px-2.5 py-1.5 text-xs leading-relaxed">
+            <li key={f.id} className="rounded-lg bg-destructive/[0.07] px-3 py-2 text-[13px] leading-relaxed">
               <span className="font-mono">
                 {name(f.id)?.type} {name(f.id)?.name}
               </span>
@@ -438,7 +443,7 @@ function ResultView({ result: r }: { result: DnsPublishResponse }) {
           ))}
         </ul>
       )}
-      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
         The table below now shows what public resolvers return. New records usually appear within minutes; if one still shows as missing, use
         “Check now” again shortly.
       </p>

@@ -1,10 +1,13 @@
 import type { ReactNode } from "react";
+import { Lock, ShieldCheck, Sparkles } from "lucide-react";
 import { YunoriMark } from "@/components/yunori-logo";
+import { FormError } from "@/ui/feedback";
 import { ThemeToggle } from "./theme-toggle";
 
 /**
- * The calm single-column frame the client uses for sign-in: logo, serif
- * headline, one quiet line under it, the form, a footnote.
+ * Sign-in and invitation frame. On large screens a night-ink brand panel sits
+ * beside the form (it always uses the dark tokens, in either theme); on
+ * phones it collapses to the mark above a single calm column.
  */
 export function AuthFrame({
   eyebrow,
@@ -13,6 +16,7 @@ export function AuthFrame({
   children,
   footnote,
   width = "max-w-sm",
+  aside,
 }: {
   eyebrow?: ReactNode;
   title: ReactNode;
@@ -20,34 +24,67 @@ export function AuthFrame({
   children: ReactNode;
   footnote?: ReactNode;
   width?: string;
+  /** Replaces the brand panel's default copy. */
+  aside?: ReactNode;
 }) {
   return (
-    <div className="relative grid min-h-dvh place-items-center bg-background px-6 py-12">
-      <div className="absolute right-3 top-3">
-        <ThemeToggle />
-      </div>
-      <main className={`w-full ${width} animate-fade-in motion-reduce:animate-none`}>
-        <div className="mb-10 flex flex-col items-center gap-3">
-          <YunoriMark className="h-9 w-9" />
-          <div className="text-center">
-            {eyebrow && <p className="mb-2 text-[11px] uppercase tracking-[0.18em] text-muted-foreground">{eyebrow}</p>}
-            <h1 className="font-serif text-3xl tracking-tight">{title}</h1>
-            {subtitle && <p className="mt-1 text-sm text-muted-foreground">{subtitle}</p>}
-          </div>
+    <div className="grid min-h-dvh bg-background lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+      <BrandPanel>{aside}</BrandPanel>
+      <div className="relative flex min-h-dvh flex-col">
+        <div className="flex items-center justify-between px-4 pt-4 sm:px-6">
+          <span className="flex items-center gap-2 lg:invisible">
+            <YunoriMark className="h-6 w-6" />
+            <span className="text-sm font-semibold tracking-tight">Yunori Mail</span>
+          </span>
+          <ThemeToggle />
         </div>
-        {children}
-        {footnote && <p className="mt-8 text-center text-xs leading-relaxed text-muted-foreground">{footnote}</p>}
-      </main>
+        <main className="grid flex-1 place-items-center px-5 py-10 sm:px-8">
+          <div className={`w-full ${width} animate-rise-in motion-reduce:animate-none`}>
+            <div className="mb-8">
+              {eyebrow && <p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{eyebrow}</p>}
+              <h1 className="font-serif text-[32px] leading-[1.1] tracking-[-0.02em]">{title}</h1>
+              {subtitle && <p className="mt-2 text-sm leading-relaxed text-muted-foreground">{subtitle}</p>}
+            </div>
+            {children}
+            {footnote && <p className="mt-8 border-t border-border pt-5 text-xs leading-relaxed text-muted-foreground">{footnote}</p>}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }
 
-/** Form-level error (non-field), announced. */
-export function FormError({ children }: { children: ReactNode }) {
-  if (!children) return null;
+function BrandPanel({ children }: { children?: ReactNode }) {
   return (
-    <p role="alert" className="rounded-md border border-border bg-muted/40 px-3 py-2 text-xs leading-relaxed text-foreground/90">
-      {children}
-    </p>
+    <aside className="dark brand-wash relative hidden overflow-hidden border-r border-border text-foreground lg:flex lg:flex-col lg:justify-between lg:p-10 xl:p-14">
+      <div className="flex items-center gap-2.5">
+        <YunoriMark className="h-7 w-7" />
+        <span className="text-[15px] font-semibold tracking-tight">Yunori Mail</span>
+      </div>
+      <div className="relative max-w-md">
+        {children ?? (
+          <>
+            <p className="font-serif text-[34px] leading-[1.12] tracking-[-0.02em]">Your mail, on your server — calm, private and yours.</p>
+            <ul className="mt-8 space-y-3.5 text-sm text-muted-foreground">
+              <li className="flex items-start gap-3">
+                <ShieldCheck aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-torii-ink" />
+                DNS, certificates and reputation checked for real, against public resolvers.
+              </li>
+              <li className="flex items-start gap-3">
+                <Lock aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-torii-ink" />
+                Secrets are sealed on the server and never shown twice.
+              </li>
+              <li className="flex items-start gap-3">
+                <Sparkles aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-torii-ink" />
+                Every change an admin makes is written to a tamper-evident ledger.
+              </li>
+            </ul>
+          </>
+        )}
+      </div>
+      <p className="relative text-xs text-muted-foreground">Self-hosted · Stalwart inside · yunori.email</p>
+    </aside>
   );
 }
+
+export { FormError };

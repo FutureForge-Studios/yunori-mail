@@ -1,6 +1,6 @@
 import { forwardRef, useState, type InputHTMLAttributes } from "react";
 import { Eye, EyeOff } from "lucide-react";
-import { Input } from "@/design/vendor/ui/input";
+import { Input } from "@/ui/form";
 import { cn } from "@/design/vendor/lib/utils";
 import { passwordStrength } from "@/lib/password";
 
@@ -17,7 +17,7 @@ export const PasswordInput = forwardRef<HTMLInputElement, InputHTMLAttributes<HT
           aria-label="Show password"
           aria-pressed={show}
           title={show ? "Hide password" : "Show password"}
-          className="absolute right-0 top-0 grid h-full w-10 place-items-center rounded-r-md text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="absolute right-0 top-0 grid h-full w-10 place-items-center rounded-r-lg text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/60"
         >
           {show ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
         </button>
@@ -38,12 +38,12 @@ export function StrengthHint({ password, id }: { password: string; id?: string }
             key={i}
             className={cn(
               "h-1 flex-1 rounded-full transition-colors motion-reduce:transition-none",
-              s.score >= i ? (s.score === 1 ? "bg-muted-foreground/50" : "bg-foreground/70") : "bg-muted",
+              s.score >= i ? (s.score === 1 ? "bg-warning" : s.score >= 3 ? "bg-success" : "bg-foreground/60") : "bg-muted",
             )}
           />
         ))}
       </div>
-      <p className="text-[11px] text-muted-foreground">
+      <p className="text-xs text-muted-foreground">
         {s.label && <span className="font-medium text-foreground/80">{s.label}. </span>}
         {s.hint}
       </p>

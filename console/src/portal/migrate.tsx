@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, CircleAlert, Loader2 } from "lucide-react";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Skeleton } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/form";
+import { Skeleton } from "@/ui/feedback";
 import { ApiRequestError, errorMessage, portalApi } from "@/api/client";
 import type { MigrateFolder, MigrateSource, MigrationJob } from "@/api/types";
 import { FormError } from "@/components/auth-frame";
 import { ConfirmAction } from "@/components/confirm";
-import { FieldError, FilterPills, LoadError } from "@/components/kit";
+import { FieldError, LoadError } from "@/components/kit";
+import { Tabs } from "@/ui/segmented";
+import { Checkbox, Select } from "@/ui/form";
 import { PasswordInput } from "@/components/password-input";
 import { fmtBytes, fmtDateTime, fmtNumber } from "@/lib/format";
 import { toast } from "@/lib/toast";
@@ -99,7 +101,7 @@ export function MoveMail({ address }: { address: string }) {
   if (error && !data) return <LoadError error={error} onRetry={() => void reload()} what="Moving your mail" />;
   if (!data)
     return (
-      <div aria-busy="true" className="rounded-xl border border-border/60 bg-card/40 p-5">
+      <div aria-busy="true" className="rounded-xl border border-border bg-card shadow-card p-5">
         <Skeleton className="h-5 w-56" />
         <Skeleton className="mt-6 h-9 w-full" />
       </div>
@@ -218,9 +220,9 @@ function ImportForm({ address, onStarted, onCancel }: { address: string; onStart
   }
 
   return (
-    <form onSubmit={test} noValidate className="rounded-xl border border-border/60 bg-card/40">
-      <div className="border-b border-border/50 px-5 py-3">
-        <FilterPills
+    <form onSubmit={test} noValidate className="rounded-xl border border-border bg-card shadow-card">
+      <div className="border-b border-border/70 px-3 pt-3 sm:px-4">
+        <Tabs
           label="Where your mail is now"
           value={provider}
           onChange={(v) => {
@@ -249,17 +251,16 @@ function ImportForm({ address, onStarted, onCancel }: { address: string; onStart
             </div>
             <div className="space-y-1.5">
               <FieldLabel htmlFor="mv-port">Security</FieldLabel>
-              <select
+              <Select
                 id="mv-port"
                 value={port}
                 onChange={(e) => setPort(Number(e.target.value))}
-                className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-invalid={!!errors.port}
                 aria-describedby={errors.port ? "mv-port-err" : undefined}
               >
                 <option value={993}>993 · SSL/TLS</option>
                 <option value={143}>143 · STARTTLS</option>
-              </select>
+              </Select>
               <FieldError id="mv-port-err">{errors.port}</FieldError>
             </div>
           </div>
@@ -295,17 +296,17 @@ function ImportForm({ address, onStarted, onCancel }: { address: string; onStart
             {errors.password ? (
               <FieldError id="mv-password-err">{errors.password}</FieldError>
             ) : (
-              <p id="mv-password-hint" className="text-[11px] leading-relaxed text-muted-foreground">
+              <p id="mv-password-hint" className="text-xs leading-relaxed text-muted-foreground">
                 {p.password}
               </p>
             )}
           </div>
         </div>
-        <p className="text-[11px] leading-relaxed text-muted-foreground">
+        <p className="text-xs leading-relaxed text-muted-foreground">
           Only read, never changed: your old mailbox stays exactly as it is. The password is used for this copy only and never stored.
         </p>
       </div>
-      <div className="flex flex-col gap-3 border-t border-border/50 px-5 py-4 sm:flex-row sm:items-center sm:justify-end">
+      <div className="flex flex-col gap-3 border-t border-border/70 px-5 py-4 sm:flex-row sm:items-center sm:justify-end">
         {errors.form && (
           <div className="min-w-0 flex-1">
             <FormError>{errors.form}</FormError>
@@ -316,7 +317,7 @@ function ImportForm({ address, onStarted, onCancel }: { address: string; onStart
             Cancel
           </Button>
         )}
-        <Button type="submit" size="sm" disabled={busy} className="shrink-0 self-end sm:self-auto">
+        <Button type="submit" size="sm" variant="torii" disabled={busy} className="shrink-0 self-end sm:self-auto">
           {busy ? (
             <>
               <Loader2 className="h-3.5 w-3.5 animate-spin motion-reduce:animate-none" />
@@ -364,9 +365,9 @@ function FolderPicker({
   };
   const allDefault = () => onChosen(new Set(folders.filter((f) => f.selected).map((f) => f.id)));
   return (
-    <div className="rounded-xl border border-border/60 bg-card/40">
-      <div className="flex items-start gap-3 border-b border-border/50 px-5 py-3">
-        <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
+    <div className="rounded-xl border border-border bg-card shadow-card">
+      <div className="flex items-start gap-3 border-b border-border/70 px-5 py-3">
+        <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-ink" />
         <p className="min-w-0 text-xs leading-relaxed text-muted-foreground">
           Connected to <span className="break-all text-foreground/90">{from}</span>. Choose what to copy into{" "}
           <span className="break-all text-foreground/90">{address}</span>.
@@ -374,22 +375,17 @@ function FolderPicker({
       </div>
       <fieldset id="mv-folders" tabIndex={-1} aria-describedby={errors.folders ? "mv-folders-err" : undefined} className="focus:outline-none">
         <legend className="sr-only">Folders to copy</legend>
-        <ul className="max-h-[26rem] divide-y divide-border/50 overflow-y-auto">
+        <ul className="max-h-[26rem] divide-y divide-border/70 overflow-y-auto">
           {folders.map((f) => (
             <li key={f.id}>
               <label className="flex cursor-pointer items-start gap-3 px-5 py-2.5 hover:bg-accent/40">
-                <input
-                  type="checkbox"
-                  checked={chosen.has(f.id)}
-                  onChange={() => toggle(f.id)}
-                  className="mt-1 h-3.5 w-3.5 shrink-0 accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                />
+                <Checkbox checked={chosen.has(f.id)} onChange={() => toggle(f.id)} className="mt-0.5" />
                 <span className="min-w-0 flex-1">
                   <span className="flex items-baseline gap-2">
                     <span className="min-w-0 truncate text-sm text-foreground/90">{f.name}</span>
                     <span className="ml-auto shrink-0 text-xs tabular-nums text-muted-foreground">{fmtNumber(f.messages)}</span>
                   </span>
-                  <span className="block text-[11px] text-muted-foreground">
+                  <span className="block text-xs text-muted-foreground">
                     {f.note && !chosen.has(f.id) ? f.note : <>→ {f.destination}</>}
                   </span>
                 </span>
@@ -398,7 +394,7 @@ function FolderPicker({
           ))}
         </ul>
       </fieldset>
-      <div className="flex flex-col gap-3 border-t border-border/50 px-5 py-4 sm:flex-row sm:items-center">
+      <div className="flex flex-col gap-3 border-t border-border/70 px-5 py-4 sm:flex-row sm:items-center">
         <div className="min-w-0 flex-1 text-xs text-muted-foreground">
           <p className="tabular-nums text-foreground/85">
             {chosen.size} folder{chosen.size === 1 ? "" : "s"} · {fmtNumber(total)} message{total === 1 ? "" : "s"}
@@ -452,15 +448,15 @@ function JobCard({ job, onAgain }: { job: MigrationJob; onAgain?: () => void }) 
   const ok = job.state === "done" && job.messagesFailed === 0;
 
   return (
-    <div className="rounded-xl border border-border/60 bg-card/40">
+    <div className="rounded-xl border border-border bg-card shadow-card">
       <div className="space-y-3 p-5">
         <div className="flex items-start gap-2.5">
           {running ? (
             <Loader2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground motion-reduce:animate-none" />
           ) : ok ? (
-            <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
+            <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-success-ink" />
           ) : (
-            <CircleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-amber-700 dark:text-amber-400" />
+            <CircleAlert aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-warning-ink" />
           )}
           <div className="min-w-0">
             <p className="text-sm font-medium">
@@ -476,10 +472,10 @@ function JobCard({ job, onAgain }: { job: MigrationJob; onAgain?: () => void }) 
           aria-valuemax={100}
           aria-valuenow={Math.round(value)}
           aria-valuetext={`${fmtNumber(handled)} of ${fmtNumber(job.messagesTotal)} messages`}
-          className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+          className="h-2 w-full overflow-hidden rounded-full bg-muted"
         >
           <div
-            className={`h-full rounded-full transition-[width] duration-500 motion-reduce:transition-none ${ok ? "bg-emerald-600 dark:bg-emerald-400" : "bg-foreground/60"}`}
+            className={`h-full rounded-full transition-[width] duration-500 motion-reduce:transition-none ${ok ? "bg-success" : "bg-info"}`}
             style={{ width: `${Math.max(value, value > 0 ? 2 : 0)}%` }}
           />
         </div>
@@ -495,11 +491,11 @@ function JobCard({ job, onAgain }: { job: MigrationJob; onAgain?: () => void }) 
           )}
         </p>
         {running && (
-          <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <p className="text-xs leading-relaxed text-muted-foreground">
             You can close this page — the server keeps copying. Running it again later copies only what's new; nothing is copied twice.
           </p>
         )}
-        {!running && job.finishedAt && <p className="text-[11px] text-muted-foreground">Finished {fmtDateTime(job.finishedAt)}</p>}
+        {!running && job.finishedAt && <p className="text-xs text-muted-foreground">Finished {fmtDateTime(job.finishedAt)}</p>}
         {job.errors.length > 0 && (
           <div>
             <button
@@ -514,7 +510,7 @@ function JobCard({ job, onAgain }: { job: MigrationJob; onAgain?: () => void }) 
               — {showErrors ? "hide" : "show"} details
             </button>
             {showErrors && (
-              <ul className="mt-2 space-y-1 text-[11px] leading-relaxed text-muted-foreground">
+              <ul className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
                 {job.errors.map((e, i) => (
                   <li key={i}>
                     {e.folder && <span className="text-foreground/80">{e.folder}: </span>}
@@ -526,9 +522,9 @@ function JobCard({ job, onAgain }: { job: MigrationJob; onAgain?: () => void }) 
           </div>
         )}
       </div>
-      <div className="flex justify-end gap-2 border-t border-border/50 px-5 py-3">
+      <div className="flex justify-end gap-2 border-t border-border/70 px-5 py-3">
         {running ? (
-          <Button variant="ghost" size="sm" onClick={() => setStopping(true)} className="text-muted-foreground hover:text-destructive">
+          <Button variant="ghost" size="sm" onClick={() => setStopping(true)} className="text-muted-foreground hover:text-danger-ink">
             Stop
           </Button>
         ) : (
@@ -557,7 +553,7 @@ function JobCard({ job, onAgain }: { job: MigrationJob; onAgain?: () => void }) 
 
 function FieldLabel({ htmlFor, children }: { htmlFor: string; children: React.ReactNode }) {
   return (
-    <label htmlFor={htmlFor} className="block text-xs font-medium text-foreground/80">
+    <label htmlFor={htmlFor} className="block text-[13px] font-medium text-foreground/90">
       {children}
     </label>
   );

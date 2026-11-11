@@ -34,9 +34,28 @@ export default {
         emerald: { 400: "var(--success-ink)", 600: tone("success"), 700: "var(--success-ink)" },
         amber: { 400: "var(--warning-ink)", 600: tone("warning"), 700: "var(--warning-ink)" },
       },
+      fontSize: {
+        "2xs": ["0.6875rem", { lineHeight: "1rem" }],
+      },
+      screens: {
+        "3xl": "1800px",
+      },
+      keyframes: {
+        "slide-in-left": { from: { transform: "translateX(-100%)" }, to: { transform: "translateX(0)" } },
+        "slide-out-left": { from: { transform: "translateX(0)" }, to: { transform: "translateX(-100%)" } },
+        "toast-in": { from: { opacity: "0", transform: "translateY(8px) scale(0.98)" }, to: { opacity: "1", transform: "translateY(0) scale(1)" } },
+        "rise-in": { from: { opacity: "0", transform: "translateY(6px)" }, to: { opacity: "1", transform: "translateY(0)" } },
+      },
+      animation: {
+        "slide-in-left": "slide-in-left 0.22s cubic-bezier(.22,1,.36,1)",
+        "slide-out-left": "slide-out-left 0.18s ease-in",
+        "toast-in": "toast-in 0.22s cubic-bezier(.22,1,.36,1)",
+        "rise-in": "rise-in 0.35s cubic-bezier(.22,1,.36,1)",
+      },
       boxShadow: {
         panel: "var(--shadow-panel)",
         pop: "var(--shadow-pop)",
+        card: "0 1px 2px 0 hsl(var(--shadow-tint) / var(--shadow-a1)), 0 1px 3px -1px hsl(var(--shadow-tint) / var(--shadow-a1))",
       },
       transitionDuration: {
         fast: "var(--dur-fast)",

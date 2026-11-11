@@ -1,8 +1,9 @@
 import { useState } from "react";
-import { Ban, Plus, ShieldCheck, Trash2, Unlock } from "lucide-react";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Card, SectionLabel, Skeleton } from "@/design/vendor/admin/ui";
+import { Ban, ListChecks, Plus, ShieldBan, ShieldCheck, Trash2, Unlock } from "lucide-react";
+import { Button, IconButton } from "@/ui/button";
+import { Card, CardBody, CardHeader, SectionHeader } from "@/ui/card";
+import { EmptyState, Skeleton } from "@/ui/feedback";
+import { Field, Input } from "@/ui/form";
 import { ApiRequestError, errorMessage } from "@/api/client";
 import { accessApi, type AllowedAddress, type BanPolicy, type BlockedAddress } from "@/api/queue";
 import { ConfirmAction } from "@/components/confirm";
@@ -36,47 +37,52 @@ export function IpAccessSection() {
   const [removing, setRemoving] = useState<AllowedAddress | null>(null);
 
   return (
-    <section className="mt-8" aria-labelledby="ip-access-title">
-      <h2 id="ip-access-title" className="mb-3 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-        Sign-in protection
-      </h2>
+    <section className="mt-10" aria-labelledby="ip-access-title">
+      <SectionHeader
+        id="ip-access-title"
+        title="Sign-in protection"
+        description="Addresses the mail engine blocked after repeated failed sign-ins (IMAP, SMTP, JMAP) or other abuse, and the ones it never blocks."
+      />
       {error && !data ? (
         <LoadError error={error} onRetry={() => void reload()} what="Blocked addresses" />
       ) : !data ? (
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Skeleton className="h-40 lg:col-span-2" />
-          <Skeleton className="h-40" />
+        <div className="grid gap-4 xl:grid-cols-12">
+          <Skeleton className="h-48 rounded-xl xl:col-span-8" />
+          <Skeleton className="h-48 rounded-xl xl:col-span-4" />
         </div>
       ) : (
-        <div className="grid gap-4 lg:grid-cols-3">
-          <Card className="lg:col-span-2">
-            <div className="flex flex-wrap items-baseline justify-between gap-2">
-              <SectionLabel>Blocked addresses</SectionLabel>
-              {data.policy && (
-                <span className="-mt-3 text-[11px] text-muted-foreground">
-                  {data.policy.enabled ? (
-                    <StatusBadge tone="ok" icon={ShieldCheck}>
-                      Automatic blocking on
-                    </StatusBadge>
-                  ) : (
-                    <StatusBadge tone="warn">Automatic blocking off</StatusBadge>
-                  )}
-                </span>
-              )}
-            </div>
-            {data.policy && <p className="-mt-1 mb-3 text-xs leading-relaxed text-muted-foreground">{policySentence(data.policy)}</p>}
+        <div className="grid gap-4 xl:grid-cols-12">
+          <Card padded={false} className="xl:col-span-8" aria-labelledby="ip-blocked">
+            <CardHeader
+              id="ip-blocked"
+              title="Blocked addresses"
+              icon={ShieldBan}
+              description={data.policy ? policySentence(data.policy) : undefined}
+              actions={
+                data.policy &&
+                (data.policy.enabled ? (
+                  <StatusBadge tone="ok" icon={ShieldCheck}>
+                    Automatic blocking on
+                  </StatusBadge>
+                ) : (
+                  <StatusBadge tone="warn">Automatic blocking off</StatusBadge>
+                ))
+              }
+              divider
+            />
+            <CardBody className="pt-1">
             {data.blocked.length === 0 ? (
-              <p className="rounded-lg border border-dashed border-border/60 px-4 py-5 text-center text-xs text-muted-foreground">No address is blocked right now.</p>
+              <EmptyState compact className="mt-4" icon={ShieldCheck} title="No address is blocked right now" />
             ) : (
-              <ul className="divide-y divide-border/50" aria-label="Blocked addresses">
+              <ul className="divide-y divide-border/60" aria-label="Blocked addresses">
                 {data.blocked.map((b) => (
-                  <li key={b.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5">
+                  <li key={b.id} className="flex flex-wrap items-center justify-between gap-2 py-3">
                     <div className="min-w-0">
-                      <p className="flex items-center gap-2 font-mono text-xs text-foreground/90">
-                        <Ban aria-hidden className="h-3.5 w-3.5 text-muted-foreground" />
+                      <p className="flex items-center gap-2 font-mono text-[13px] font-medium text-foreground">
+                        <Ban aria-hidden className="h-4 w-4 text-danger-ink" />
                         {b.address}
                       </p>
-                      <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      <p className="mt-0.5 text-xs text-muted-foreground">
                         {b.reasonText}
                         {b.createdAt && (
                           <>
@@ -98,14 +104,16 @@ export function IpAccessSection() {
                 ))}
               </ul>
             )}
-            <p className="mt-3 border-t border-border/50 pt-3 text-[11px] leading-relaxed text-muted-foreground">
+            <p className="mt-1 border-t border-border/70 pt-3 text-xs leading-relaxed text-muted-foreground">
               The mail engine blocks an address on its own after repeated failed sign-ins, probing for addresses, or scanning for exploits. A
               person stuck behind a block is usually a phone or mail app still using an old password: unblock, then update the password on that device.
             </p>
+            </CardBody>
           </Card>
 
-          <Card>
-            <SectionLabel>Never block</SectionLabel>
+          <Card padded={false} className="xl:col-span-4" aria-labelledby="ip-allow">
+            <CardHeader id="ip-allow" title="Never block" icon={ListChecks} description="For your office or VPN. Keep it short: an allowlisted address can guess passwords without ever being blocked." />
+            <CardBody>
             <AllowForm
               onAdded={(a) => {
                 toast.success(`${a.address} will never be blocked.`);
@@ -113,29 +121,21 @@ export function IpAccessSection() {
               }}
             />
             {data.allowed.length > 0 && (
-              <ul className="mt-3 divide-y divide-border/50 border-t border-border/50" aria-label="Allowlist">
+              <ul className="mt-4 divide-y divide-border/60 border-t border-border/70" aria-label="Allowlist">
                 {data.allowed.map((a) => (
                   <li key={a.id} className="flex items-center justify-between gap-2 py-2">
                     <div className="min-w-0">
-                      <p className="truncate font-mono text-xs text-foreground/90">{a.address}</p>
-                      {a.reason && <p className="truncate text-[11px] text-muted-foreground">{a.reason}</p>}
+                      <p className="truncate font-mono text-[13px] text-foreground">{a.address}</p>
+                      {a.reason && <p className="truncate text-xs text-muted-foreground">{a.reason}</p>}
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setRemoving(a)}
-                      aria-label={`Remove ${a.address} from the allowlist`}
-                      title="Remove"
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-destructive focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <IconButton label={`Remove ${a.address} from the allowlist`} onClick={() => setRemoving(a)} className="hover:text-danger-ink">
+                      <Trash2 className="h-4 w-4" />
+                    </IconButton>
                   </li>
                 ))}
               </ul>
             )}
-            <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
-              For your office or VPN. Keep it short: an allowlisted address can guess passwords without ever being blocked.
-            </p>
+            </CardBody>
           </Card>
         </div>
       )}
@@ -199,23 +199,27 @@ function AllowForm({ onAdded }: { onAdded: (a: AllowedAddress) => void }) {
   }
 
   return (
-    <form onSubmit={submit} noValidate className="space-y-2">
+    <form onSubmit={submit} noValidate className="space-y-3">
+      <Field label="IP address or network" htmlFor="allow-ip">
       <Input
+        id="allow-ip"
         value={address}
         onChange={(e) => setAddress(e.target.value)}
         placeholder="203.0.113.0/24"
-        aria-label="IP address or network"
         aria-invalid={!!err}
         aria-describedby={err ? "allow-error" : undefined}
         autoComplete="off"
         spellCheck={false}
         autoCapitalize="none"
-        className="h-9 font-mono text-xs"
+        className="font-mono text-[13px]"
       />
-      <Input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note, e.g. office (optional)" aria-label="Note" maxLength={120} className="h-9 text-xs" />
+      </Field>
+      <Field label="Note" htmlFor="allow-note" optional>
+        <Input id="allow-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="e.g. office" maxLength={120} />
+      </Field>
       <FieldError id="allow-error">{err}</FieldError>
-      <Button type="submit" size="sm" variant="outline" disabled={busy || !address.trim()} className="w-full">
-        <Plus className="h-3.5 w-3.5" />
+      <Button type="submit" size="sm" variant="outline" disabled={!address.trim()} loading={busy} className="w-full">
+        {!busy && <Plus className="h-3.5 w-3.5" />}
         {busy ? "Adding…" : "Add to allowlist"}
       </Button>
     </form>

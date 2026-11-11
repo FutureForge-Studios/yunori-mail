@@ -1,18 +1,18 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Route, Routes, useNavigate, useSearchParams } from "react-router-dom";
-import { CheckCircle2, LogOut, Plus, Trash2 } from "lucide-react";
+import { ArrowDownToLine, KeyRound, Lock, LogOut, Plus, Reply, Settings2, Smartphone, Trash2, type LucideIcon } from "lucide-react";
 import { YunoriMark } from "@/components/yunori-logo";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Label } from "@/design/vendor/ui/label";
-import { Skeleton } from "@/design/vendor/admin/ui";
+import { Button } from "@/ui/button";
+import { Input, Label } from "@/ui/form";
+import { Avatar } from "@/ui/badge";
+import { RingMeter } from "@/ui/data-viz";
+import { Callout, Skeleton } from "@/ui/feedback";
 import { ApiRequestError, errorMessage, portalApi } from "@/api/client";
 import type { AppPassword, PortalMe } from "@/api/types";
 import { AuthFrame, FormError } from "@/components/auth-frame";
 import { ConfirmAction } from "@/components/confirm";
 import { CopyButton } from "@/components/copy-button";
 import { FieldError, LoadError, usePageTitle } from "@/components/kit";
-import { Meter } from "@/components/meter";
 import { PasswordInput, StrengthHint } from "@/components/password-input";
 import { SecretReveal } from "@/components/secret-reveal";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -112,7 +112,7 @@ function PortalLogin() {
           <PasswordInput id="p-password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} />
         </div>
         <FormError>{error}</FormError>
-        <Button type="submit" variant="torii" className="w-full" disabled={busy}>
+        <Button type="submit" variant="torii" size="lg" className="w-full" loading={busy}>
           {busy ? "Signing in…" : "Sign in"}
         </Button>
       </form>
@@ -137,31 +137,35 @@ function PortalHome() {
 
   return (
     <div className="min-h-dvh bg-background">
-      <header className="border-b border-border/60">
-        <div className="mx-auto flex h-14 max-w-3xl items-center gap-2.5 px-5">
-          <YunoriMark className="h-5 w-5" />
-          <span className="text-sm font-medium tracking-tight">Yunori Mail</span>
-          <div className="ml-auto flex items-center gap-1">
+      <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur-md">
+        <div className="mx-auto flex h-14 max-w-6xl items-center gap-3 px-4 sm:px-6 lg:px-8">
+          <span className="grid h-8 w-8 place-items-center rounded-lg border border-border bg-card shadow-card">
+            <YunoriMark className="h-[18px] w-[18px]" />
+          </span>
+          <span className="text-sm font-semibold tracking-tight">Yunori Mail</span>
+          <span aria-hidden className="hidden h-4 w-px bg-border sm:block" />
+          <span className="hidden text-sm text-muted-foreground sm:block">Your mailbox</span>
+          <div className="ml-auto flex items-center gap-1.5">
             <ThemeToggle />
             {data && (
-              <Button variant="ghost" size="sm" onClick={() => void signOut()} className="text-muted-foreground">
+              <Button variant="ghost" size="sm" onClick={() => void signOut()}>
                 <LogOut className="h-3.5 w-3.5" />
-                Sign out
+                <span className="hidden sm:inline">Sign out</span>
+                <span className="sr-only sm:hidden">Sign out</span>
               </Button>
             )}
           </div>
         </div>
       </header>
 
-      <main className="mx-auto max-w-3xl px-5 pb-16 pt-10 sm:pt-14">
+      <main className="mx-auto max-w-6xl px-4 pb-20 pt-6 sm:px-6 sm:pt-10 lg:px-8">
         {error && !data ? (
           <LoadError error={error} onRetry={() => void reload()} what="Your mailbox" />
         ) : !data ? (
-          <div aria-busy="true">
-            <Skeleton className="h-3 w-24" />
-            <Skeleton className="mt-3 h-10 w-72" />
-            <Skeleton className="mt-10 h-40" />
-            <Skeleton className="mt-4 h-56" />
+          <div aria-busy="true" className="lg:pl-[15rem]">
+            <Skeleton className="h-36 rounded-2xl" />
+            <Skeleton className="mt-6 h-56 rounded-xl" />
+            <Skeleton className="mt-6 h-56 rounded-xl" />
           </div>
         ) : (
           <Home me={data} onChange={(me) => setData(me)} />
@@ -170,6 +174,15 @@ function PortalHome() {
     </div>
   );
 }
+
+const SECTIONS = [
+  { id: "sec-connect-your-devices", label: "Devices", icon: Smartphone },
+  { id: "sec-move-your-mail-here", label: "Move your mail here", icon: ArrowDownToLine },
+  { id: "sec-auto-reply-forwarding", label: "Auto-reply & forwarding", icon: Reply },
+  { id: "sec-mail-settings", label: "Mail settings", icon: Settings2 },
+  { id: "sec-password", label: "Password", icon: Lock },
+  { id: "sec-app-passwords", label: "App passwords", icon: KeyRound },
+] as const;
 
 function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void }) {
   const [params, setParams] = useSearchParams();
@@ -186,94 +199,131 @@ function Home({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe) => void
   const storageText = me.quotaBytes ? `${used} of ${fmtBytes(me.quotaBytes)} used` : `${used} used · no limit`;
 
   return (
-    <>
-      <section aria-labelledby="me-title">
-        <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">Your mailbox</p>
-        <h1 id="me-title" className="mt-2 font-serif text-[clamp(2rem,6vw,2.75rem)] leading-[1.05] tracking-tight">
-          {me.displayName ?? me.address}
-        </h1>
-        <div className="mt-2 flex items-center gap-1">
-          <span className="break-all font-mono text-sm text-muted-foreground">{me.address}</span>
-          <CopyButton value={me.address} label="your address" />
+    <div className="lg:grid lg:grid-cols-[13rem_minmax(0,1fr)] lg:gap-10">
+      <nav aria-label="On this page" className="hidden lg:block">
+        <ul className="sticky top-24 space-y-0.5">
+          {SECTIONS.map((s) => (
+            <li key={s.id}>
+              <a
+                href={`#${s.id}`}
+                className="flex h-9 items-center gap-2.5 rounded-lg px-2.5 text-[13.5px] text-foreground/70 transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
+              >
+                <s.icon aria-hidden className="h-4 w-4 text-icon" strokeWidth={1.75} />
+                {s.label}
+              </a>
+            </li>
+          ))}
+        </ul>
+      </nav>
+
+      <div className="min-w-0 max-w-3xl">
+        <section aria-labelledby="me-title" className="relative overflow-hidden rounded-2xl border border-border bg-card p-5 shadow-card sm:p-7">
+          <div className="relative flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex min-w-0 items-center gap-4">
+              <Avatar name={me.displayName ?? me.address} className="h-14 w-14 text-lg" />
+              <div className="min-w-0">
+                <p className="text-xs font-medium text-muted-foreground">Your mailbox</p>
+                <h1 id="me-title" className="mt-0.5 font-serif text-[clamp(1.6rem,5vw,2.25rem)] leading-[1.1] tracking-[-0.02em] [overflow-wrap:anywhere]">
+                  {me.displayName ?? me.address}
+                </h1>
+                <div className="mt-1 flex items-center gap-1">
+                  <span className="break-all font-mono text-[13px] text-muted-foreground">{me.address}</span>
+                  <CopyButton value={me.address} label="your address" />
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center gap-3 rounded-xl border border-border bg-muted/40 p-3 sm:min-w-[13rem]">
+              <RingMeter value={p} label="Mailbox storage" valueText={storageText} size={56} stroke={6} />
+              <div className="min-w-0">
+                <p className="text-[13px] font-medium text-foreground">Storage</p>
+                <p className="text-xs tabular-nums text-muted-foreground">{storageText}</p>
+                {p !== null && p >= 90 && <p className="text-xs font-medium text-warning-ink">Nearly full — new mail is refused once it's full</p>}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div ref={connectRef} className="scroll-mt-20">
+          {welcome && (
+            <Callout role="status" tone="ok" className="mt-6">
+              Your password is set and your mailbox is ready. Now connect the devices you'll read it on.
+            </Callout>
+          )}
+          <Section
+            icon={Smartphone}
+            title="Connect your devices"
+            blurb="Each phone, computer or app can get its own app password, so you can sign one out without changing your password."
+          >
+            <ConnectDevices me={me} onChange={onChange} />
+          </Section>
         </div>
 
-      </section>
+        <Section
+          icon={ArrowDownToLine}
+          title="Move your mail here"
+          blurb="Bring your mail over from Gmail, Microsoft 365 or another provider — folders, read and starred marks, and dates included."
+        >
+          <MoveMail address={me.address} />
+        </Section>
 
-      <div ref={connectRef} className="scroll-mt-6">
-        {welcome && (
-          <p role="status" className="mt-8 flex items-start gap-2 rounded-lg border border-emerald-600/30 bg-emerald-500/5 px-4 py-3 text-sm leading-relaxed">
-            <CheckCircle2 aria-hidden className="mt-0.5 h-4 w-4 shrink-0 text-emerald-700 dark:text-emerald-400" />
-            <span>Your password is set and your mailbox is ready. Now connect the devices you'll read it on.</span>
-          </p>
-        )}
-        <Section title="Connect your devices" blurb="Each phone, computer or app can get its own app password, so you can sign one out without changing your password.">
-          <ConnectDevices me={me} onChange={onChange} />
+        <Section
+          icon={Reply}
+          id="sec-auto-reply-forwarding"
+          title="Auto-reply & forwarding"
+          blurb="Answer mail while you're away, or send it on to another address. Both run on the server, so they work with every app closed."
+        >
+          <MailRulesCard address={me.address} />
+        </Section>
+
+        <Section icon={Settings2} title="Mail settings" blurb="Most apps find these on their own. If yours asks, use these — your username is your full address.">
+          <dl className="divide-y divide-border/70 rounded-xl border border-border bg-card shadow-card">
+            <SettingRow label="Username" value={me.address} />
+            <SettingRow label="Incoming (IMAP)" value={me.settings.imap.host} extra={`Port ${me.settings.imap.port} · ${me.settings.imap.security}`} />
+            <SettingRow label="Outgoing (SMTP)" value={me.settings.smtp.host} extra={`Port ${me.settings.smtp.port} · ${me.settings.smtp.security}`} />
+            <SettingRow label="Calendars & contacts" value={me.settings.dav.url} extra="CalDAV · CardDAV" />
+          </dl>
+        </Section>
+
+        <Section icon={Lock} title="Password" blurb="Changing it signs you out of mail apps that use it. App passwords keep working.">
+          <ChangePassword address={me.address} />
+        </Section>
+
+        <Section icon={KeyRound} title="App passwords" blurb="A separate password for each app or device. Revoke one without changing your main password.">
+          <AppPasswords me={me} onChange={onChange} />
         </Section>
       </div>
-
-      <Section
-        title="Move your mail here"
-        blurb="Bring your mail over from Gmail, Microsoft 365 or another provider — folders, read and starred marks, and dates included."
-      >
-        <MoveMail address={me.address} />
-      </Section>
-
-      <Section title="Storage">
-        <Meter value={p} label="Mailbox storage" valueText={storageText} />
-        <p className="mt-2 text-xs tabular-nums text-foreground/85">
-          {storageText}
-          {p !== null && p >= 90 && <span className="text-amber-700 dark:text-amber-400"> · nearly full — new mail is refused once it's full</span>}
-        </p>
-      </Section>
-
-      <Section
-        title="Auto-reply & forwarding"
-        blurb="Answer mail while you're away, or send it on to another address. Both run on the server, so they work with every app closed."
-      >
-        <MailRulesCard address={me.address} />
-      </Section>
-
-      <Section title="Mail settings" blurb="Most apps find these on their own. If yours asks, use these — your username is your full address.">
-        <dl className="divide-y divide-border/50 rounded-lg border border-border/60">
-          <SettingRow label="Username" value={me.address} />
-          <SettingRow label="Incoming (IMAP)" value={me.settings.imap.host} extra={`Port ${me.settings.imap.port} · ${me.settings.imap.security}`} />
-          <SettingRow label="Outgoing (SMTP)" value={me.settings.smtp.host} extra={`Port ${me.settings.smtp.port} · ${me.settings.smtp.security}`} />
-          <SettingRow label="Calendars & contacts" value={me.settings.dav.url} extra="CalDAV · CardDAV" />
-        </dl>
-      </Section>
-
-      <Section title="Password" blurb="Changing it signs you out of mail apps that use it. App passwords keep working.">
-        <ChangePassword address={me.address} />
-      </Section>
-
-      <Section title="App passwords" blurb="A separate password for each app or device. Revoke one without changing your main password.">
-        <AppPasswords me={me} onChange={onChange} />
-      </Section>
-    </>
+    </div>
   );
 }
 
-function Section({ title, blurb, children }: { title: string; blurb?: string; children: ReactNode }) {
-  const id = `sec-${title.toLowerCase().replace(/\W+/g, "-")}`;
+function Section({ title, blurb, icon: Icon, id: givenId, children }: { title: string; blurb?: string; icon: LucideIcon; id?: string; children: ReactNode }) {
+  const id = givenId ?? `sec-${title.toLowerCase().replace(/\W+/g, "-")}`;
   return (
-    <section aria-labelledby={id} className="mt-12">
-      <h2 id={id} className="text-base font-medium tracking-tight">
-        {title}
-      </h2>
-      {blurb && <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{blurb}</p>}
-      <div className="mt-4">{children}</div>
+    <section aria-labelledby={`${id}-h`} id={id} className="mt-12 scroll-mt-20">
+      <div className="mb-4 flex items-start gap-3">
+        <span aria-hidden className="mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border bg-card text-icon shadow-card">
+          <Icon className="h-4 w-4" strokeWidth={1.75} />
+        </span>
+        <div className="min-w-0">
+          <h2 id={`${id}-h`} className="text-base font-semibold tracking-[-0.01em]">
+            {title}
+          </h2>
+          {blurb && <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">{blurb}</p>}
+        </div>
+      </div>
+      {children}
     </section>
   );
 }
 
 function SettingRow({ label, value, extra }: { label: string; value: string; extra?: string }) {
   return (
-    <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:gap-4">
-      <dt className="w-36 shrink-0 text-xs text-muted-foreground">{label}</dt>
-      <dd className="flex min-w-0 flex-1 items-center gap-1">
-        <span className="min-w-0 break-all font-mono text-[13px] text-foreground/90">{value}</span>
+    <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:gap-4 sm:px-5">
+      <dt className="w-40 shrink-0 text-[13px] text-muted-foreground">{label}</dt>
+      <dd className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1 gap-y-0.5">
+        <span className="min-w-0 break-all font-mono text-[13px] text-foreground">{value}</span>
         <CopyButton value={value} label={label} />
-        {extra && <span className="ml-auto shrink-0 pl-2 text-xs text-muted-foreground">{extra}</span>}
+        {extra && <span className="w-full text-xs text-muted-foreground sm:ml-auto sm:w-auto sm:shrink-0 sm:pl-2">{extra}</span>}
       </dd>
     </div>
   );
@@ -310,10 +360,10 @@ function ChangePassword({ address }: { address: string }) {
   }
 
   return (
-    <form onSubmit={submit} className="space-y-4 rounded-xl border border-border/60 bg-card/40 p-5" noValidate>
+    <form onSubmit={submit} className="space-y-4 rounded-xl border border-border bg-card p-5 shadow-card" noValidate>
       <input type="text" autoComplete="username" value={address} hidden readOnly aria-hidden tabIndex={-1} />
       <div className="space-y-1.5">
-        <Label htmlFor="pw-current" className="normal-case tracking-normal">
+        <Label htmlFor="pw-current">
           Current password
         </Label>
         <PasswordInput
@@ -328,7 +378,7 @@ function ChangePassword({ address }: { address: string }) {
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
         <div className="space-y-1.5">
-          <Label htmlFor="pw-next" className="normal-case tracking-normal">
+          <Label htmlFor="pw-next">
             New password
           </Label>
           <PasswordInput
@@ -342,7 +392,7 @@ function ChangePassword({ address }: { address: string }) {
           {errors.next ? <FieldError id="pw-next-err">{errors.next}</FieldError> : <StrengthHint password={next} id="pw-next-strength" />}
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="pw-confirm" className="normal-case tracking-normal">
+          <Label htmlFor="pw-confirm">
             Repeat new password
           </Label>
           <PasswordInput
@@ -358,7 +408,7 @@ function ChangePassword({ address }: { address: string }) {
       </div>
       {errors.form && <FormError>{errors.form}</FormError>}
       <div className="flex justify-end">
-        <Button type="submit" size="sm" disabled={busy}>
+        <Button type="submit" size="sm" loading={busy}>
           {busy ? "Changing…" : "Change password"}
         </Button>
       </div>
@@ -394,16 +444,21 @@ function AppPasswords({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe)
   }
 
   return (
-    <div className="rounded-xl border border-border/60 bg-card/40">
+    <div className="rounded-xl border border-border bg-card shadow-card">
       {me.appPasswords.length > 0 ? (
-        <ul className="divide-y divide-border/50">
+        <ul className="divide-y divide-border/70">
           {me.appPasswords.map((a) => (
-            <li key={a.id} className="flex items-center justify-between gap-3 px-5 py-3">
-              <div className="min-w-0">
-                <p className="truncate text-sm text-foreground/90">{a.description}</p>
-                <p className="text-[11px] text-muted-foreground">Created {fmtDate(a.createdAt)}</p>
+            <li key={a.id} className="flex items-center justify-between gap-3 px-4 py-3 sm:px-5">
+              <div className="flex min-w-0 items-center gap-3">
+                <span aria-hidden className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-border bg-muted/50 text-icon">
+                  <KeyRound className="h-4 w-4" strokeWidth={1.75} />
+                </span>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium text-foreground">{a.description}</p>
+                  <p className="text-xs text-muted-foreground">Created {fmtDate(a.createdAt)}</p>
+                </div>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => setRevoking(a)} className="text-muted-foreground hover:text-destructive" aria-label={`Revoke ${a.description}`}>
+              <Button variant="ghost" size="sm" onClick={() => setRevoking(a)} className="text-muted-foreground hover:text-danger-ink" aria-label={`Revoke ${a.description}`}>
                 <Trash2 className="h-3.5 w-3.5" />
                 Revoke
               </Button>
@@ -411,10 +466,10 @@ function AppPasswords({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe)
           ))}
         </ul>
       ) : (
-        <p className="px-5 py-4 text-xs text-muted-foreground">No app passwords yet.</p>
+        <p className="px-5 py-4 text-[13px] text-muted-foreground">No app passwords yet.</p>
       )}
 
-      <div className="border-t border-border/50 p-5">
+      <div className="rounded-b-xl border-t border-border/70 bg-muted/25 p-4 sm:p-5">
         {created && (
           <div className="mb-4">
             <SecretReveal
@@ -446,8 +501,8 @@ function AppPasswords({ me, onChange }: { me: PortalMe; onChange: (me: PortalMe)
             />
             <FieldError id="ap-desc-err">{error}</FieldError>
           </div>
-          <Button type="submit" variant="outline" disabled={busy} className="shrink-0">
-            <Plus className="h-4 w-4" />
+          <Button type="submit" variant="outline" loading={busy} className="shrink-0">
+            {!busy && <Plus className="h-4 w-4" />}
             {busy ? "Creating…" : "Create app password"}
           </Button>
         </form>

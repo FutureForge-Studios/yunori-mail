@@ -298,6 +298,8 @@ function seed(scenario: Scenario): DB {
     },
     audit: [...adminAudit(), ...installerAudit()],
     portalAddress: "aiko@example.com",
+    // A ready invite so /account/welcome#invite=demo-invite renders without clicking through the console.
+    invites: { "demo-invite": { mailboxId: "mbx_ren", expiresAt: new Date(now() + 6 * DAY).toISOString() } },
     appPasswords: {
       "aiko@example.com": [
         { id: "ap_1", description: "iPhone Mail", createdAt: iso(12 * DAY) },

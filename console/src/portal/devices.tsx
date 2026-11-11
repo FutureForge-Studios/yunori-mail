@@ -1,11 +1,12 @@
 import { useState } from "react";
 import { Download, ExternalLink, RefreshCw, Smartphone } from "lucide-react";
-import { Button } from "@/design/vendor/ui/button";
-import { Input } from "@/design/vendor/ui/input";
-import { Switch } from "@/design/vendor/ui/switch";
+import { Button } from "@/ui/button";
+import { Input } from "@/ui/form";
+import { Switch } from "@/ui/form";
 import { errorMessage, portalApi } from "@/api/client";
 import type { AppleProfileResponse, PortalMe } from "@/api/types";
-import { FieldError, FilterPills } from "@/components/kit";
+import { FieldError } from "@/components/kit";
+import { Tabs } from "@/ui/segmented";
 import { QrCode } from "@/components/qr-code";
 import { openInYunoriUrl } from "@/lib/format";
 
@@ -35,9 +36,9 @@ export function ConnectDevices({ me, onChange }: { me: PortalMe; onChange: (me: 
   const [guess] = useState(() => guessDevice());
   const [target, setTarget] = useState<Target>(guess.target);
   return (
-    <div className="rounded-xl border border-border/60 bg-card/40">
-      <div className="border-b border-border/50 px-5 py-3">
-        <FilterPills
+    <div className="rounded-xl border border-border bg-card shadow-card">
+      <div className="border-b border-border/70 px-3 pt-3 sm:px-4">
+        <Tabs
           label="Device"
           value={target}
           onChange={setTarget}
@@ -63,12 +64,12 @@ function YunoriPanel({ me }: { me: PortalMe }) {
   const url = openInYunoriUrl(me.clientOrigin, me.address);
   return (
     <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
-      <div className="shrink-0 self-center rounded-lg border border-border/60 bg-[#faf7f2] p-2">
+      <div className="shrink-0 self-center rounded-lg border border-border/60 bg-[#faf7f2] shadow-card p-2">
         <QrCode value={url} label="QR code that opens Yunori with your address filled in" size={148} />
       </div>
       <div className="min-w-0">
         <p className="text-sm font-medium">A calm inbox on the web and on your phone</p>
-        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+        <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           Scan the code with your phone's camera, or open Yunori here. It recognises this server and fills in every setting — you
           only type your password.
         </p>
@@ -144,7 +145,7 @@ function ApplePanel({
             your server rather than from Apple — that's expected.
           </li>
         </ol>
-        <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
           The link works once, for 10 minutes. It carries the new app password “{made.appPassword.description}”; revoke that below to
           sign the device out.
         </p>
@@ -159,7 +160,7 @@ function ApplePanel({
   if (made) {
     return (
       <div className="flex flex-col gap-5 sm:flex-row sm:items-start">
-        <div className="shrink-0 self-center rounded-lg border border-border/60 bg-[#faf7f2] p-2 sm:self-start">
+        <div className="shrink-0 self-center rounded-lg border border-border/60 bg-[#faf7f2] shadow-card p-2 sm:self-start">
           <QrCode value={made.url} label={`QR code for the ${made.appPassword.description} setup link`} size={148} />
         </div>
         <div className="min-w-0 flex-1">
@@ -178,7 +179,7 @@ function ApplePanel({
               your server rather than from Apple — that's expected.
             </li>
           </ol>
-          <p className="mt-3 text-[11px] leading-relaxed text-muted-foreground">
+          <p className="mt-3 text-xs leading-relaxed text-muted-foreground">
             The link works once, for 10 minutes. It carries the new app password “{made.appPassword.description}”; revoke that below
             to sign the device out.
           </p>
@@ -202,13 +203,13 @@ function ApplePanel({
   return (
     <form onSubmit={make} noValidate>
       <p className="text-sm font-medium">Set up Apple Mail without typing a server name</p>
-      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+      <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
         A profile adds this mailbox to Mail — and to Calendar and Contacts if you like — using an app password made just for that
         device. {handheld ? "You download it here and install it in Settings." : "You get a code to scan with the phone, or a download for this computer."}
       </p>
       <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
         <div className="space-y-1.5">
-          <label htmlFor="dev-name" className="block text-xs font-medium text-foreground/80">
+          <label htmlFor="dev-name" className="block text-[13px] font-medium text-foreground/90">
             Device name
           </label>
           <Input
@@ -227,7 +228,7 @@ function ApplePanel({
         </Button>
       </div>
       <FieldError id="dev-name-err">{error}</FieldError>
-      <label className="mt-3 flex cursor-pointer items-center gap-2.5 text-xs text-foreground/85">
+      <label className="mt-4 flex cursor-pointer items-center gap-2.5 text-[13px] text-foreground/90">
         <Switch checked={calendars} onCheckedChange={setCalendars} aria-label="Calendars and contacts too" />
         Calendars and contacts too
       </label>
